@@ -95,6 +95,8 @@ type fake struct {
 	password string
 	fails    int
 	mcast    uint64
+	// A made-up mesh-wide channel survey (StartSurvey).
+	surveyAt time.Time
 	// A mesh-wide change this node sent (SetMeshProfile).
 	meshChange     *status.MeshChange
 	meshChangeSent time.Time
@@ -278,6 +280,14 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		HAccM: 3.2, VAccM: 5.1, SatsUsed: 9, SatsSeen: 14, FixAgeMS: int64(rand.IntN(900))}
 	st.Clock = status.Clock{Service: "chrony", Synced: true, Source: "GNSS receiver", SourceKind: "gnss", Stratum: 1,
 		OffsetMS: math.Round((rand.Float64()-0.5)*40) / 10, Serving: true}
+	// Channel load per link, here and at the other nodes.
+	st.MeshLink.ChannelBusyPct, st.MeshLink.NoiseDBm = 4+rand.IntN(3), -92
+	for i := range st.MoreLinks {
+		st.MoreLinks[i].ChannelBusyPct = -1
+		if st.MoreLinks[i].Band == "2g" {
+			st.MoreLinks[i].ChannelBusyPct = 30 + rand.IntN(6)
+		}
+	}
 	if mc := f.meshChange; mc != nil {
 		// The other nodes answer one by one; every node switches at the
 		// moment.
@@ -344,6 +354,19 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			Version: "demo", Gateway: n.gw, WANHealthy: n.wanOK, HeardAgoMS: int64(rand.IntN(30000)), MeshRadios: n.radios()})
 	}
 	st.Nodes[5].Version = "4a48da6+1104.072526"
+	// Each node's channel load per link, as gossip carries it; scout-7, on
+	// an older build, sends none, and HaLow reports none.
+	for i := range st.Nodes[:5] {
+		load := []int{3 + i%4}
+		for _, l := range f.profile.Links {
+			v := -1
+			if l.Band == "2g" {
+				v = 12 + 5*i
+			}
+			load = append(load, v)
+		}
+		st.Nodes[i].ChannelBusy = load
+	}
 	st.Gossip = status.Gossip{Sent: 391 + f.mcast/90, Received: 2310 + f.mcast/15, BytesSent: 101660, BytesReceived: 598290, LastRecordBytes: 260}
 	passes := uint64(now.Sub(f.started) / (15 * time.Second))
 	st.Reconcile = status.Reconcile{Passes: passes, LastPass: now.Add(-time.Duration(rand.IntN(14000)) * time.Millisecond), LastDuration: "118ms", Converged: true}
@@ -490,6 +513,90 @@ func (f *fake) profileFrom(in api.ProfileInput) (*config.Profile, error) {
 		return &p, p.Validate()
 	}
 	return nil, api.Invalid("give the profile in exactly one form: code, yaml, profile or new")
+}
+
+// StartSurvey begins a made-up mesh-wide survey: the nodes answer one by
+// one over a few seconds.
+func (f *fake) StartSurvey(ctx context.Context) (*status.Survey, error) {
+	f.mu.Lock()
+	if f.surveyAt.IsZero() || time.Since(f.surveyAt) > 20*time.Second {
+		f.surveyAt = time.Now()
+	}
+	f.mu.Unlock()
+	return f.Survey(), nil
+}
+
+// Survey is the made-up survey: 2.4 GHz channel 6 busy near truck-3 with
+// networks around it, channel 1 clear; 5 GHz channel 149's block clear.
+func (f *fake) Survey() *status.Survey {
+	f.mu.Lock()
+	at, p := f.surveyAt, f.profile
+	f.mu.Unlock()
+	if at.IsZero() {
+		return nil
+	}
+	since := time.Since(at)
+	sv := &status.Survey{Started: at, Done: since > 6*time.Second, Nodes: []status.SurveyNode{}, Suggestions: []status.ChannelSuggestion{}}
+	busy24 := map[string]map[int]int{"truck-3": {5: 30, 6: 34, 7: 31, 11: 9}, "ridge-2": {6: 18}}
+	names := []string{f.node.Callsign, "ridge-2", "truck-3", "alpha-4", "bravo-5", "ops-6", "scout-7"}
+	for i, name := range names {
+		n := status.SurveyNode{Callsign: name, State: "asked"}
+		switch {
+		case name == "scout-7" && sv.Done:
+			n.State = "no answer"
+		case name != "scout-7" && since > time.Duration(i)*800*time.Millisecond:
+			n.State = "answered"
+			for k, l := range p.AllLinks() {
+				sl := status.SurveyLink{Link: k + 1, Band: l.Band, Channels: []status.SurveyChannel{}}
+				switch l.Band {
+				case "2g":
+					for c := 1; c <= 11; c++ {
+						b := 4 + (c+i)%5
+						if v, ok := busy24[name][c]; ok {
+							b = v
+						}
+						nets := map[int]int{6: 2, 7: 1}[c]
+						if name == "alpha-4" || name == "bravo-5" {
+							b = -1 // drivers that measure no busy time
+						}
+						sl.Channels = append(sl.Channels, status.SurveyChannel{Ch: c, Busy: b, Nets: nets, Strongest: map[bool]int{true: -58}[nets > 0]})
+					}
+				case "5g":
+					for _, c := range []int{36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 149, 153, 157, 161, 165} {
+						b := 2 + (c+i)%4
+						if c >= 36 && c <= 48 {
+							b += 9
+						}
+						sl.Channels = append(sl.Channels, status.SurveyChannel{Ch: c, Busy: b, Noise: -92, Nets: map[int]int{44: 1}[c]})
+					}
+				default:
+					sl.Error = "HaLow radios report no channel survey"
+				}
+				n.Links = append(n.Links, sl)
+			}
+		}
+		sv.Nodes = append(sv.Nodes, n)
+	}
+	for k, l := range p.AllLinks() {
+		sug := status.ChannelSuggestion{Link: k + 1, Name: l.Name(), Width: l.Width}
+		switch l.Band {
+		case "2g":
+			cur := status.ChannelScore{Ch: l.Channel, Score: 44, WorstBusy: 34, WorstNode: "truck-3", Nets: 2, Strongest: -58}
+			best := status.ChannelScore{Ch: 1, Score: 8, WorstBusy: 8, WorstNode: "ops-6"}
+			sug.Current, sug.Best = &cur, &best
+			sug.Ranked = []status.ChannelScore{best, {Ch: 11, Score: 9, WorstBusy: 9, WorstNode: "truck-3"}, {Ch: 2, Score: 13, WorstBusy: 8, Nets: 1}, cur}
+			sug.Note = fmt.Sprintf("channel 1 is clearer: at worst 8%% busy, no other network, against 34%% busy, 2 other networks on channel %d", l.Channel)
+		case "5g":
+			cur := status.ChannelScore{Ch: l.Channel, Score: 5, WorstBusy: 5, WorstNode: "ridge-2"}
+			sug.Current = &cur
+			sug.Ranked = []status.ChannelScore{cur, {Ch: 52, Score: 5, WorstBusy: 5, DFS: true}, {Ch: 100, Score: 5, WorstBusy: 5, DFS: true}, {Ch: 36, Score: 19, WorstBusy: 14, Nets: 1}}
+			sug.Note = "this link's channel is the clearest one surveyed"
+		default:
+			sug.Note = "HaLow radios report no channel survey"
+		}
+		sv.Suggestions = append(sv.Suggestions, sug)
+	}
+	return sv
 }
 
 // SetMeshProfile answers as a node that sends a change to every node: a

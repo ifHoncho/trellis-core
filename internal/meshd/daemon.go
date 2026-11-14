@@ -116,6 +116,7 @@ type Daemon struct {
 	gnss    *gnss.Watcher
 
 	meshChanges meshChanges // mesh-wide profile changes (meshchange.go)
+	survey      surveyState // channel load and surveys (survey.go)
 	peers       *gossip.Table
 }
 
@@ -369,7 +370,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, d.gossip, d.ap, d.dhcp)
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, d.gossip, d.ap, d.dhcp)
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -561,6 +562,17 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	}
 	st.GNSS = gnssStatus(d.gnss, time.Now())
 	st.MeshChange = d.meshChangeStatus()
+	for i := range 1 + len(st.MoreLinks) {
+		ml := &st.MeshLink
+		if i > 0 {
+			ml = &st.MoreLinks[i-1]
+		}
+		l := d.linkLoad(i + 1)
+		if ml.Interface == "" {
+			l = linkLoad{busy: -1}
+		}
+		ml.ChannelBusyPct, ml.NoiseDBm = l.busy, l.noise
+	}
 	if st.Gateway.Candidates == nil {
 		st.Gateway.Candidates = []status.GatewayCandidate{}
 	}

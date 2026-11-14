@@ -61,7 +61,7 @@ type Record struct {
 	// them with their own: two nodes whose profiles differ on a link meet
 	// badly or not at all on it. Absent from older versions.
 	Links []string `json:"lk,omitempty"`
-	// Time says whether the node serves time to the mesh (roadmap G1):
+	// Time says whether the node serves time to the mesh:
 	// TimeGNSS when its clock follows its own GNSS receiver, TimeServer
 	// when it serves time from another source; empty when it does not
 	// serve (no chrony, or an older version).
@@ -75,6 +75,10 @@ type Record struct {
 	// "country:US". A mesh-wide change that alters it on another node says
 	// so before it is sent.
 	Regulatory string `json:"rg,omitempty"`
+	// Load is how busy each mesh link's channel is where this node is, in
+	// percent, in the profile's order; -1 for a link it has no radio on or
+	// whose driver does not measure it.
+	Load []int `json:"ld,omitempty"`
 }
 
 // RegulatoryEntry is a profile's regulatory setting as a Regulatory value.
@@ -229,6 +233,14 @@ func (r *Record) validate() error {
 	if r.Time != "" && r.Time != TimeGNSS && r.Time != TimeServer {
 		return fmt.Errorf("time %q is not %s or %s", r.Time, TimeGNSS, TimeServer)
 	}
+	if len(r.Load) > MaxLinkEntries {
+		return fmt.Errorf("%d loads listed, over the limit of %d", len(r.Load), MaxLinkEntries)
+	}
+	for _, l := range r.Load {
+		if l < -1 || l > 100 {
+			return fmt.Errorf("channel load %d out of range", l)
+		}
+	}
 	if len(r.Links) > MaxLinkEntries {
 		return fmt.Errorf("%d links listed, over the limit of %d", len(r.Links), MaxLinkEntries)
 	}
@@ -267,6 +279,8 @@ func Same(a, b *Record) bool {
 	}
 	x, y := *a, *b
 	x.Seq, y.Seq = 0, 0
+	// Channel load changes with every sample: it rides on the refresh.
+	x.Load, y.Load = nil, nil
 	if x.GW != nil {
 		g := *x.GW
 		g.RTTms, g.LossPct = 0, 0

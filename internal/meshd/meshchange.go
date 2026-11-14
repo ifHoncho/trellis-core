@@ -20,8 +20,8 @@ import (
 	"meridian/trellis/internal/status"
 )
 
-// Mesh-wide profile changes (roadmap "mesh-wide changes from one node";
-// track C's C2 and M8's re-key build on it). The operator changes the
+// Mesh-wide profile changes (later
+// channel moves and re-keying build on it). The operator changes the
 // profile on one node, which sends it to every node it knows, unicast on the
 // gossip port, authenticated under the mesh's gossip key, with the moment
 // they all switch to it. Each node keeps the change (on disk, so a restart

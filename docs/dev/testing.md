@@ -179,6 +179,16 @@ Notes:
 - What the lab can't show: the systemd units themselves (`DynamicUser`,
   the socket unit), and a browser. Both need real nodes.
 
+### Mesh-wide profile changes (P1–P2)
+
+Each node first gets its own copy of the lab profile (otherwise the first
+node to switch would write the shared file for all of them).
+
+| Test | Pass |
+|---|---|
+| P1 | Node 1 sends revision 1 (`batman.orig_interval_ms` 500 → 600) to switch in 15 s: every other node (node 9 from W5 included, when it is up) has it before the switch, and all switch to revision 1 with 600 within 3 s of each other |
+| P2 | Node 3 is stopped; node 2 sends revision 2 (back to 500). Nodes 1 and 2 switch; node 3, started again on revision 1, asks another node for revision 2 and switches to it |
+
 ### Auto port role (T9)
 
 Node 3 has `eth3` with role `auto`, absent at first. The test plugs things

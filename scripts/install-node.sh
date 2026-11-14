@@ -34,7 +34,7 @@ if command -v apt-get >/dev/null 2>&1; then
     # system-wide DNS server on port 53 that blocks Trellis's own.
     apt-get install -y --no-install-recommends wpasupplicant iw batctl hostapd dnsmasq-base nftables >/dev/null
   fi
-  # Mesh time (roadmap G1): chrony takes GNSS time from gpsd where a node
+  # Mesh time: chrony takes GNSS time from gpsd where a node
   # has a receiver and serves it to the mesh. It replaces systemd-timesyncd,
   # which can neither serve time nor use GNSS.
   if ! PATH="$PATH:/usr/sbin:/sbin" command -v chronyd >/dev/null 2>&1; then

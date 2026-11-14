@@ -1203,6 +1203,19 @@ Validation-first keeps a bad config from ever reaching a running node.
 ## 13. Integrations
 
 - **TAK Server on a node.** Published as `tak.mesh` through gossip.
+- **Channel load and surveys.** Each node samples how busy each mesh
+  link's channel is where it is (the driver's survey counters, every 10 s;
+  free on the air) and carries it in gossip, so every node shows each
+  link's load everywhere. On request, a mesh-wide survey: every node scans
+  the band of each of its links once, passively, and answers with each
+  channel's busy time and the other networks heard; the asking node judges
+  every candidate channel by the worst node (interference is local), never
+  suggests a radar channel, considers only 1, 6 and 11 on 2.4 GHz, and
+  suggests a move only when the current channel is clearly busy and
+  another clearly better. A move is a mesh-wide profile change (§12.6).
+  Drivers differ: mt76 reports busy times (the MT7610U's are unusable on
+  5 GHz during a scan, and are dropped), ath9k_htc and rt2800usb none, so
+  their nodes count networks heard only.
 - **Time.** chrony on every node (`packaging/chrony/trellis.conf`). A node
   with a GNSS receiver takes its time from gpsd (the receiver's messages, or
   its pulse per second where the board wires it) and serves it to the mesh.

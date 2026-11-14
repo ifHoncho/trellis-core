@@ -293,3 +293,12 @@ func TestRecordLinks(t *testing.T) {
 		}
 	}
 }
+
+// Channel load is a live figure: a change in it alone is not news to send.
+func TestSameIgnoresLoad(t *testing.T) {
+	a, b := rec("ea:67:61:6f:bc:8b", 7, 1), rec("ea:67:61:6f:bc:8b", 7, 1)
+	a.Load, b.Load = []int{31, 2}, []int{12, 4}
+	if !Same(a, b) {
+		t.Error("records that differ only in channel load compare as different")
+	}
+}

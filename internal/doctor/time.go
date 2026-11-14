@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// checkTime looks at mesh time (roadmap G1): chrony, and a GNSS receiver
+// checkTime looks at mesh time: chrony, and a GNSS receiver
 // that shares its serial port with the kernel console. On such a port the
 // receiver's sentences reach the console and its login prompt, and a
 // serial BREAK followed by a "b" reboots the node (Magic SysRq).

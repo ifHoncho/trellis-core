@@ -23,7 +23,10 @@ Steps, run in order:
   type:CSS=>TEXT    type into it
   js:SCRIPT         run a script and print what it returns
 
-JavaScript errors seen while the steps ran are printed at the end.
+JavaScript errors seen while the steps ran are printed at the end. A UI
+that does not start (a module that fails to load: a syntax error, a bad
+import) is reported before any step runs, with the module's error. Either
+way the exit status is 1.
 
   tools/uishot.py --theme night go:#/mesh wait:5 shot:mesh-night
   tools/uishot.py --size 500x900 go:#/devices wait:2 full:phone-devices
@@ -114,6 +117,7 @@ def main():
             if ok != 200: print('login status', ok)
         ff.cmd('WebDriver:Navigate', {'url': base + '/'})
         time.sleep(1.2)
+        failed = not started(ff)
         ff.js("window.__errs = []; window.addEventListener('error', e => window.__errs.push(String(e.message) + ' @' + (e.filename||'').split('/').pop() + ':' + e.lineno)); window.addEventListener('unhandledrejection', e => window.__errs.push('rejection: ' + (e.reason && e.reason.stack || e.reason)));")
         for step in a:
             kind, _, arg = step.partition(':')
@@ -127,9 +131,26 @@ def main():
             elif kind == 'type':
                 css, _, text = arg.partition('=>')
                 ff.cmd('WebDriver:ElementSendKeys', {'id': ff.find(css), 'text': text}); time.sleep(0.2)
-        print('errors', json.dumps(ff.js('return window.__errs || []')))
+        errs = ff.js('return window.__errs || []')
+        print('errors', json.dumps(errs))
         vp = ff.js("return [innerWidth, innerHeight, devicePixelRatio]")
         print('viewport', vp)
+        failed = failed or bool(errs)
     finally:
         ff.close()
+    sys.exit(1 if failed else 0)
+
+def started(ff, wait=6.0):
+    """Whether the UI replaced its boot screen. A module that fails to load
+    leaves the boot screen up and reports nothing to an error listener
+    added afterwards; importing app.js again gives its error."""
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if not ff.js("return !!document.querySelector('#app .boot')"):
+            return True
+        time.sleep(0.25)
+    why = ff.ajs("const done = arguments[arguments.length-1]; import('/js/app.js').then(() => done('app.js loaded, but the UI did not start'), e => done(String(e) + (e.fileName ? ' @' + e.fileName.split('/').pop() + ':' + e.lineNumber : '')))")
+    print('UI DID NOT START:', why)
+    return False
+
 main()

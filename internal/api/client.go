@@ -190,6 +190,24 @@ func (c *Client) SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun
 	return &out, nil
 }
 
+// Survey fetches the last mesh-wide channel survey (nil before the first).
+func (c *Client) Survey(ctx context.Context) (*status.Survey, error) {
+	var out *status.Survey
+	if err := c.do(ctx, http.MethodGet, "/survey", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// StartSurvey begins a mesh-wide channel survey.
+func (c *Client) StartSurvey(ctx context.Context) (*status.Survey, error) {
+	var out status.Survey
+	if err := c.do(ctx, http.MethodPost, "/survey", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SetProfile installs a mesh profile.
 func (c *Client) SetProfile(ctx context.Context, in ProfileInput) (*ApplyResult, error) {
 	var out ApplyResult

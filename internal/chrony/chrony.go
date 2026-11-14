@@ -1,5 +1,5 @@
 // Package chrony reads chronyd's state through chronyc and keeps the list
-// of the mesh's time servers it follows (roadmap G1). Trellis installs
+// of the mesh's time servers it follows. Trellis installs
 // chrony on every node: a node with GNSS takes its time from gpsd and serves
 // it, the others follow the nodes that serve it, and with no GNSS and no
 // internet the nodes still agree among themselves (orphan mode). The static

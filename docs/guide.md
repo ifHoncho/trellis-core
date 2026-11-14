@@ -91,7 +91,7 @@ they don't resolve.
 | Radios | Every radio, what it can do, and which job it has |
 | Multicast | Whether multicast takes the efficient path, and why not |
 | Alerts | Everything the node wants you to know, most serious first |
-| Settings | Node, Wi-Fi, internet, ports, mesh profile, access, system |
+| Settings | Node, Wi-Fi, internet, ports, mesh profile, channels, access, system |
 
 Every change is checked first: when it would interrupt something (a link,
 the Wi-Fi, your own connection), the page says what before it is applied.
@@ -114,6 +114,13 @@ the links they share.
   use first.
 - On the **Radios** page you can pin a link to a radio, turn a link off on
   this node, or ignore a radio. "Automatic" lets the node decide.
+
+**Busy channels.** Settings → Channels shows, for each link, how busy its
+channel is at every node right now, and after a survey, how busy every
+channel of the band was at the busiest node. **Survey channels** has every
+node listen across its links' bands for a few seconds. When a channel is
+clearly better, one button moves the link there on every node, as a
+mesh-wide change.
 
 Higher bands are faster but reach less far, and a link only works if both
 ends hear each other well enough. When a link is established but cannot

@@ -149,12 +149,18 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		Addr: addr, Version: d.opts.Version, Boot: g.boot, GW: gw, Orig: orig, Radios: d.meshRadioEntries(),
 		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, MeshChange: true,
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
+		Load:       d.gossipLoads(len(d.profile.AllLinks())),
 	}
 	if d.time != nil {
 		r.Time = d.time.Role()
 	}
 	g.mu.Lock()
 	changed := !gossip.Same(g.record, r)
+	if !changed && g.record != nil {
+		// Only live figures moved (channel load, the WAN's RTT and loss):
+		// not sent now, but the refresh sends this record, not the old one.
+		g.record = r
+	}
 	g.mu.Unlock()
 	if changed {
 		if err := g.send(r); err != nil {
@@ -306,7 +312,7 @@ func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
 		// Link queries and their answers (topology.go), and mesh-wide
 		// profile changes (meshchange.go), share the socket.
 		switch kind := gossip.Kind(buf[:n]); kind {
-		case gossip.QueryMagic, gossip.LinksMagic, gossip.OfferMagic, gossip.AckMagic, gossip.RequestMagic:
+		case gossip.QueryMagic, gossip.LinksMagic, gossip.OfferMagic, gossip.AckMagic, gossip.RequestMagic, gossip.SurveyQueryMagic, gossip.SurveyReplyMagic:
 			var err error
 			switch kind {
 			case gossip.QueryMagic:
@@ -319,6 +325,10 @@ func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
 				err = g.d.handleProfileAck(key, buf[:n])
 			case gossip.RequestMagic:
 				err = g.d.handleProfileRequest(key, buf[:n], from)
+			case gossip.SurveyQueryMagic:
+				err = g.d.handleSurveyQuery(key, buf[:n], from)
+			case gossip.SurveyReplyMagic:
+				err = g.d.handleSurveyReply(key, buf[:n])
 			}
 			if err != nil {
 				g.mu.Lock()
@@ -457,6 +467,7 @@ func (d *Daemon) meshNodes() []status.MeshNode {
 		for _, e := range r.Radios {
 			n.MeshRadios = append(n.MeshRadios, gossip.RadioBands(e))
 		}
+		n.ChannelBusy = r.Load
 		out = append(out, n)
 	}
 	return out

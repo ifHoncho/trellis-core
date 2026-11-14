@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Radio roles over virtual radios: mac80211_hwsim radios created and removed
 # on demand (lab/hwsimctl.py) in one node's namespace, with meshd assigning
-# roles (architecture §5.2; roadmap M1, the "Lab (hwsim)" criteria). Root
+# roles (architecture §5.2). Root
 # only.
 #
 #   sudo lab/hwsim-roles.sh

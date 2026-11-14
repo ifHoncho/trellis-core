@@ -24,7 +24,7 @@ type Status struct {
 	AP        AP           `json:"ap"`
 	ClientNet ClientNet    `json:"client_network"`
 	Gateway   GatewayState `json:"gateway"`
-	// Clock is how this node keeps time, and GNSS its receiver (roadmap G1).
+	// Clock is how this node keeps time, and GNSS its receiver.
 	Clock Clock `json:"clock"`
 	GNSS  GNSS  `json:"gnss"`
 	// MeshChange is a mesh-wide profile change on its way, or the last one
@@ -148,6 +148,11 @@ type MeshLink struct {
 	WidthMHz int    `json:"width_mhz,omitempty"`
 	// FreqMHz is 0 until the mesh has started on the link.
 	FreqMHz float64 `json:"freq_mhz,omitempty"`
+	// ChannelBusyPct is how busy the channel is where this node is, over
+	// the last few seconds, in percent; -1 when the driver does not say.
+	// NoiseDBm is its noise floor, 0 when unknown.
+	ChannelBusyPct int `json:"channel_busy_pct"`
+	NoiseDBm       int `json:"noise_dbm,omitempty"`
 	// RunningWidthMHz is the width the interface runs at once the mesh has
 	// started (Wi-Fi links): wpa_supplicant, the radio or the regulatory
 	// domain may narrow WidthMHz, and a warning says so.
@@ -490,10 +495,13 @@ type MeshNode struct {
 	// carry a mesh link, as the node reports them: [["2g","5g"],["s1g"]].
 	// Absent for a node whose version does not report it.
 	MeshRadios [][]string `json:"mesh_radios,omitempty"`
-	Gateway    bool       `json:"gateway"`     // announces a WAN
-	WANHealthy bool       `json:"wan_healthy"` // and it is healthy
-	HeardAgoMS int64      `json:"heard_ago_ms"`
-	IDConflict bool       `json:"id_conflict,omitempty"`
+	// ChannelBusy is how busy each mesh link's channel is where that node
+	// is, in percent, in the profile's order; -1 unknown.
+	ChannelBusy []int `json:"channel_busy,omitempty"`
+	Gateway     bool  `json:"gateway"`     // announces a WAN
+	WANHealthy  bool  `json:"wan_healthy"` // and it is healthy
+	HeardAgoMS  int64 `json:"heard_ago_ms"`
+	IDConflict  bool  `json:"id_conflict,omitempty"`
 }
 
 // GatewayState is this node's gateway role and its choice of gateway
@@ -646,4 +654,66 @@ type MeshChange struct {
 type MeshChangeNode struct {
 	Callsign string `json:"callsign"`
 	State    string `json:"state"`
+}
+
+// Survey is a mesh-wide channel survey: every node scanned the
+// bands of its mesh links once, and the node that asked judged each link's
+// channels.
+type Survey struct {
+	Started time.Time `json:"started"`
+	// Done: every node answered, or the time to answer ran out.
+	Done        bool                `json:"done"`
+	Nodes       []SurveyNode        `json:"nodes"`
+	Suggestions []ChannelSuggestion `json:"suggestions"`
+}
+
+// SurveyNode is one node's survey.
+type SurveyNode struct {
+	Callsign string `json:"callsign"`
+	// State: "asked", "answered", "no answer", or "failed: why".
+	State string       `json:"state"`
+	Links []SurveyLink `json:"links,omitempty"`
+}
+
+// SurveyLink is one mesh link's band as a node surveyed it.
+type SurveyLink struct {
+	Link     int             `json:"link"` // from 1, in the profile's order
+	Band     string          `json:"band"`
+	Channels []SurveyChannel `json:"channels"`
+	Error    string          `json:"error,omitempty"`
+}
+
+// SurveyChannel is one channel as one node found it.
+type SurveyChannel struct {
+	Ch int `json:"ch"`
+	// Busy in percent; -1 when the driver does not measure it.
+	Busy      int `json:"busy"`
+	Noise     int `json:"noise,omitempty"` // dBm
+	Nets      int `json:"nets,omitempty"`  // other networks heard
+	Strongest int `json:"strongest,omitempty"`
+}
+
+// ChannelSuggestion judges one link's channels across the mesh.
+type ChannelSuggestion struct {
+	Link  int    `json:"link"`
+	Name  string `json:"name"` // the link as it runs: "5 GHz · ch 149"
+	Width int    `json:"width"`
+	// Current is the link's channel; Best a clearly better one, when there
+	// is one; Ranked the clearest first, radar channels included (marked).
+	Current *ChannelScore  `json:"current,omitempty"`
+	Best    *ChannelScore  `json:"best,omitempty"`
+	Ranked  []ChannelScore `json:"ranked,omitempty"`
+	Note    string         `json:"note"`
+}
+
+// ChannelScore is one candidate channel, judged by the worst node: lower
+// is clearer.
+type ChannelScore struct {
+	Ch        int     `json:"ch"`
+	Score     float64 `json:"score"`
+	WorstBusy int     `json:"worst_busy"` // percent; -1 unknown
+	WorstNode string  `json:"worst_node,omitempty"`
+	Nets      int     `json:"nets"`
+	Strongest int     `json:"strongest,omitempty"`
+	DFS       bool    `json:"dfs"`
 }

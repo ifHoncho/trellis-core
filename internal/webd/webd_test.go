@@ -57,6 +57,10 @@ func (n *node) ProfileExport() (*api.ProfileExport, error) {
 func (n *node) SetProfile(ctx context.Context, in api.ProfileInput, dry bool) (*api.ApplyResult, error) {
 	return &api.ApplyResult{}, nil
 }
+func (n *node) Survey() *status.Survey { return nil }
+func (n *node) StartSurvey(ctx context.Context) (*status.Survey, error) {
+	return &status.Survey{}, nil
+}
 func (n *node) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dry bool) (*api.ApplyResult, error) {
 	return &api.ApplyResult{}, nil
 }

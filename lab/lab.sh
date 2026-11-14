@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Trellis lab harness: N nodes in network namespaces, joined by veth pairs
 # through an "air" bridge, each running a real meshd with batman-adv over a
-# wired mesh port. No radios needed (roadmap M0).
+# wired mesh port. No radios needed.
 #
 #   lab/lab.sh [-n NODES] [--keep] [--verbose]
 #   lab/lab.sh --scale [-n NODES]   scale lab (default 50 nodes): derived node
@@ -164,7 +164,7 @@ start_node() {
 schema: 0
 callsign: lab-node-$i
 node_id: $([ "$SCALE" = 1 ] && echo 0 || echo "$i")
-profile: $RUN/profile.yaml
+profile: $([ -f "$RUN/node$i/profile.yaml" ] && echo "$RUN/node$i/profile.yaml" || echo "$RUN/profile.yaml")
 radios:
   roles: {mesh: disabled, ap: disabled}
 ports:
@@ -1230,6 +1230,82 @@ print(json.dumps(n))" 2>/dev/null)
   else
     fail "W5 setup through the web API" "lease: $(echo "$lease" | tr '\n' ' '); before: $s0; $(echo "$r" | grep -v '^cookie=' | tail -6 | cut -c1-200 | tr '\n' ';') after: $s1; port change: $put; node 1 sees: $seen; $left (logs: $RUN/node9.log, $RUN/webd9.log)"
   fi
+fi
+
+# ---------------------------------------------------------------- mesh-wide profile changes
+# P: a profile changed on one node goes to every node, and all switch at
+# the same moment; a node that was away catches up on return. Every node
+# gets its own copy of the profile first: with the one shared file, the
+# first node to switch would write it for all of them.
+if [ "$NODES" -ge 3 ]; then
+  for i in $(seq 1 "$NODES"); do
+    cp "$RUN/profile.yaml" "$RUN/node$i/profile.yaml"
+    sed -i "s|^profile: .*|profile: $RUN/node$i/profile.yaml|" "$RUN/node$i/node.yaml"
+    ctl "$i" reload >/dev/null 2>&1
+  done
+  wait_converged 40 >/dev/null
+  rev() { sed -n 's/^revision: //p' "$RUN/node$1/profile.yaml"; }
+  orig() { sed -n 's/^ *orig_interval_ms: //p' "$RUN/node$1/profile.yaml" | head -1; }
+  # Every node must know every other node (and that it follows changes)
+  # before node 1 can address them all. Node 9 from W5 may be on the mesh
+  # too, and is sent the change like any other.
+  for _ in $(seq 1 30); do
+    known=$(jsonq 1 "len(s['nodes'])")
+    [ "${known:-0}" -ge "$((NODES-1))" ] && break; sleep 1
+  done
+  push() { # push <from node> <orig_interval_ms> <seconds>
+    # From the node's own profile file (meshctl profile show reads
+    # /etc/trellis, which the lab does not use).
+    sed "s/orig_interval_ms: [0-9]*/orig_interval_ms: $2/" "$RUN/node$1/profile.yaml" > "$RUN/push.yaml"
+    ctl "$1" profile push --in "$3" --yes "$RUN/push.yaml" 2>&1 | tail -1
+  }
+  out=$(push 1 600 15)
+  acked="" targets=""
+  for _ in $(seq 1 12); do
+    acked=$(jsonq 1 "sum(1 for n in (s.get('mesh_change') or {}).get('nodes') or [] if n['state']=='has it')")
+    targets=$(jsonq 1 "len((s.get('mesh_change') or {}).get('nodes') or [])")
+    [ "${targets:-0}" -ge "$((NODES-1))" ] && [ "$acked" = "$targets" ] && break; sleep 1
+  done
+  # Watch every node's profile file, noting when each switched: they must
+  # switch together (within one reconcile interval and a little).
+  declare -A switched=()
+  ok=1; got=""
+  for _ in $(seq 1 160); do
+    ok=1; got=""
+    for i in $(seq 1 "$NODES"); do
+      got="$got node$i=rev$(rev "$i")/$(orig "$i")"
+      if [ "$(rev "$i")" = 1 ] && [ "$(orig "$i")" = 600 ]; then
+        [ -n "${switched[$i]:-}" ] || switched[$i]=$(date +%s%3N)
+      else
+        ok=0
+      fi
+    done
+    [ "$ok" = 1 ] && break; sleep 0.25
+  done
+  spread=$(printf '%s\n' "${switched[@]}" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print ($2-$1)/1000}')
+  if [ "$ok" = 1 ] && [ "${targets:-0}" -ge "$((NODES-1))" ] && [ "$acked" = "$targets" ] && awk "BEGIN{exit !($spread <= 3)}"; then
+    pass "P1 node 1 sent revision 1 (orig_interval_ms 600) to every node; all $targets others had it before the switch, and the $NODES nodes switched within ${spread} s of each other"
+  else
+    fail "P1 mesh-wide change" "push: $out; nodes with it before the switch: $acked of ${targets:-0} sent to (at least $((NODES-1)) expected); after:$got; switch spread ${spread:-?} s (3 allowed)"
+  fi
+
+  # P2: node 3 is away for revision 2 (sent from node 2), and takes it from
+  # another node when it returns.
+  kill "$(cat "$RUN/node3/pid")"
+  for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+  out=$(push 2 500 15)
+  for _ in $(seq 1 30); do [ "$(rev 1)" = 2 ] && [ "$(rev 2)" = 2 ] && break; sleep 1; done
+  before3="rev$(rev 3)"
+  start_node 3
+  for _ in $(seq 1 90); do [ "$(rev 3)" = 2 ] && break; sleep 1; done
+  asked=$(grep -c 'another node runs a newer mesh profile' "$RUN/node3.log")
+  if [ "$(rev 1)" = 2 ] && [ "$(rev 2)" = 2 ] && [ "$before3" = rev1 ] && [ "$(rev 3)" = 2 ] && [ "$(orig 3)" = 500 ]; then
+    pass "P2 node 3, stopped while node 2 sent revision 2, asked for it on return and switched (from $before3; asked $asked times)"
+  else
+    fail "P2 catch-up after missing a change" "push: $out; node1=rev$(rev 1) node2=rev$(rev 2); node 3 before: $before3, after: rev$(rev 3)/$(orig 3) (see $RUN/node3.log)"
+  fi
+else
+  skip "P mesh-wide profile changes" "needs 3 nodes or more"
 fi
 
 # T6: hwsim radio tests need root and mac80211_hwsim.

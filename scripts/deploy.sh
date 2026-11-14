@@ -135,6 +135,13 @@ if [ -z "${TRELLIS_SSH_JUMP:-}" ] && [ ${#MESH[@]} -gt 0 ]; then
     } > "$PROXY"
     chmod +x "$PROXY"
     SSH_OPTS+=(-o "ProxyCommand=$PROXY %h %p")
+    # Nodes reached over the mesh go first: updating the others restarts
+    # their meshd, and with it the mesh the path runs over.
+    first=() rest=()
+    for h in "${HOSTS[@]}"; do
+      if [ -n "${VIA[${h#*@}]:-}" ]; then first+=("$h"); else rest+=("$h"); fi
+    done
+    HOSTS=("${first[@]}" "${rest[@]}")
   fi
 fi
 # rsync takes its ssh command as one string. The options above survive that

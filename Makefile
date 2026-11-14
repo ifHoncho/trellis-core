@@ -73,6 +73,7 @@ gen:
 	  --enum nl80211_rate_info --enum nl80211_mpath_info --enum nl80211_feature_flags \
 	  --enum nl80211_ext_feature_index --enum nl80211_band_iftype_attr --enum nl80211_user_reg_hint_type \
 	  --enum nl80211_mntr_flags --enum nl80211_plink_state --enum nl80211_mesh_power_mode \
+	  --enum nl80211_survey_info --enum nl80211_bss \
 	  > internal/nl80211/consts_gen.go
 	gofmt -w internal/batadv/consts_gen.go internal/nl80211/consts_gen.go
 

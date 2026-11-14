@@ -54,3 +54,31 @@ func TestProfileMessages(t *testing.T) {
 		t.Errorf("an ack opened as a request: %v", err)
 	}
 }
+
+func TestSurveyMessages(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	r := &SurveyReply{V: 1, MAC: "02:00:00:00:00:02", Callsign: "node-2", Nonce: 9}
+	l := SurveyLink{Link: 2, Band: "5g"}
+	for ch := 36; ch <= 165; ch += 4 {
+		l.Channels = append(l.Channels, SurveyCh{Ch: ch, Busy: ch % 40, Noise: -92, Nets: ch % 3, Strongest: -60})
+	}
+	r.Links = append(r.Links, l, SurveyLink{Link: 1, Band: "2g", Err: "scan refused: device busy"})
+	pkt, err := SealSurveyReply(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := OpenSurveyReply(k, pkt)
+	if err != nil || got.Nonce != 9 || len(got.Links) != 2 || len(got.Links[0].Channels) != len(l.Channels) || got.Links[1].Err == "" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	bad := *r
+	bad.Links = []SurveyLink{{Link: 1, Band: "5g", Channels: []SurveyCh{{Ch: 36, Busy: 140}}}}
+	pkt, _ = SealSurveyReply(k, &bad)
+	if _, err := OpenSurveyReply(k, pkt); !errors.Is(err, ErrInvalid) {
+		t.Errorf("busy 140%% accepted: %v", err)
+	}
+	q, _ := SealMessage(k, SurveyQueryMagic, &SurveyQuery{V: 1, MAC: "02:00:00:00:00:01", Nonce: 9})
+	if got, err := OpenSurveyQuery(k, q); err != nil || got.Nonce != 9 || Kind(q) != SurveyQueryMagic {
+		t.Errorf("query: %+v %v", got, err)
+	}
+}

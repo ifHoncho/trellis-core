@@ -5,11 +5,12 @@ import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill } from '../ui.js';
 import { bandName, since, duration, count, plural, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
 import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
+import { channelsSection } from './channels.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
   ['node', 'Node'], ['wifi', 'Wi-Fi'], ['internet', 'Internet'], ['ports', 'Ports'],
-  ['profile', 'Mesh profile'], ['access', 'Access'], ['system', 'System'],
+  ['profile', 'Mesh profile'], ['channels', 'Channels'], ['access', 'Access'], ['system', 'System'],
 ];
 const err = (name) => cfg().fields[name];
 const input = (obj, key, attrs = {}) => h('input.input', {
@@ -277,7 +278,7 @@ function accessSection(d, st) {
   ];
 }
 
-// timePanel: how the node keeps time, and its GNSS receiver (roadmap G1).
+// timePanel: how the node keeps time, and its GNSS receiver.
 function timePanel(st) {
   const c = st.clock || {}, g = st.gnss || {};
   const clock = c.service !== 'chrony'
@@ -351,6 +352,6 @@ export function settings() {
   if (!c.draft || !state.config) {
     return h('div.page', head, tabs, h('div.empty', c.error ? ['Could not load the configuration: ', c.error, ' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); c.error = null; loadConfig(); } }, 'Try again')] : 'Loading the configuration…'));
   }
-  const body = { node: nodeSection, wifi: wifiSection, internet: internetSection, ports: portsSection, profile: profileSection, access: accessSection, system: systemSection }[sec](c.draft, st);
+  const body = { node: nodeSection, wifi: wifiSection, internet: internetSection, ports: portsSection, profile: profileSection, channels: (d, st) => channelsSection(st), access: accessSection, system: systemSection }[sec](c.draft, st);
   return h('div.page', head, tabs, h('div', { key: sec, style: { display: 'flex', flexDirection: 'column', gap: 'var(--gap)' } }, body), saveBar());
 }

@@ -29,6 +29,14 @@ runs and is tested, not a layer of half-built parts.
 - **Regulatory modes.** Country rules, or unrestricted operation for
   operators with their own frequency authorization, on stock distribution
   kernels.
+- **Mesh-wide changes from one node.** Change the mesh's links, channels or
+  regulatory mode once; every node switches at the same moment, and a node
+  that was away catches up when it returns.
+- **Mesh time.** Nodes keep one clock without internet, from a node's GNSS
+  receiver where there is one.
+- **Channel survey.** How busy each link's channel is at every node, and a
+  survey that ranks each link's channels across the mesh and moves a link
+  to a clearer one in one step.
 
 ## In progress
 
@@ -43,8 +51,6 @@ runs and is tested, not a layer of half-built parts.
   upgrades that keep a node's identity and roll back on failure.
 - **Security hardening:** a threat model, re-keying a whole mesh without
   touching each node, fuzz testing of everything that parses input.
-- **Mesh-wide changes from one node:** change the mesh's profile once and
-  have every node follow.
 
 ## Later
 
@@ -57,9 +63,8 @@ runs and is tested, not a layer of half-built parts.
   quality, the state of your own node at a glance, and position reporting
   that adapts to how busy the mesh is. ATAK keeps working fully without
   it.
-- **Channel management:** a survey of how busy each channel is at every
-  node, and mesh links that move to a clearer channel together when
-  theirs stays congested.
+- **Automatic channel selection:** mesh links that move to a clearer
+  channel together on their own when theirs stays congested.
 - Push-to-talk voice.
 - Linking sites over the internet.
 - IPv6 for clients.

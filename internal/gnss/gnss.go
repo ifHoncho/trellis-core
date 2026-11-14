@@ -1,4 +1,4 @@
-// Package gnss follows a GNSS receiver through gpsd (roadmap track G): its
+// Package gnss follows a GNSS receiver through gpsd: its
 // fix, position, accuracy, satellites and PPS. gpsd owns the receiver;
 // this is a reader of its JSON stream (port 2947), so any receiver gpsd
 // supports works, on any port. Without gpsd there is simply no receiver.

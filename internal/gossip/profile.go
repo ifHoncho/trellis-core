@@ -29,7 +29,7 @@ type Offer struct {
 	Callsign string `json:"cs"`
 	Rev      uint64 `json:"rev"`
 	// ApplyAtMS is when every node switches to it, in Unix milliseconds
-	// (the nodes keep one time, roadmap G1); 0: at once (an answer to a
+	// (the nodes keep one time); 0: at once (an answer to a
 	// Request, for a change that has happened already).
 	ApplyAtMS int64 `json:"at,omitempty"`
 	// Profile is the profile's YAML, the mesh secret included: offers

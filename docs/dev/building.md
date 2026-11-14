@@ -115,8 +115,15 @@ To work on the UI itself without a mesh: `make ui-dev` (made-up data on
 `http://127.0.0.1:8480`, password `trellis-demo`; `make ui-dev SETUP=1` for
 the setup wizard, `LINKS=2` for a node with a HaLow radio and a second mesh
 link, `LINKS=3` for a third link on 2.4 GHz, `BARE=1` for a
-node with no per-radio rules, as freshly installed). The UI's files are in `internal/webd/ui/` and are built
-into the binary, so run it again after editing them.
+node with no per-radio rules, as freshly installed, `ONE_RADIO=1` for a node
+with one dual-band adapter). The UI's files are in `internal/webd/ui/` and
+are built into the binary, so run it again after editing them.
+
+`tools/uishot.py` drives a headless Firefox against it and saves
+screenshots (`tools/uishot.py go:#/mesh wait:3 shot:mesh`). It reports a UI
+that does not start (a module that fails to load, with the module's error)
+and any JavaScript error seen while its steps ran, and then exits 1, so it
+can check a change as well as picture it.
 
 ### Bringing up a new node
 

@@ -37,6 +37,10 @@ type Provider interface {
 	ProfileExport() (*ProfileExport, error)
 	SetProfile(ctx context.Context, in ProfileInput, dryRun bool) (*ApplyResult, error)
 	SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun bool) (*ApplyResult, error)
+	// Survey is the last mesh-wide channel survey (nil before the first);
+	// StartSurvey begins one, or returns the one under way.
+	Survey() *status.Survey
+	StartSurvey(ctx context.Context) (*status.Survey, error)
 	Setup(ctx context.Context, in SetupInput, dryRun bool) (*ApplyResult, error)
 
 	Topology(ctx context.Context) (*status.Topology, error)
@@ -120,6 +124,10 @@ func (s *Server) Handler() http.Handler {
 	get("/ap", func(r *http.Request) (any, error) { return p.APJoin() })
 	get("/topology", func(r *http.Request) (any, error) { return p.Topology(r.Context()) })
 	get("/profile/export", func(r *http.Request) (any, error) { return p.ProfileExport() })
+	get("/survey", func(r *http.Request) (any, error) { return p.Survey(), nil })
+	mux.HandleFunc("POST /"+Version+"/survey", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, func(r *http.Request) (any, error) { return p.StartSurvey(r.Context()) }, r)
+	})
 	get("/doctor", func(r *http.Request) (any, error) {
 		text, err := p.Doctor(r.Context())
 		if err != nil {

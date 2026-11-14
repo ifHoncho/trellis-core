@@ -53,6 +53,8 @@ Commands:
   profile band 2g|5g|6g [--channel N] [--width MHz] [FILE]
                                  switch a profile file to another band (default file: mesh-profile.yaml)
   profile install [FILE|-]       validate a profile, install it on this node and apply it live
+  survey [--start]               the last mesh-wide channel survey; --start runs one (each radio
+                                 leaves its channel briefly) and waits for the answers
   profile push [--in S] [--yes] FILE
                                  send a profile to every node: all switch to it in S seconds (default 60);
                                  without --yes, only show what it would do
@@ -95,6 +97,8 @@ Commands:
 		err = cmdConfig(rest[1:], stdout)
 	case "profile":
 		err = cmdProfile(ctx, client, rest[1:], stdout)
+	case "survey":
+		err = cmdSurvey(ctx, client, rest[1:], stdout)
 	case "node":
 		err = cmdNode(rest[1:], stdout)
 	case "ap":
@@ -1501,4 +1505,79 @@ func meshChangeLine(mc *status.MeshChange, now time.Time) string {
 		line += "; " + strings.Join(nodes, ", ")
 	}
 	return line
+}
+
+// cmdSurvey shows the last mesh-wide channel survey, or runs one.
+func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("survey", flag.ContinueOnError)
+	start := fs.Bool("start", false, "run a survey now and wait for the nodes to answer")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var sv *status.Survey
+	var err error
+	if *start {
+		if sv, err = client.StartSurvey(ctx); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "surveying: every node scans the band of each of its links once…")
+		for !sv.Done {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+			if sv, err = client.Survey(ctx); err != nil {
+				return err
+			}
+		}
+	} else if sv, err = client.Survey(ctx); err != nil {
+		return err
+	}
+	if sv == nil {
+		fmt.Fprintln(stdout, "no survey yet: meshctl survey --start runs one")
+		return nil
+	}
+	answered := 0
+	var missing []string
+	for _, n := range sv.Nodes {
+		if n.State == "answered" {
+			answered++
+		} else {
+			missing = append(missing, n.Callsign+" "+n.State)
+		}
+	}
+	fmt.Fprintf(stdout, "survey of %s: %d of %d nodes answered", sv.Started.Local().Format("15:04:05"), answered, len(sv.Nodes))
+	if len(missing) > 0 {
+		fmt.Fprintf(stdout, " (%s)", strings.Join(missing, ", "))
+	}
+	fmt.Fprintln(stdout)
+	for _, s := range sv.Suggestions {
+		fmt.Fprintf(stdout, "\n%s at %d MHz: %s\n", s.Name, s.Width, s.Note)
+		if len(s.Ranked) == 0 {
+			continue
+		}
+		tw := tabwriter.NewWriter(stdout, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "  CHANNEL\tBUSY AT WORST\tAT\tOTHER NETWORKS\t")
+		rows := s.Ranked
+		if s.Current != nil && !slices.ContainsFunc(rows, func(r status.ChannelScore) bool { return r.Ch == s.Current.Ch }) {
+			rows = append(rows, *s.Current)
+		}
+		for _, r := range rows {
+			busy := "-"
+			if r.WorstBusy >= 0 {
+				busy = fmt.Sprintf("%d%%", r.WorstBusy)
+			}
+			mark := ""
+			if s.Current != nil && r.Ch == s.Current.Ch {
+				mark = " (now)"
+			}
+			if r.DFS {
+				mark += " radar"
+			}
+			fmt.Fprintf(tw, "  %d%s\t%s\t%s\t%d\t\n", r.Ch, mark, busy, r.WorstNode, r.Nets)
+		}
+		tw.Flush()
+	}
+	return nil
 }

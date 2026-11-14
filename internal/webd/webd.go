@@ -3,7 +3,7 @@
 // webd is unprivileged and keeps no state but its TLS certificate. It
 // serves the UI's files, checks the admin login, and passes API requests
 // on to meshd's socket; everything it knows and everything it can change
-// goes through that socket (roadmap M5: "webd has no network privileges").
+// goes through that socket: webd has no network privileges.
 // Under systemd it does not even open its own listening sockets: a socket
 // unit binds ports 443 and 80 and hands them over.
 package webd

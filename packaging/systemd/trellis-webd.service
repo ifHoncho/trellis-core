@@ -11,7 +11,7 @@ Restart=on-failure
 RestartSec=2
 
 # webd is the part of Trellis that faces browsers, so it gets nothing
-# (architecture §12.2, roadmap M5). Everything it does to the node goes
+# (architecture §12.2). Everything it does to the node goes
 # through meshd's API socket, which the trellis group may open.
 #
 # - A user of its own that exists only while it runs.

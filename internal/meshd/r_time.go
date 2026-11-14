@@ -18,7 +18,7 @@ import (
 	"meridian/trellis/internal/status"
 )
 
-// Mesh time (roadmap G1). chrony keeps the clock: from the node's own GNSS
+// Mesh time. chrony keeps the clock: from the node's own GNSS
 // receiver (gpsd) where it has one, else from the mesh's time servers, else
 // from the internet through a gateway; with nothing, the nodes agree among
 // themselves (orphan mode, packaging/chrony/trellis.conf). This reconciler

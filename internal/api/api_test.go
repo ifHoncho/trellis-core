@@ -45,6 +45,10 @@ func (f *fakeProvider) SetNode(ctx context.Context, raw []byte, dryRun bool) (*A
 func (f *fakeProvider) ProfileExport() (*ProfileExport, error) {
 	return &ProfileExport{Code: "TRP1:abc", YAML: "name: p\n"}, nil
 }
+func (f *fakeProvider) Survey() *status.Survey { return nil }
+func (f *fakeProvider) StartSurvey(ctx context.Context) (*status.Survey, error) {
+	return &status.Survey{}, nil
+}
 func (f *fakeProvider) SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun bool) (*ApplyResult, error) {
 	return &ApplyResult{Applied: !dryRun, Changed: true, Revision: 2, Nodes: []string{"node-2"}}, nil
 }

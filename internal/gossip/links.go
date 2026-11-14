@@ -83,7 +83,7 @@ func seal(key []byte, magic string, v any, max int) ([]byte, error) {
 // Kind returns the magic of a packet (Magic, QueryMagic, LinksMagic,
 // OfferMagic, AckMagic, RequestMagic), or "" for anything else.
 func Kind(pkt []byte) string {
-	for _, m := range []string{Magic, QueryMagic, LinksMagic, OfferMagic, AckMagic, RequestMagic} {
+	for _, m := range []string{Magic, QueryMagic, LinksMagic, OfferMagic, AckMagic, RequestMagic, SurveyQueryMagic, SurveyReplyMagic} {
 		if bytes.HasPrefix(pkt, []byte(m)) {
 			return m
 		}

@@ -1,0 +1,516 @@
+package meshd
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"sync"
+	"time"
+
+	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/gossip"
+	"meridian/trellis/internal/nl80211"
+	"meridian/trellis/internal/reconcile"
+	"meridian/trellis/internal/status"
+)
+
+// Channel survey, in two parts.
+//
+// Always: how busy each mesh link's own channel is where this node is, from
+// the driver's survey counters, sampled every loadEvery. It costs nothing on
+// the air, shows in status and travels in gossip, so every node sees the
+// load of each link everywhere. Drivers that keep no survey (ath9k_htc,
+// rt2800usb) report none.
+//
+// On request: a mesh-wide survey. The node asked sends every node a query;
+// each scans the band of each of its mesh links once, passively (listening
+// only, about a tenth of a second per channel, the link pausing meanwhile),
+// and answers with each channel's busy time and the other networks heard
+// there. The asking node judges every link's channels (survey_suggest.go).
+
+const (
+	loadEvery        = 10 * time.Second
+	surveyScanWait   = 20 * time.Second // a scan of a whole band ends well within this
+	surveyRoundWait  = 45 * time.Second // the asking node waits this long for answers
+	surveyAskAgain   = 5 * time.Second  // and asks again those that have not answered
+	surveyCacheFor   = 30 * time.Second // a node scans again only after this
+	surveyRecentSeen = 30 * time.Second // networks heard longer ago do not count
+)
+
+// surveyState is the daemon's survey: the sampled loads, this node's last
+// survey, and the round it asked for last.
+type surveyState struct {
+	mu   sync.Mutex
+	prev map[int]nl80211.SurveyInfo // by ifindex: the in-use channel at the last sample
+	load map[int]linkLoad           // by link (from 1)
+	last time.Time
+
+	runMu   sync.Mutex // one scan of this node's links at a time
+	local   []gossip.SurveyLink
+	localAt time.Time
+
+	round *surveyRound
+}
+
+type linkLoad struct {
+	busy  int // percent; -1 unknown
+	noise int // dBm; 0 unknown
+}
+
+type surveyRound struct {
+	nonce   uint64
+	started time.Time
+	done    bool
+	nodes   map[string]*surveyNodeState // by identity MAC
+	order   []string
+}
+
+type surveyNodeState struct {
+	callsign string
+	addr     net.IP
+	self     bool
+	state    string
+	links    []gossip.SurveyLink
+}
+
+// surveyReconciler samples the links' channel load.
+type surveyReconciler struct{ d *Daemon }
+
+func (r *surveyReconciler) Name() string                       { return "survey" }
+func (r *surveyReconciler) Teardown(ctx context.Context) error { return nil }
+func (r *surveyReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) {
+	d := r.d
+	s := &d.survey
+	s.mu.Lock()
+	due := time.Since(s.last) >= loadEvery
+	if due {
+		s.last = time.Now()
+	}
+	s.mu.Unlock()
+	if !due || d.nl == nil {
+		return reconcile.Result{RequeueAfter: loadEvery}, nil
+	}
+	links := map[int]int{} // link → ifindex
+	d.facts.Read(func(f *Facts) {
+		if f.MeshIfindex != 0 {
+			links[1] = f.MeshIfindex
+		}
+		for i, l := range f.MoreLinks {
+			if l.Ifindex != 0 {
+				links[i+2] = l.Ifindex
+			}
+		}
+	})
+	loads := map[int]linkLoad{}
+	prev := map[int]nl80211.SurveyInfo{}
+	s.mu.Lock()
+	for k, v := range s.prev {
+		prev[k] = v
+	}
+	s.mu.Unlock()
+	for link, ifindex := range links {
+		l := linkLoad{busy: -1}
+		if infos, err := d.nl.Survey(ifindex); err == nil {
+			for _, in := range infos {
+				if !in.InUse {
+					continue
+				}
+				if p, ok := prev[ifindex]; ok && p.FreqMHz == in.FreqMHz && in.ActiveMS > p.ActiveMS && in.BusyMS >= p.BusyMS {
+					l.busy = min(100, int((in.BusyMS-p.BusyMS)*100/(in.ActiveMS-p.ActiveMS)))
+				}
+				if in.HasNoise {
+					l.noise = int(in.NoiseDBm)
+				}
+				prev[ifindex] = in
+			}
+		}
+		loads[link] = l
+	}
+	s.mu.Lock()
+	s.prev, s.load = prev, loads
+	s.mu.Unlock()
+	return reconcile.Result{RequeueAfter: loadEvery}, nil
+}
+
+// linkLoad is the sampled load of link (from 1): busy -1 when unknown.
+func (d *Daemon) linkLoad(link int) linkLoad {
+	s := &d.survey
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.load[link]; ok {
+		return l
+	}
+	return linkLoad{busy: -1}
+}
+
+// gossipLoads is the Load field of this node's record, one per profile link.
+func (d *Daemon) gossipLoads(links int) []int {
+	out := make([]int, 0, links)
+	known := false
+	for i := 1; i <= links && i <= gossip.MaxLinkEntries; i++ {
+		b := d.linkLoad(i).busy
+		known = known || b >= 0
+		out = append(out, b)
+	}
+	if !known {
+		return nil
+	}
+	return out
+}
+
+// channelOf turns a frequency into its channel number in a band.
+func channelOf(band string, mhz uint32) int {
+	switch band {
+	case config.Band2G:
+		if mhz == 2484 {
+			return 14
+		}
+		return int(mhz-2407) / 5
+	case config.Band5G:
+		return int(mhz-5000) / 5
+	case config.Band6G:
+		return int(mhz-5950) / 5
+	}
+	return 0
+}
+
+// surveyLocal scans the band of each of this node's mesh links once, or
+// returns the last survey when it is recent.
+func (d *Daemon) surveyLocal(ctx context.Context) []gossip.SurveyLink {
+	s := &d.survey
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if time.Since(s.localAt) < surveyCacheFor && s.local != nil {
+		return s.local
+	}
+	_, profile := d.conf()
+	type target struct {
+		link, ifindex int
+		band          string
+		freqs         []uint32
+	}
+	var targets []target
+	d.facts.Read(func(f *Facts) {
+		for i, l := range profile.AllLinks() {
+			ifindex := f.MeshIfindex
+			if i > 0 {
+				if i-1 >= len(f.MoreLinks) {
+					continue
+				}
+				ifindex = f.MoreLinks[i-1].Ifindex
+			}
+			if ifindex == 0 || f.Plan == nil || l.Band == config.BandS1G {
+				continue
+			}
+			rd := f.Plan.Link(i)
+			band, ok := nl80211.ParseBand(l.Band)
+			if rd == nil || rd.Wiphy == nil || !ok || rd.Wiphy.Bands[band] == nil {
+				continue
+			}
+			t := target{link: i + 1, ifindex: ifindex, band: l.Band}
+			for _, fr := range rd.Wiphy.Bands[band].Frequencies {
+				if !fr.Disabled {
+					t.freqs = append(t.freqs, fr.MHz)
+				}
+			}
+			targets = append(targets, t)
+		}
+	})
+	var out []gossip.SurveyLink
+	for _, t := range targets {
+		sl := gossip.SurveyLink{Link: t.link, Band: t.band}
+		chs, err := d.surveyBand(ctx, t.link, t.ifindex, t.band, t.freqs, profile.MeshID)
+		if err != nil {
+			sl.Err = gossip.TrimErr(err.Error())
+		}
+		sl.Channels = chs
+		out = append(out, sl)
+	}
+	s.local, s.localAt = out, time.Now()
+	d.log.Info("channel survey done", "links", len(out))
+	return out
+}
+
+// surveyBand scans freqs on one interface and reads what the radio found.
+func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string, freqs []uint32, meshID string) ([]gossip.SurveyCh, error) {
+	if d.nl == nil || len(freqs) == 0 {
+		return nil, errors.New("no channels to scan")
+	}
+	before, _ := d.nl.Survey(ifindex)
+	ev, err := nl80211.DialScanEvents()
+	if err != nil {
+		return nil, err
+	}
+	defer ev.Close()
+	if err := d.nl.TriggerScan(ifindex, freqs); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(surveyScanWait)
+	_ = ev.SetDeadline(deadline)
+	finished := false
+	for !finished && time.Now().Before(deadline) {
+		evs, err := ev.Next()
+		if err != nil {
+			return nil, fmt.Errorf("waiting for the scan: %w", err)
+		}
+		for _, e := range evs {
+			if e.Ifindex != ifindex {
+				continue
+			}
+			switch e.Command {
+			case nl80211.NL80211_CMD_NEW_SCAN_RESULTS:
+				finished = true
+			case nl80211.NL80211_CMD_SCAN_ABORTED:
+				return nil, errors.New("the scan was aborted")
+			}
+		}
+	}
+	if !finished {
+		return nil, errors.New("the scan did not finish")
+	}
+	after, _ := d.nl.Survey(ifindex)
+	bss, _ := d.nl.Scan(ifindex)
+
+	was := map[uint32]nl80211.SurveyInfo{}
+	for _, b := range before {
+		was[b.FreqMHz] = b
+	}
+	now := map[uint32]nl80211.SurveyInfo{}
+	for _, a := range after {
+		now[a.FreqMHz] = a
+	}
+	own := d.linkLoad(link)
+	var out []gossip.SurveyCh
+	for _, f := range freqs {
+		c := gossip.SurveyCh{Ch: channelOf(band, f), Busy: -1}
+		if c.Ch <= 0 {
+			continue
+		}
+		if a, ok := now[f]; ok {
+			b := was[f]
+			switch {
+			case a.InUse:
+				c.Busy = own.busy // the scan barely visits its own channel
+			case a.ActiveMS > b.ActiveMS+5 && a.BusyMS >= b.BusyMS:
+				c.Busy = min(100, int((a.BusyMS-b.BusyMS)*100/(a.ActiveMS-b.ActiveMS)))
+			}
+			if a.HasNoise {
+				c.Noise = int(a.NoiseDBm)
+			}
+		}
+		for _, n := range bss {
+			if n.FreqMHz != f || (n.MeshID != "" && n.MeshID == meshID) || time.Duration(n.SeenMSAgo)*time.Millisecond > surveyRecentSeen {
+				continue
+			}
+			c.Nets++
+			if s := int(n.SignalDBm); s != 0 && (c.Strongest == 0 || s > c.Strongest) {
+				c.Strongest = s
+			}
+		}
+		out = append(out, c)
+		if len(out) == gossip.MaxSurveyChannels {
+			break
+		}
+	}
+	if saturated(out, own.busy) {
+		for i := range out {
+			if out[i].Busy >= 0 && !(own.busy >= 0 && out[i].Busy == own.busy) {
+				out[i].Busy = -1
+			}
+		}
+		return out, errors.New("this radio's busy times during a scan are not usable (it reports nearly every channel as fully busy): only the networks heard count")
+	}
+	return out, nil
+}
+
+// saturated reports a radio whose busy times during a scan mean nothing:
+// nearly every channel it measured off its own reads 90% or more (the
+// MT7610U on 5 GHz counts the whole visit as busy). own is its own
+// channel's load, measured the usual way, which is left out.
+func saturated(chs []gossip.SurveyCh, own int) bool {
+	measured, full := 0, 0
+	for _, c := range chs {
+		if c.Busy < 0 || (own >= 0 && c.Busy == own) {
+			continue
+		}
+		measured++
+		if c.Busy >= 90 {
+			full++
+		}
+	}
+	return measured >= 4 && full*10 >= measured*7
+}
+
+// StartSurvey begins a mesh-wide survey (POST /survey), or returns the one
+// under way.
+func (d *Daemon) StartSurvey(ctx context.Context) (*status.Survey, error) {
+	me := d.identity()
+	if me == nil || d.gossip == nil || d.gossip.currentKey() == nil || d.peers == nil {
+		return nil, errors.New("gossip has not started: try again in a moment")
+	}
+	s := &d.survey
+	s.mu.Lock()
+	if r := s.round; r != nil && !r.done {
+		s.mu.Unlock()
+		return d.Survey(), nil
+	}
+	var nb [8]byte
+	_, _ = rand.Read(nb[:])
+	cur, _ := d.conf()
+	r := &surveyRound{nonce: binary.BigEndian.Uint64(nb[:]) | 1, started: time.Now(), nodes: map[string]*surveyNodeState{}}
+	r.nodes[me.MAC] = &surveyNodeState{callsign: cur.Callsign, self: true, state: "asked"}
+	r.order = append(r.order, me.MAC)
+	for _, p := range d.peers.Peers() {
+		rec := p.Record
+		ip := net.ParseIP(rec.Addr)
+		if ip == nil {
+			continue
+		}
+		r.nodes[rec.MAC] = &surveyNodeState{callsign: rec.Callsign, addr: ip, state: "asked"}
+		r.order = append(r.order, rec.MAC)
+	}
+	s.round = r
+	s.mu.Unlock()
+	d.log.Info("mesh-wide channel survey started", "nodes", len(r.order))
+
+	go func() {
+		links := d.surveyLocal(context.Background())
+		s.mu.Lock()
+		if n := r.nodes[me.MAC]; n != nil {
+			n.state, n.links = "answered", links
+		}
+		s.mu.Unlock()
+	}()
+	go d.runSurveyRound(r)
+	return d.Survey(), nil
+}
+
+// runSurveyRound asks every node that has not answered, again and again,
+// until all have or the time is up.
+func (d *Daemon) runSurveyRound(r *surveyRound) {
+	me := d.identity()
+	key := d.gossip.currentKey()
+	pkt, err := gossip.SealMessage(key, gossip.SurveyQueryMagic, &gossip.SurveyQuery{V: 1, MAC: me.MAC, Nonce: r.nonce})
+	if err != nil {
+		return
+	}
+	s := &d.survey
+	deadline := r.started.Add(surveyRoundWait)
+	for {
+		s.mu.Lock()
+		var ask []net.IP
+		waiting := 0
+		for _, n := range r.nodes {
+			if n.state == "asked" {
+				waiting++
+				if !n.self {
+					ask = append(ask, n.addr)
+				}
+			}
+		}
+		over := waiting == 0 || time.Now().After(deadline)
+		if over {
+			for _, n := range r.nodes {
+				if n.state == "asked" {
+					n.state = "no answer"
+				}
+			}
+			r.done = true
+		}
+		s.mu.Unlock()
+		if over {
+			d.log.Info("mesh-wide channel survey finished")
+			return
+		}
+		for _, ip := range ask {
+			_ = d.gossip.sendTo(pkt, ip)
+		}
+		time.Sleep(surveyAskAgain)
+	}
+}
+
+// handleSurveyQuery surveys this node's links and answers.
+func (d *Daemon) handleSurveyQuery(key, pkt []byte, from *net.UDPAddr) error {
+	q, err := gossip.OpenSurveyQuery(key, pkt)
+	if err != nil {
+		return err
+	}
+	me := d.identity()
+	if me == nil || q.MAC == me.MAC || d.gossip == nil {
+		return nil
+	}
+	go func() {
+		links := d.surveyLocal(context.Background())
+		cur, _ := d.conf()
+		reply, err := gossip.SealSurveyReply(key, &gossip.SurveyReply{V: 1, MAC: me.MAC, Callsign: cur.Callsign, Nonce: q.Nonce, Links: links})
+		if err != nil {
+			d.log.Warn("cannot answer a channel survey", "err", err)
+			return
+		}
+		_ = d.gossip.sendTo(reply, from.IP)
+	}()
+	return nil
+}
+
+// handleSurveyReply keeps a node's answer to this node's round.
+func (d *Daemon) handleSurveyReply(key, pkt []byte) error {
+	rep, err := gossip.OpenSurveyReply(key, pkt)
+	if err != nil {
+		return err
+	}
+	s := &d.survey
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.round
+	if r == nil || rep.Nonce != r.nonce {
+		return nil
+	}
+	n := r.nodes[rep.MAC]
+	if n == nil {
+		n = &surveyNodeState{callsign: rep.Callsign}
+		r.nodes[rep.MAC] = n
+		r.order = append(r.order, rep.MAC)
+	}
+	n.state, n.links = "answered", rep.Links
+	if rep.Err != "" {
+		n.state = "failed: " + rep.Err
+	}
+	return nil
+}
+
+// Survey is the last mesh-wide survey (GET /survey); nil before the first.
+func (d *Daemon) Survey() *status.Survey {
+	s := &d.survey
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.round
+	if r == nil {
+		return nil
+	}
+	out := &status.Survey{Started: r.started, Done: r.done, Nodes: []status.SurveyNode{}, Suggestions: []status.ChannelSuggestion{}}
+	var reports []surveyReport
+	for _, mac := range r.order {
+		n := r.nodes[mac]
+		sn := status.SurveyNode{Callsign: n.callsign, State: n.state}
+		for _, l := range n.links {
+			sl := status.SurveyLink{Link: l.Link, Band: l.Band, Error: l.Err, Channels: []status.SurveyChannel{}}
+			for _, c := range l.Channels {
+				sl.Channels = append(sl.Channels, status.SurveyChannel{Ch: c.Ch, Busy: c.Busy, Noise: c.Noise, Nets: c.Nets, Strongest: c.Strongest})
+			}
+			sn.Links = append(sn.Links, sl)
+		}
+		out.Nodes = append(out.Nodes, sn)
+		if n.state == "answered" {
+			reports = append(reports, surveyReport{Callsign: n.callsign, Links: slices.Clone(n.links)})
+		}
+	}
+	if len(reports) > 0 {
+		_, profile := d.conf()
+		out.Suggestions = suggestChannels(profile, reports)
+	}
+	return out
+}
