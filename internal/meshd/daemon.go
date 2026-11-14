@@ -114,7 +114,9 @@ type Daemon struct {
 	gossip  *gossipReconciler
 	time    *timeReconciler
 	gnss    *gnss.Watcher
-	peers   *gossip.Table
+
+	meshChanges meshChanges // mesh-wide profile changes (meshchange.go)
+	peers       *gossip.Table
 }
 
 // New loads configuration and prepares the daemon. It does not touch the
@@ -377,6 +379,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	go d.watchEvents(ctx)
 	go d.handleSignals(ctx, cancel)
 	go d.gnss.Run(ctx)
+	d.loadMeshChange()
 
 	serveErr := make(chan error, 1)
 	if serve != nil {
@@ -557,6 +560,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		st.Clock = d.time.Clock()
 	}
 	st.GNSS = gnssStatus(d.gnss, time.Now())
+	st.MeshChange = d.meshChangeStatus()
 	if st.Gateway.Candidates == nil {
 		st.Gateway.Candidates = []status.GatewayCandidate{}
 	}

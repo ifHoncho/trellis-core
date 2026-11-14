@@ -66,6 +66,23 @@ type Record struct {
 	// when it serves time from another source; empty when it does not
 	// serve (no chrony, or an older version).
 	Time string `json:"tm,omitempty"`
+	// ProfileRev is the revision of the mesh profile the node runs
+	// (config.Profile.Revision): a node behind asks one ahead for it.
+	ProfileRev uint64 `json:"pr,omitempty"`
+	// MeshChange: the node follows mesh-wide profile changes (offers).
+	MeshChange bool `json:"mc,omitempty"`
+	// Regulatory is the profile's regulatory setting: "unrestricted", or
+	// "country:US". A mesh-wide change that alters it on another node says
+	// so before it is sent.
+	Regulatory string `json:"rg,omitempty"`
+}
+
+// RegulatoryEntry is a profile's regulatory setting as a Regulatory value.
+func RegulatoryEntry(mode, country string) string {
+	if mode == "unrestricted" {
+		return mode
+	}
+	return mode + ":" + country
 }
 
 // Time values.
@@ -205,6 +222,9 @@ func (r *Record) validate() error {
 		if e == "" || !printable(e, 24) {
 			return fmt.Errorf("radio bands %q not short printable text", e)
 		}
+	}
+	if !printable(r.Regulatory, 32) {
+		return fmt.Errorf("regulatory %q not short printable text", r.Regulatory)
 	}
 	if r.Time != "" && r.Time != TimeGNSS && r.Time != TimeServer {
 		return fmt.Errorf("time %q is not %s or %s", r.Time, TimeGNSS, TimeServer)

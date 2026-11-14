@@ -53,6 +53,9 @@ Commands:
   profile band 2g|5g|6g [--channel N] [--width MHz] [FILE]
                                  switch a profile file to another band (default file: mesh-profile.yaml)
   profile install [FILE|-]       validate a profile, install it on this node and apply it live
+  profile push [--in S] [--yes] FILE
+                                 send a profile to every node: all switch to it in S seconds (default 60);
+                                 without --yes, only show what it would do
   profile same FILE1 FILE2       exit 0 if the two profiles mean the same, else name the settings that differ
   node new --callsign NAME [--id N] [-o FILE [--force]]
                                  node config skeleton (stdout, or FILE)
@@ -180,6 +183,9 @@ func PrintStatus(w io.Writer, st *status.Status) {
 		fmt.Fprintf(w, "regulatory: country %s, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
 	}
 	fmt.Fprintf(w, "time: %s\n", clockLine(st.Clock))
+	if mc := st.MeshChange; mc != nil {
+		fmt.Fprintf(w, "mesh change: %s\n", meshChangeLine(mc, time.Now()))
+	}
 	if st.GNSS.Receiver {
 		fmt.Fprintf(w, "gnss: %s\n", gnssLine(st.GNSS))
 	}
@@ -430,6 +436,9 @@ func cmdProfile(ctx context.Context, client *api.Client, args []string, stdout i
 	if len(args) > 0 && args[0] == "install" {
 		return cmdProfileInstall(ctx, client, args[1:], stdout)
 	}
+	if len(args) > 0 && args[0] == "push" {
+		return cmdProfilePush(ctx, client, args[1:], stdout)
+	}
 	if len(args) > 0 && args[0] == "same" {
 		return cmdProfileSame(args[1:], stdout)
 	}
@@ -628,6 +637,8 @@ func cmdProfileSame(args []string, stdout io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
+		// The revision counts changes; it is not a setting.
+		p.Revision = 0
 		data, err := p.YAML("")
 		if err != nil {
 			return err
@@ -1411,6 +1422,9 @@ func gnssLine(g status.GNSS) string {
 	if g.SatsSeen > 0 {
 		parts = append(parts, fmt.Sprintf("%d of %d satellites", g.SatsUsed, g.SatsSeen))
 	}
+	if len(g.Signals) > 0 && g.Fix == "none" {
+		parts = append(parts, fmt.Sprintf("strongest %d dB-Hz", g.Signals[0]))
+	}
 	if g.Lat != nil && g.Lon != nil {
 		if g.HAccM > 0 {
 			parts = append(parts, fmt.Sprintf("±%.0f m", g.HAccM))
@@ -1421,4 +1435,70 @@ func gnssLine(g status.GNSS) string {
 		parts = append(parts, "PPS")
 	}
 	return strings.Join(parts, ", ")
+}
+
+// cmdProfilePush sends a profile to every node of the mesh, from this one:
+// they all switch to it at one moment. It always shows what the change
+// does first, and sends only with --yes.
+func cmdProfilePush(ctx context.Context, client *api.Client, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("profile push", flag.ContinueOnError)
+	in := fs.Int("in", 60, "seconds from now at which every node switches (15 to 900)")
+	yes := fs.Bool("yes", false, "send it (without: only show what it would do)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: meshctl profile push [--in SECONDS] [--yes] FILE")
+	}
+	data, err := os.ReadFile(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	input := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: string(data)}, DelaySeconds: *in}
+	if config.IsProfileCode(strings.TrimSpace(string(data))) {
+		input.ProfileInput = api.ProfileInput{Code: strings.TrimSpace(string(data))}
+	}
+	res, err := client.SetMeshProfile(ctx, input, !*yes)
+	if err != nil {
+		return err
+	}
+	if !res.Changed {
+		fmt.Fprintln(stdout, "nothing to change: the mesh runs this profile")
+		return nil
+	}
+	for _, e := range res.Effects {
+		fmt.Fprintf(stdout, "  [%s] %s\n", strings.ToUpper(e.Level), e.Message)
+	}
+	if !*yes {
+		fmt.Fprintln(stdout, "\nNothing sent. Add --yes to send it to every node.")
+		return nil
+	}
+	fmt.Fprintf(stdout, "\nsent as revision %d; every node switches at %s. Follow it with: meshctl status\n", res.Revision, res.ApplyAt.Local().Format("15:04:05"))
+	return nil
+}
+
+// meshChangeLine describes a mesh-wide change: "revision 4 from relay-1:
+// 5 GHz · ch 149 at 80 MHz; switches at 14:05:00 (in 42s); node-2 has it,
+// node-3 sent".
+func meshChangeLine(mc *status.MeshChange, now time.Time) string {
+	line := fmt.Sprintf("revision %d from %s", mc.Revision, mc.From)
+	if mc.Summary != "" {
+		line += ": " + mc.Summary
+	}
+	switch mc.State {
+	case "pending":
+		line += fmt.Sprintf("; switches at %s (in %s)", mc.ApplyAt.Local().Format("15:04:05"), mc.ApplyAt.Sub(now).Round(time.Second))
+	case "applied":
+		line += fmt.Sprintf("; in force since %s", mc.ApplyAt.Local().Format("15:04:05"))
+	default:
+		line += "; FAILED: " + mc.Error
+	}
+	var nodes []string
+	for _, n := range mc.Nodes {
+		nodes = append(nodes, n.Callsign+" "+n.State)
+	}
+	if len(nodes) > 0 {
+		line += "; " + strings.Join(nodes, ", ")
+	}
+	return line
 }

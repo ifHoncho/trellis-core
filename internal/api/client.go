@@ -176,6 +176,20 @@ func (c *Client) SetNode(ctx context.Context, node config.Node, dryRun bool) (*A
 	return &out, nil
 }
 
+// SetMeshProfile sends a profile to every node of the mesh, or with dryRun
+// only reports what that would do.
+func (c *Client) SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun bool) (*ApplyResult, error) {
+	var out ApplyResult
+	path := "/profile/mesh"
+	if dryRun {
+		path += "?dry_run=1"
+	}
+	if err := c.do(ctx, http.MethodPost, path, in, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // SetProfile installs a mesh profile.
 func (c *Client) SetProfile(ctx context.Context, in ProfileInput) (*ApplyResult, error) {
 	var out ApplyResult

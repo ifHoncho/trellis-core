@@ -147,7 +147,8 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	r := &gossip.Record{
 		V: 1, MAC: me.MAC, ID: me.NodeID, IDSource: me.NodeIDSource, Callsign: d.cfg.Callsign,
 		Addr: addr, Version: d.opts.Version, Boot: g.boot, GW: gw, Orig: orig, Radios: d.meshRadioEntries(),
-		Links: profileLinkEntries(d.profile),
+		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, MeshChange: true,
+		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
 	}
 	if d.time != nil {
 		r.Time = d.time.Role()
@@ -162,6 +163,12 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		} else {
 			res.Changed = true
 		}
+	}
+
+	// A node ahead on the profile's revision: this node missed a
+	// mesh-wide change, and asks for it (meshchange.go).
+	if key := g.currentKey(); key != nil {
+		d.askForNewerProfile(key)
 	}
 
 	// Nodes that run the mesh's links differently: same secret, different
@@ -278,7 +285,7 @@ func (g *gossipReconciler) sender(stop chan struct{}) {
 }
 
 func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
-	buf := make([]byte, gossip.MaxPacket+64)
+	buf := make([]byte, gossip.MaxOfferPacket+64)
 	for {
 		n, from, err := c.Receive(buf)
 		if err != nil {
@@ -296,14 +303,22 @@ func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
 		g.mu.Lock()
 		key := g.key
 		g.mu.Unlock()
-		// Link queries and their answers share the socket (topology.go).
-		switch gossip.Kind(buf[:n]) {
-		case gossip.QueryMagic, gossip.LinksMagic:
+		// Link queries and their answers (topology.go), and mesh-wide
+		// profile changes (meshchange.go), share the socket.
+		switch kind := gossip.Kind(buf[:n]); kind {
+		case gossip.QueryMagic, gossip.LinksMagic, gossip.OfferMagic, gossip.AckMagic, gossip.RequestMagic:
 			var err error
-			if gossip.Kind(buf[:n]) == gossip.QueryMagic {
+			switch kind {
+			case gossip.QueryMagic:
 				err = g.d.handleLinkQuery(key, buf[:n], from)
-			} else {
+			case gossip.LinksMagic:
 				err = g.d.handleLinkReply(key, buf[:n])
+			case gossip.OfferMagic:
+				err = g.d.handleProfileOffer(key, buf[:n], from)
+			case gossip.AckMagic:
+				err = g.d.handleProfileAck(key, buf[:n])
+			case gossip.RequestMagic:
+				err = g.d.handleProfileRequest(key, buf[:n], from)
 			}
 			if err != nil {
 				g.mu.Lock()

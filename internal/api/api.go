@@ -36,6 +36,7 @@ type Provider interface {
 	SetNode(ctx context.Context, raw []byte, dryRun bool) (*ApplyResult, error)
 	ProfileExport() (*ProfileExport, error)
 	SetProfile(ctx context.Context, in ProfileInput, dryRun bool) (*ApplyResult, error)
+	SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun bool) (*ApplyResult, error)
 	Setup(ctx context.Context, in SetupInput, dryRun bool) (*ApplyResult, error)
 
 	Topology(ctx context.Context) (*status.Topology, error)
@@ -142,6 +143,13 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		reply(w, func(r *http.Request) (any, error) { return p.SetProfile(r.Context(), in, dryRun(r)) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/profile/mesh", func(w http.ResponseWriter, r *http.Request) {
+		var in MeshProfileInput
+		if !readJSON(w, r, &in) {
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) { return p.SetMeshProfile(r.Context(), in, dryRun(r)) }, r)
 	})
 	mux.HandleFunc("POST /"+Version+"/setup", func(w http.ResponseWriter, r *http.Request) {
 		var in SetupInput

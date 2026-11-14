@@ -3,8 +3,8 @@ import { h } from '../dom.js';
 import { get, put, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill } from '../ui.js';
-import { bandName, since, duration, count, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
-import { ensureConfig, cfg, saveBar, saveProfile, loadConfig } from '../config.js';
+import { bandName, since, duration, count, plural, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
+import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
@@ -124,16 +124,37 @@ async function shareProfile() {
   });
 }
 
+// meshChangePanel shows a mesh-wide profile change: when every node switches,
+// and on the node that sent it, where each node stands.
+function meshChangePanel(mc) {
+  const at = new Date(mc.apply_at);
+  const secs = Math.max(0, Math.round((at - Date.now()) / 1000));
+  const when = mc.state === 'pending'
+    ? `Every node switches at ${at.toLocaleTimeString()} (in ${secs} s).`
+    : mc.state === 'applied' ? `In force since ${at.toLocaleTimeString()}.` : `It failed here: ${mc.error}`;
+  const nodes = mc.nodes || [];
+  const have = nodes.filter((n) => n.state === 'has it').length;
+  return panel('Mesh-wide change', { meta: `revision ${mc.revision} · from ${mc.sender ? 'this node' : mc.from}` },
+    notice({ level: mc.state === 'failed' ? 'error' : mc.state === 'pending' ? 'warning' : 'ok', message: `${mc.summary ? mc.summary + '. ' : ''}${when}` }),
+    nodes.length ? h('div', { style: { marginTop: '12px' } },
+      h('div.label', { style: { marginBottom: '6px' } }, `${have} of ${nodes.length} other nodes have it`),
+      h('div.others-list', nodes.map((n) => h('div', h('span.mono', n.callsign),
+        h('span', { class: n.state === 'has it' ? 'ok' : n.state.startsWith('refused') ? 'bad' : 'dim' }, n.state))))) : null);
+}
+
 function profileSection(d, st) {
-  const ui = (state.ui.profile ||= { draft: null, fields: {}, busy: false, replace: false, code: '' });
+  const ui = (state.ui.profile ||= { draft: null, fields: {}, busy: false, replace: false, code: '', scope: null, delay: 60 });
+  // A change goes to every node unless the operator chooses this node only
+  // (or no other node is known).
+  ui.scope ||= (st.nodes || []).length ? 'mesh' : 'node';
   const cur = state.config.profile;
   if (!ui.draft || ui.for !== JSON.stringify(cur)) { ui.draft = JSON.parse(JSON.stringify(cur)); ui.for = JSON.stringify(cur); ui.fields = {}; }
   const p = ui.draft;
   const changed = JSON.stringify(p) !== ui.for;
-  const send = async (input) => {
+  const send = async (input, scope = 'node') => {
     ui.busy = true; ui.fields = {}; redraw();
     try {
-      const res = await saveProfile(input);
+      const res = scope === 'mesh' ? await saveMeshProfile(input, ui.delay) : await saveProfile(input);
       if (res && res.applied) { ui.replace = false; ui.code = ''; }
     } catch (e) {
       for (const f of e.fields || []) ui.fields[f.field] = f.message;
@@ -151,6 +172,7 @@ function profileSection(d, st) {
   const others = st.nodes || [];
   const myBands = [...new Set((st.radios || []).filter((r) => r.mesh_point).flatMap((r) => r.bands || []))];
   return [
+    st.mesh_change ? meshChangePanel(st.mesh_change) : null,
     panel('The mesh this node belongs to', { tools: [button('Share with another node', shareProfile, 'small primary')] },
       kv([
         ['Mesh', h('span', cur.name, h('span.faint', `  ·  on the air as ${cur.mesh_id}`))],
@@ -165,11 +187,13 @@ function profileSection(d, st) {
       // A node that cannot carry every link uses some of them only.
       fewerRadios(st) ? h('div', { style: { marginTop: '14px' } }, notice({ level: 'info', message: fewerRadios(st).lead + ' Which link it uses is chosen on the Radios page.' },
         h('a', { href: '#/radios', style: { marginLeft: '6px' } }, 'Radios →'))) : null),
-    panel('Channel and rules', { meta: `on ${st.node.callsign} only` },
+    panel('Channel and rules', { meta: ui.scope === 'mesh' ? 'on every node' : `on ${st.node.callsign} only` },
       h('div.form',
-        notice({ level: 'warning', message: others.length
-          ? `This changes ${st.node.callsign} only. Nothing sends it to the other ${others.length === 1 ? 'node' : others.length + ' nodes'} of the mesh, and a node whose channel or secret differs cannot hear the rest. To change the whole mesh, install the same profile on every node: the farthest first, this one last.`
-          : 'This changes this node only. Every node of a mesh needs the same profile: one whose channel or secret differs cannot hear the rest.' }),
+        ui.scope === 'mesh'
+          ? notice({ level: 'info', message: `This node sends the change to every node it knows (${plural(others.length, 'other node')}), and they all switch at the same moment. A node out of reach takes it when it next hears one that has it, as long as they still share a link; the review lists the nodes that cannot follow.` })
+          : notice({ level: 'warning', message: others.length
+            ? `This changes ${st.node.callsign} only. Nothing sends it to the other ${others.length === 1 ? 'node' : others.length + ' nodes'} of the mesh, and a node whose channel or secret differs cannot hear the rest.`
+            : 'This changes this node only. Every node of a mesh needs the same profile: one whose channel or secret differs cannot hear the rest.' }),
         others.length ? h('div.others',
           h('div.label', 'Mesh radios on the other nodes'),
           h('div.others-list', others.map((n) => {
@@ -193,9 +217,16 @@ function profileSection(d, st) {
           field('Regulatory mode', select(p.regulatory, 'mode', [['country', 'Country: that country’s channels and power'], ['unrestricted', 'Unrestricted: all the hardware allows']]), { error: ui.fields['regulatory.mode'] }),
           field('Country', input(p.regulatory, 'country', { maxlength: '2', autocapitalize: 'characters' }), { error: ui.fields['regulatory.country'], hint: 'Two-letter code, e.g. US.' })),
         unrestricted ? notice({ level: 'warning', message: 'Unrestricted mode is for operators with their own frequency authorization. Without one, transmitting outside the local licence-exempt rules is unlawful in most countries: use country mode.' }) : null,
-        h('div.row.end',
-          changed ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
-          button(ui.busy ? 'Checking…' : 'Review and change', () => send({ profile: p }), 'primary', { disabled: !changed || ui.busy })))),
+        h('div.row.between', { style: { flexWrap: 'wrap', gap: '12px' } },
+          h('div.row', { style: { flexWrap: 'wrap', gap: '12px' } },
+            h('div.seg', [['mesh', 'Every node'], ['node', 'This node only']].map(([id, label]) =>
+              h('button', { 'aria-pressed': String(ui.scope === id), disabled: id === 'mesh' && !others.length, onclick: () => { ui.scope = id; redraw(); } }, label))),
+            ui.scope === 'mesh' ? h('label.row', { style: { gap: '8px' } }, h('span.dim', 'Switch in'),
+              h('select.select', { value: String(ui.delay), onchange: (e) => { ui.delay = Number(e.target.value); } },
+                [[30, '30 seconds'], [60, '1 minute'], [120, '2 minutes'], [300, '5 minutes']].map(([v, l]) => h('option', { value: String(v) }, l)))) : null),
+          h('div.row',
+            changed ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
+            button(ui.busy ? 'Checking…' : ui.scope === 'mesh' ? 'Review and send' : 'Review and change', () => send({ profile: p }, ui.scope), 'primary', { disabled: !changed || ui.busy }))))),
     panel('Move this node to another mesh', {},
       ui.replace
         ? h('div.form',

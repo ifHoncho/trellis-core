@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -36,18 +37,21 @@ const (
 	prioAutoWANOif = 7302 // oif <auto WAN>: sockets bound to it (prober, dnsmasq) use its table
 	prioFromMesh   = 7303 // iif br-mesh: other nodes' clients, routed to us as their gateway
 	tableNone      = 7399 // unreachable default: never invent a route (S6)
-	// prioAutoWANLast comes after the main (32766) and default (32767)
-	// rules, so it is consulted only when the system has no route at all.
-	// The kernel's reverse-path check on the auto WAN (for ARP too) needs
-	// a route back to the sender; without one it drops the router's ARP
-	// requests on a node with no uplink of its own. It also lets such a
-	// node's own traffic out of the auto WAN; the main table, when it has
-	// a route, still wins.
-	prioAutoWANLast = 32800
-	tableGWBase     = 7400 // + node ID: default via that gateway
-	tableGWHi       = tableGWBase + 254
-	markBase        = 0x7300
-	markMask        = nft.MarkMask
+	// prioLast comes after the main (32766) and default (32767) rules, so
+	// it is consulted only when the system has no route at all; the main
+	// table, when it has a route, always wins. It takes this node's own
+	// traffic out:
+	//   - through its auto WAN, when it has one. The kernel's reverse-path
+	//     check on the auto WAN (for ARP too) needs a route back to the
+	//     sender; without one it drops the router's ARP requests.
+	//   - otherwise through the gateway its clients use, so that a node
+	//     with no uplink of its own still reaches the internet itself
+	//     (package updates, NTP, anything it fetches).
+	prioLast    = 32800
+	tableGWBase = 7400 // + node ID: default via that gateway
+	tableGWHi   = tableGWBase + 254
+	markBase    = 0x7300
+	markMask    = nft.MarkMask
 )
 
 // Selection hysteresis (architecture §8.4): leave a working gateway only for
@@ -108,6 +112,12 @@ func (c *gwChoice) key() string {
 
 type gatewayReconciler struct {
 	d *Daemon
+
+	// The system's own DNS while the node has no uplink (r_hostdns.go).
+	hostRoot    string // "/" (tests: a directory)
+	hostDNSKind string // resolved, networkmanager, none; "" until looked
+	hostDNSOn   string // the server applied, "" when none
+	hostDNSAt   time.Time
 
 	evalMu      sync.Mutex // one evaluation at a time (loop and monitor)
 	mu          sync.Mutex
@@ -226,6 +236,22 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	} else if ch {
 		res.Changed = true
 	}
+	// No uplink of its own: the node's own traffic leaves through the
+	// gateway in use (prioLast), and its DNS goes to its own dnsmasq.
+	// Not before dnsmasq forwards to the gateway in use: while it still
+	// forwards to the system's resolver, pointing that resolver at
+	// dnsmasq would make a loop. dnsmasq takes the new upstream later in
+	// this pass (the dhcp reconciler); the next pass applies.
+	if server, err := anycastAddress(d.profile.Prefix); err == nil {
+		want := sel != nil && !sel.Self && auto == nil && !mainHasDefault()
+		var up []string
+		d.facts.Read(func(f *Facts) { up = f.DNSUpstream })
+		if want && g.hostDNSOn == "" && !forwardsToMesh(up) {
+			res.RequeueAfter = 2 * time.Second
+		} else if g.applyHostDNS(ctx, want, server, warn) {
+			res.Changed = true
+		}
+	}
 
 	dns := []string{}
 	switch {
@@ -239,7 +265,10 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 			dns = []string{auto.Router.String() + "@" + auto.Port}
 		}
 	case sel != nil && sel.Self:
-		dns = systemResolvers()
+		// Never the node's own mesh DNS: dnsmasq would forward to itself
+		// (the system's resolver may still point there for a moment after
+		// an uplink comes back).
+		dns = systemResolvers(anycastIP(d.profile.Prefix))
 	case sel != nil:
 		dns = []string{sel.Addr}
 	}
@@ -814,12 +843,17 @@ func (g *gatewayReconciler) applyRouting(ctx context.Context, sel *gwChoice, usa
 		changed = true
 	}
 	var last []netlink.Rule
-	if auto != nil {
+	switch {
+	case auto != nil:
 		r := *netlink.NewRule()
-		r.Priority, r.Table = prioAutoWANLast, selfT
+		r.Priority, r.Table = prioLast, selfT
+		last = append(last, r)
+	case sel != nil && !sel.Self:
+		r := *netlink.NewRule()
+		r.Priority, r.Table = prioLast, tableGWBase+sel.ID
 		last = append(last, r)
 	}
-	if ch, err := rtnl.EnsureRules(prioAutoWANLast, prioAutoWANLast, last); err != nil {
+	if ch, err := rtnl.EnsureRules(prioLast, prioLast, last); err != nil {
 		return changed, err
 	} else if ch {
 		changed = true
@@ -957,11 +991,12 @@ func (g *gatewayReconciler) Teardown(ctx context.Context) error {
 		g.monStop = nil
 	}
 	g.stopProber()
+	g.applyHostDNS(ctx, false, "", func(string, string, string, ...any) {})
 	var errs []string
 	if _, err := rtnl.EnsureRules(ruleLo, ruleHi, nil); err != nil {
 		errs = append(errs, err.Error())
 	}
-	if _, err := rtnl.EnsureRules(prioAutoWANLast, prioAutoWANLast, nil); err != nil {
+	if _, err := rtnl.EnsureRules(prioLast, prioLast, nil); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if _, err := rtnl.FlushTables(tableNone, tableGWHi, nil); err != nil {
@@ -984,7 +1019,7 @@ func (g *gatewayReconciler) Teardown(ctx context.Context) error {
 }
 
 // systemResolvers reads the system's nameservers for dnsmasq to forward to.
-func systemResolvers() []string {
+func systemResolvers(exclude ...string) []string {
 	f, err := os.Open("/etc/resolv.conf")
 	if err != nil {
 		return nil
@@ -994,9 +1029,33 @@ func systemResolvers() []string {
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
-		if len(fields) >= 2 && fields[0] == "nameserver" && net.ParseIP(fields[1]) != nil {
+		if len(fields) >= 2 && fields[0] == "nameserver" && net.ParseIP(fields[1]) != nil && !slices.Contains(exclude, fields[1]) {
 			out = append(out, fields[1])
 		}
 	}
 	return out
+}
+
+// anycastIP is the mesh's anycast address, or "" for a bad prefix.
+func anycastIP(prefix string) string {
+	ip, err := anycastAddress(prefix)
+	if err != nil {
+		return ""
+	}
+	return ip
+}
+
+// forwardsToMesh reports whether dnsmasq's upstreams are mesh servers, not
+// a resolver on this host (loopback), which may be the system's own.
+func forwardsToMesh(upstreams []string) bool {
+	if len(upstreams) == 0 {
+		return false
+	}
+	for _, u := range upstreams {
+		host, _, _ := strings.Cut(u, "@")
+		if ip := net.ParseIP(host); ip == nil || ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }

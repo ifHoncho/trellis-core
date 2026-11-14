@@ -171,6 +171,23 @@ export async function saveProfile(input, opts = {}) {
   return res;
 }
 
+// saveMeshProfile sends a profile from this node to every node of the mesh:
+// all switch to it at one moment, delay seconds from now. The confirmation
+// lists what that does, including nodes that cannot follow and regulatory
+// modes it changes.
+export async function saveMeshProfile(input, delay = 60) {
+  const body = { ...input, delay_s: delay };
+  const res = await confirmAndApply((dry) => post('/profile/mesh' + (dry ? '?dry_run=1' : ''), body),
+    { title: 'Change the profile on every node?', confirm: 'Send to every node', always: true,
+      intro: 'This node sends the profile to every node it knows; they all switch to it at the same moment.' });
+  if (res && res.applied) {
+    const at = res.apply_at ? new Date(res.apply_at).toLocaleTimeString() : 'shortly';
+    toast(`Sent to ${(res.nodes || []).length + 1} nodes. Every node switches at ${at}.`, 'ok', 8000);
+    await loadConfig();
+  }
+  return res;
+}
+
 export async function identify(fingerprint) {
   try {
     await post('/radios/identify', { fingerprint, seconds: 10 });

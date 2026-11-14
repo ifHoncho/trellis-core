@@ -146,10 +146,9 @@ Add `?dry_run=1` to try a change. The answer is the same in both cases:
   node. `warning`: it interrupts something. `info`: nothing is interrupted.
   The web UI shows them and asks before it applies.
 - `ap` is present when the change alters how devices join the node's Wi-Fi.
-- **A change applies to this node only.** Nothing carries a profile to the
-  other nodes: each has its own copy, and a mesh-wide change means
-  installing it on every one. `PUT /profile` therefore answers about this
-  node's links to the others, which keep their profile:
+- **`PUT /profile` applies to this node only;** `POST /profile/mesh`
+  (below) sends a profile to every node. With `PUT /profile` the other
+  nodes keep their profile, so it answers about this node's links to them:
   - `leaves-mesh` (error): the node would have no link left that both
     profiles share and that has a neighbour, with the direct links it loses
     counted and named;
@@ -192,6 +191,7 @@ private mesh of its own, so that its Wi-Fi (`trellis-setup-XXXX`, passphrase
 
 | Request | Body |
 |---|---|
+| `POST /profile/mesh` | A profile for every node: `PUT /profile`'s forms plus `"delay_s"` (15–900, default 60). This node sends it to every node it knows over the mesh, authenticated under the mesh's key, and every node switches to it at the same moment, `delay_s` from now (the nodes keep one time). It gets the next revision (`revision` in the profile), and a node that missed it takes it from any node that has it, once it hears one. The mesh ID and secret cannot change this way (that is a re-key). Takes `?dry_run=1`; the answer adds `revision`, `apply_at` and `nodes` (those it goes to), and its effects are the mesh's: the links that restart at the switch, nodes that cannot follow (no radio for the new links, or an older version), and regulatory modes it changes on other nodes. `GET /status` follows it in `mesh_change`: the revision, the moment, and on the sending node each node's answer (`sent`, `has it`, `refused: …`). |
 | `POST /setup` | `{"callsign": "relay-7", "node_id": 0}` plus the profile in one of `PUT /profile`'s forms. Writes both files and applies them in one step. Takes `?dry_run=1`; the answer's `ap` is the Wi-Fi to join afterwards. |
 
 The first `PUT /password` of a node in setup mode needs no login: whoever

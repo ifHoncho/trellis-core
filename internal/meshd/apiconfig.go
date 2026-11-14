@@ -723,6 +723,8 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			case j < 0:
 				gone = append(gone, linkDesc(l))
 				lost = append(lost, peers(i)...)
+			case !carries(j) && v.Has != nil && !v.Has(i):
+				// Neither now nor after: nothing changes for this node.
 			case !carries(j):
 				noRadio = append(noRadio, linkDesc(l))
 				lost = append(lost, peers(i)...)
@@ -761,9 +763,13 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			if len(added) > 0 {
 				var to []string
 				for _, j := range added {
-					to = append(to, linkDesc(now[j]))
+					if carries(j) {
+						to = append(to, linkDesc(now[j]))
+					}
 				}
-				onto = " and puts it on " + listAnd(to)
+				if len(to) > 0 {
+					onto = " and puts it on " + listAnd(to)
+				}
 			}
 			switch {
 			case len(stay) == 0 && !v.Wired:

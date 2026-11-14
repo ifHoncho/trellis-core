@@ -1,0 +1,174 @@
+package meshd
+
+import (
+	"context"
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"meridian/trellis/internal/api"
+	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/gossip"
+	"meridian/trellis/internal/nodestate"
+)
+
+func meshChangeDaemon(t *testing.T) (*Daemon, string, []byte) {
+	t.Helper()
+	d, dir := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile})
+	d.ident = &nodestate.Identity{MAC: "02:00:00:00:00:01", NodeID: 1}
+	d.peers = gossip.NewTable(d.ident.MAC)
+	key, _ := gossip.Key("test-passphrase-not-secret", "trellis-alpha")
+	return d, dir, key
+}
+
+// profileAt is the test profile with the first link at another width and a
+// revision.
+func profileAt(t *testing.T, width int, rev uint64, mutate func(*config.Profile)) string {
+	t.Helper()
+	p, err := config.ParseProfile([]byte(testProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Radio.Width, p.Revision = width, rev
+	if mutate != nil {
+		mutate(p)
+	}
+	data, err := p.YAML("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func offer(t *testing.T, key []byte, o gossip.Offer) []byte {
+	t.Helper()
+	o.V, o.MAC, o.Callsign = 1, "02:00:00:00:00:02", "picker"
+	pkt, err := gossip.SealOffer(key, &o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkt
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// An offer is kept, and switched to at its moment; the file then has the
+// new profile and its revision.
+func TestMeshChangeOffer(t *testing.T) {
+	d, dir, key := meshChangeDaemon(t)
+	from := &net.UDPAddr{IP: net.ParseIP("10.73.2.1"), Port: gossip.Port}
+	at := time.Now().Add(300 * time.Millisecond)
+	if err := d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 3, ApplyAtMS: at.UnixMilli(), Profile: profileAt(t, 40, 3, nil)}), from); err != nil {
+		t.Fatal(err)
+	}
+	if c := d.meshChangeState(); c == nil || c.State != "pending" || c.Rev != 3 || c.From != "picker" {
+		t.Fatalf("pending change: %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", meshChangeFile)); err != nil {
+		t.Errorf("the pending change is not kept on disk: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "profile.yaml"))
+	if strings.Contains(string(data), "revision") {
+		t.Fatal("switched before the moment")
+	}
+	waitFor(t, "the switch", func() bool { c := d.meshChangeState(); return c != nil && c.State != "pending" })
+	if c := d.meshChangeState(); c.State != "applied" {
+		t.Fatalf("after the switch: %+v", c)
+	}
+	p, err := config.LoadProfile(filepath.Join(dir, "profile.yaml"))
+	if err != nil || p.Revision != 3 || p.Radio.Width != 40 {
+		t.Fatalf("installed profile: %+v %v", p, err)
+	}
+	if st := d.meshChangeStatus(); st == nil || st.Revision != 3 || !strings.Contains(st.Summary, "at 40 MHz") {
+		t.Errorf("status: %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", meshChangeFile)); err == nil {
+		t.Error("the change is still kept after it is in force")
+	}
+
+	// Refused: another secret (a re-key), an older revision. Ignored:
+	// another key altogether.
+	d.pending = nil // as if the reload had been applied
+	d.profile = p
+	other := profileAt(t, 20, 5, func(p *config.Profile) { p.SAEPassphrase = "another-secret-1234" })
+	_ = d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 5, Profile: other}), from)
+	_ = d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 2, Profile: profileAt(t, 20, 2, nil)}), from)
+	if c := d.meshChangeState(); c.Rev != 3 {
+		t.Errorf("a refused offer replaced the change: %+v", c)
+	}
+	wrong, _ := gossip.Key("another-secret-1234", "trellis-alpha")
+	if err := d.handleProfileOffer(key, offer(t, wrong, gossip.Offer{Rev: 9, Profile: profileAt(t, 20, 9, nil)}), from); !errors.Is(err, gossip.ErrAuth) {
+		t.Errorf("an offer under another key: %v", err)
+	}
+}
+
+// A change accepted before a restart is still due after it.
+func TestMeshChangeSurvivesRestart(t *testing.T) {
+	d, dir, key := meshChangeDaemon(t)
+	from := &net.UDPAddr{IP: net.ParseIP("10.73.2.1")}
+	at := time.Now().Add(10 * time.Minute)
+	_ = d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 4, ApplyAtMS: at.UnixMilli(), Profile: profileAt(t, 40, 4, nil)}), from)
+	d.meshChanges.timer.Stop()
+
+	d2, err := New(Options{NodePath: filepath.Join(dir, "node.yaml"), ProfilePath: filepath.Join(dir, "profile.yaml"),
+		StateDir: filepath.Join(dir, "state"), RunDir: filepath.Join(dir, "run"), SysRoot: filepath.Join(dir, "sys"), Log: d.log, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2.loadMeshChange()
+	if c := d2.meshChangeState(); c == nil || c.Rev != 4 || c.State != "pending" || c.ApplyAt.Unix() != at.Unix() {
+		t.Fatalf("after a restart: %+v", c)
+	}
+	d2.meshChanges.timer.Stop()
+}
+
+// The sending side: what a dry run says, and what is refused.
+func TestSetMeshProfile(t *testing.T) {
+	d, _, _ := meshChangeDaemon(t)
+	d.time = newTimeReconciler(d)
+	d.peers.Update(&gossip.Record{V: 1, MAC: "02:00:00:00:00:02", ID: 2, Callsign: "node-2", Addr: "10.73.2.1", Boot: 1, Seq: 1, MeshChange: true, Regulatory: "unrestricted"}, "10.73.2.1")
+	d.peers.Update(&gossip.Record{V: 1, MAC: "02:00:00:00:00:03", ID: 3, Callsign: "old-3", Addr: "10.73.3.1", Boot: 1, Seq: 1}, "10.73.3.1")
+	ctx := context.Background()
+	in := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 0, nil)}}
+	res, err := d.SetMeshProfile(ctx, in, true)
+	if err != nil || !res.Changed || res.Applied || res.ApplyAt == nil || len(res.Nodes) != 1 || res.Nodes[0] != "node-2" {
+		t.Fatalf("dry run: %+v %v", res, err)
+	}
+	if !hasEffect(res.Effects, "info", "mesh-change") || !hasEffect(res.Effects, "warning", "mesh-change-old") || hasEffect(res.Effects, "warning", "this-node-only") {
+		t.Errorf("effects: %+v", res.Effects)
+	}
+	// Every node switches together: nothing drops for good, the changed
+	// link restarts.
+	if hasEffect(res.Effects, "error", "leaves-mesh") || hasEffect(res.Effects, "warning", "links-drop") || !strings.Contains(effectText(res.Effects, "mesh-change-restart"), "the 5 GHz · ch 149 link") {
+		t.Errorf("mesh-wide framing: %+v", res.Effects)
+	}
+	// node-2 runs unrestricted; the profile sent is in country mode.
+	if msg := effectText(res.Effects, "mesh-change-regulatory"); !strings.Contains(msg, "node-2 from unrestricted to country mode (US)") {
+		t.Errorf("regulatory change on another node: %q", msg)
+	}
+	if until := time.Until(*res.ApplyAt); until < 55*time.Second || until > 61*time.Second {
+		t.Errorf("default switch in %v", until)
+	}
+	rekey := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 20, 0, func(p *config.Profile) { p.SAEPassphrase = "another-secret-1234" })}}
+	if _, err := d.SetMeshProfile(ctx, rekey, true); err == nil || !strings.Contains(err.Error(), "re-key") {
+		t.Errorf("a secret change: %v", err)
+	}
+	in.DelaySeconds = 5
+	if _, err := d.SetMeshProfile(ctx, in, true); err == nil {
+		t.Error("a switch 5 s away was accepted")
+	}
+}

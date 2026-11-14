@@ -84,6 +84,11 @@ type Profile struct {
 	LegacyRadio2 *RadioPlan `yaml:"radio2,omitempty" json:"radio2,omitempty"`
 	Prefix       string     `yaml:"prefix" json:"prefix"` // IPv4 prefix, default 10.73.0.0/16
 	Batman       BatmanPlan `yaml:"batman" json:"batman"`
+	// Revision counts mesh-wide changes: a profile sent to every node
+	// (meshd meshchange.go) carries a higher one, and a node takes only a
+	// profile whose revision is higher than its own. 0 for a profile that
+	// was never sent that way.
+	Revision uint64 `yaml:"revision,omitempty" json:"revision,omitempty"`
 
 	// fromRadio2: Links[0] was written as "radio2", so that is what an
 	// error about it names.

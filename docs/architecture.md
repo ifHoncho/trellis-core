@@ -553,6 +553,15 @@ the bridge as a client port.
     (including ARP's) pass on a node with no uplink of its own. It also lets
     that node's own traffic out. The main table is never written, and wins
     whenever it has a route.
+- **A node with no uplink at all** still reaches the internet itself
+  (package updates, anything it fetches): the same last-resort rule points
+  at the table of the gateway its clients use, and while the main table has
+  no default route meshd points the system's resolver at the node's own
+  mesh DNS (dnsmasq on the anycast address), through systemd-resolved (a
+  per-link server on `br-mesh`) or NetworkManager (a global DNS setting),
+  and puts it back when the node has an uplink again or meshd stops. It
+  does so only once dnsmasq forwards to the gateway, never to the system's
+  resolver, which would make a loop.
 - **Choice of WAN:** `gateway.wan`, then a `wan` port, then an auto WAN, then
   the system's default route.
 
@@ -1163,6 +1172,19 @@ Validation-first keeps a bad config from ever reaching a running node.
   reload it: what is on disk and what runs can't drift apart, and a change
   the reload refuses is rolled back. A file written this way lists only
   the settings that differ from the defaults, and keeps no comments.
+- **Mesh-wide changes.** A profile changed on one node can go to every
+  node (`POST /profile/mesh`). The node gives it the next revision and
+  sends it to every node it knows, unicast on the gossip port and
+  authenticated under the gossip key, so only a node that holds the mesh
+  secret can make one; each node keeps it (on disk, so a restart does not
+  lose it), answers, and switches at one moment a minute or so ahead, by
+  its own clock (the nodes keep one time, §13). Gossip carries every node's
+  revision: a node that missed a change asks one that has it, and switches
+  at once. The mesh ID and secret cannot change this way, since nodes that
+  switched and nodes that did not could no longer hear each other; that is
+  a re-key, with its own procedure (roadmap). The dry run speaks for the
+  whole mesh: the links that restart at the switch, the nodes that cannot
+  follow, and every node whose regulatory mode the change would alter.
 - **Dry runs.** Every change can be tried first. The answer lists what it
   would do to the running node (the mesh link moves, the node leaves the
   mesh, devices must rejoin the Wi-Fi), worked out from the radios present,

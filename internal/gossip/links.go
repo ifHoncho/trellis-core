@@ -60,6 +60,10 @@ type Link struct {
 
 // SealMessage encodes and authenticates a query or a reply.
 func SealMessage(key []byte, magic string, v any) ([]byte, error) {
+	return seal(key, magic, v, MaxPacket)
+}
+
+func seal(key []byte, magic string, v any, max int) ([]byte, error) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -70,16 +74,16 @@ func SealMessage(key []byte, magic string, v any) ([]byte, error) {
 	m := hmac.New(sha256.New, key)
 	m.Write(pkt)
 	pkt = append(pkt, m.Sum(nil)[:MACLen]...)
-	if len(pkt) > MaxPacket {
-		return nil, fmt.Errorf("gossip message is %d bytes, over the %d-byte cap", len(pkt), MaxPacket)
+	if len(pkt) > max {
+		return nil, fmt.Errorf("gossip message is %d bytes, over the %d-byte cap", len(pkt), max)
 	}
 	return pkt, nil
 }
 
-// Kind returns the magic of a packet: Magic, QueryMagic, LinksMagic, or
-// "" for anything else.
+// Kind returns the magic of a packet (Magic, QueryMagic, LinksMagic,
+// OfferMagic, AckMagic, RequestMagic), or "" for anything else.
 func Kind(pkt []byte) string {
-	for _, m := range []string{Magic, QueryMagic, LinksMagic} {
+	for _, m := range []string{Magic, QueryMagic, LinksMagic, OfferMagic, AckMagic, RequestMagic} {
 		if bytes.HasPrefix(pkt, []byte(m)) {
 			return m
 		}

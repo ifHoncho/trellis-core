@@ -1,4 +1,7 @@
-# Bench nodes for scripts/deploy.sh (make deploy). Copy to deploy.hosts,
-# which git ignores. One user@host per line.
+# Test nodes for scripts/deploy.sh (make deploy). Copy to deploy.hosts,
+# which git ignores. One user@host per line; a node that may be off the LAN
+# also gives its mesh address, and is then reached over the mesh through
+# another node of the list whenever its LAN address does not answer.
 user@192.0.2.11
 user@192.0.2.12
+user@192.0.2.13 mesh=10.73.89.1

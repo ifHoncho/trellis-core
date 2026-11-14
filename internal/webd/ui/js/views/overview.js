@@ -36,7 +36,11 @@ export function overview() {
   const wired = (st.client_network.leases || []).filter((l) => !clients.some((c) => c.mac === l.mac) && Date.parse(l.expires) > Date.now());
   const mc = st.batman.multicast;
   const mcTone = { efficient: 'ok', partial: 'warn', flooding: 'bad' }[mc.path] || 'warn';
-  const notes = [...alerts(st), ...st.warnings.filter((w) => w.level === 'info')].slice(0, 4);
+  // A mesh-wide profile change on its way comes first: every node switches.
+  const mch = st.mesh_change && st.mesh_change.state === 'pending' ? st.mesh_change : null;
+  const change = mch ? [{ level: 'warning', source: 'mesh', code: 'profile change',
+    message: `Revision ${mch.revision} of the mesh profile from ${mch.sender ? 'this node' : mch.from}${mch.summary ? ` (${mch.summary})` : ''}: every node switches at ${new Date(mch.apply_at).toLocaleTimeString()}.` }] : [];
+  const notes = [...change, ...alerts(st), ...st.warnings.filter((w) => w.level === 'info')].slice(0, 4);
   const links = meshLinks(st);
 
   return h('div.page',

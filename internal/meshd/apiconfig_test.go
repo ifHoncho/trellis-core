@@ -671,3 +671,31 @@ func TestConfigReadBackBeforeNextPass(t *testing.T) {
 		t.Errorf("after the pass: callsign %q, want relay-7", got)
 	}
 }
+
+// A node with one radio on its second link: a change to a third link it has
+// no radio for, now or after, does nothing to it (it once read as leaving
+// the first link for the third).
+func TestProfileEffectsLinkNotCarried(t *testing.T) {
+	cur, err := config.ParseProfile([]byte(testProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Radio = config.RadioPlan{Band: "2g", Channel: 6, Width: 20}
+	cur.Links = []config.RadioPlan{{Band: "5g", Channel: 149, Width: 80}, {Band: "s1g", Channel: 26, Width: 2}}
+	p := *cur
+	p.Links = []config.RadioPlan{{Band: "5g", Channel: 149, Width: 80}, {Band: "s1g", Channel: 30, Width: 2}}
+	on5 := func(i int) bool { return i == 1 } // the one radio, on 5 GHz, both before and after
+	v := ProfileView{Peers: [][]string{nil, {"relay-2"}, nil}, Has: on5, Carries: on5}
+	es := profileEffects(cur, &p, false, v)
+	for _, e := range es {
+		if e.Level != "info" {
+			t.Errorf("unexpected %s %s: %s", e.Level, e.Code, e.Message)
+		}
+		if strings.Contains(e.Message, "takes the node off") || strings.Contains(e.Message, "no radio left") {
+			t.Errorf("claims a change for this node: %s", e.Message)
+		}
+	}
+	if !hasEffect(es, "info", "link-added") {
+		t.Errorf("the new HaLow link is not mentioned: %+v", es)
+	}
+}

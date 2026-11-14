@@ -92,3 +92,36 @@ func TestWatcher(t *testing.T) {
 		t.Errorf("no gpsd: %+v", st)
 	}
 }
+
+// Before any fix, the satellites heard and their strengths come from the
+// receiver's GSV sentences (gpsd's satellite report leaves them out until
+// their positions are known). As a GPS-and-BeiDou receiver sent them,
+// indoors by a window.
+func TestApplyGSV(t *testing.T) {
+	var st State
+	now := time.Now()
+	for _, l := range []string{
+		"$GPGSV,2,1,05,05,,,26,15,,,25,20,,,33,29,,,14,0*6F",
+		"$GPGSV,2,2,05,30,,,,0*6F", // heard, no strength yet
+		"$BDGSV,1,1,01,33,,,24,0*73",
+		"$GPGGA,000000.00,,,,,0,00,25.5,,,,,,*6F",
+	} {
+		apply(&st, []byte(l), now)
+	}
+	want := []int{33, 26, 25, 24, 14}
+	if len(st.Signals) != len(want) {
+		t.Fatalf("signals %v, want %v", st.Signals, want)
+	}
+	for i := range want {
+		if st.Signals[i] != want[i] {
+			t.Fatalf("signals %v, want %v", st.Signals, want)
+		}
+	}
+	// The next round replaces a talker's set.
+	for _, l := range []string{"$GPGSV,1,1,02,05,,,31,20,,,35,0*6F"} {
+		apply(&st, []byte(l), now)
+	}
+	if len(st.Signals) != 3 || st.Signals[0] != 35 || st.Signals[2] != 24 {
+		t.Errorf("after a new GPS round: %v", st.Signals)
+	}
+}

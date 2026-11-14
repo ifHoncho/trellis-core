@@ -1,0 +1,572 @@
+package meshd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"net"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"meridian/trellis/internal/api"
+	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/gossip"
+	"meridian/trellis/internal/status"
+)
+
+// Mesh-wide profile changes (roadmap "mesh-wide changes from one node";
+// track C's C2 and M8's re-key build on it). The operator changes the
+// profile on one node, which sends it to every node it knows, unicast on the
+// gossip port, authenticated under the mesh's gossip key, with the moment
+// they all switch to it. Each node keeps the change (on disk, so a restart
+// in between does not lose it), answers, and switches at that moment; the
+// nodes keep one time (G1). A node that missed it and sees, in gossip,
+// another node on a higher revision asks that node for its profile and
+// switches at once.
+//
+// What a change may not do: change the mesh ID or the secret. Both make a
+// new gossip key, under which the nodes that switched and those that did
+// not can no longer hear each other; that is a re-key, which needs its own
+// procedure (M8).
+
+const (
+	meshChangeFile     = "mesh-change.json"
+	meshChangeDefault  = 60 * time.Second
+	meshChangeMin      = 15 * time.Second
+	meshChangeMax      = 15 * time.Minute
+	meshChangeResend   = 2 * time.Second
+	meshChangeLinger   = 30 * time.Second // offers go on this long past the switch
+	meshChangeShowFor  = 10 * time.Minute // status shows the last change this long
+	meshChangeAskEvery = 10 * time.Second // a node behind asks at most this often
+)
+
+// meshChange is a profile change this node has, waiting to switch or done.
+type meshChange struct {
+	Rev     uint64    `json:"rev"`
+	ApplyAt time.Time `json:"apply_at"`
+	From    string    `json:"from"` // callsign of the node that sent it
+	Sender  bool      `json:"sender"`
+	YAML    string    `json:"yaml"`
+	State   string    `json:"state"` // pending, applied, failed
+	Error   string    `json:"error,omitempty"`
+	Done    time.Time `json:"done,omitempty"`
+}
+
+// meshChangeTarget is one node an offer goes to, on the sender.
+type meshChangeTarget struct {
+	callsign, mac string
+	ip            net.IP
+	state         string // sent, has it, refused: …
+}
+
+type meshChanges struct {
+	mu      sync.Mutex
+	cur     *meshChange
+	targets []*meshChangeTarget
+	timer   *time.Timer
+	stop    chan struct{} // ends the sender's resend loop
+	asked   time.Time
+	answer  map[string]time.Time // requests answered, by asker
+}
+
+// meshChangeFromPeer reports whether a peer record can follow a mesh-wide
+// change (it says so in gossip).
+func meshChangeFromPeer(r gossip.Record) bool { return r.MeshChange }
+
+// currentRevision is the highest profile revision this node runs or has
+// accepted.
+func (d *Daemon) currentRevision() uint64 {
+	_, p := d.conf()
+	rev := p.Revision
+	d.pendingMu.Lock()
+	if d.pending != nil && d.pending.profile.Revision > rev {
+		rev = d.pending.profile.Revision
+	}
+	d.pendingMu.Unlock()
+	m := &d.meshChanges
+	m.mu.Lock()
+	if m.cur != nil && m.cur.State == "pending" && m.cur.Rev > rev {
+		rev = m.cur.Rev
+	}
+	m.mu.Unlock()
+	return rev
+}
+
+// SetMeshProfile sends a profile to every node of the mesh (POST
+// /profile/mesh).
+func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryRun bool) (*api.ApplyResult, error) {
+	cur, curProfile := d.conf()
+	setup := d.setupState()
+	if setup.Needed {
+		return nil, api.Invalid("this node has no mesh yet: install a profile on it first")
+	}
+	p, err := d.profileFrom(in.ProfileInput, curProfile, false)
+	if err != nil {
+		return nil, err
+	}
+	if p.MeshID != curProfile.MeshID || p.SAEPassphrase != curProfile.SAEPassphrase {
+		return nil, api.Invalid("a mesh-wide change cannot change the mesh ID or the secret: nodes that switched and nodes that did not could no longer hear each other (that is a re-key, not built yet). Change them on each node instead")
+	}
+	delay := meshChangeDefault
+	if in.DelaySeconds != 0 {
+		delay = time.Duration(in.DelaySeconds) * time.Second
+	}
+	if delay < meshChangeMin || delay > meshChangeMax {
+		return nil, api.Invalid("the switch can be %v to %v from now", meshChangeMin, meshChangeMax)
+	}
+	q := *p
+	q.Revision = curProfile.Revision
+	res := &api.ApplyResult{Changed: !sameYAML(*curProfile, q), Effects: profileEffects(curProfile, p, false, d.profileView(cur, curProfile, p))}
+	res.Effects = meshWideEffects(res.Effects, curProfile, p)
+	at := time.Now().Add(delay).Truncate(time.Second)
+	res.ApplyAt = &at
+	var behind []string
+	for _, peer := range d.peers.Peers() {
+		r := peer.Record
+		if !meshChangeFromPeer(r) {
+			behind = append(behind, r.Callsign)
+			continue
+		}
+		res.Nodes = append(res.Nodes, r.Callsign)
+	}
+	slices.Sort(res.Nodes)
+	slices.Sort(behind)
+	res.Effects = append(res.Effects, effect("info", "mesh-change", "Every node switches at %s (in %s): this one and %s.",
+		at.Format("15:04:05"), delay.Round(time.Second), map[bool]string{true: "no other node known yet", false: listAnd(res.Nodes)}[len(res.Nodes) == 0]))
+	// The regulatory setting goes to every node with the profile: name the
+	// nodes whose setting this changes, so it is never changed unseen.
+	want := gossip.RegulatoryEntry(p.Regulatory.Mode, p.Regulatory.Country)
+	regChange := map[string][]string{}
+	for _, peer := range d.peers.Peers() {
+		r := peer.Record
+		if meshChangeFromPeer(r) && r.Regulatory != "" && r.Regulatory != want {
+			regChange[r.Regulatory] = append(regChange[r.Regulatory], r.Callsign)
+		}
+	}
+	for _, from := range slices.Sorted(maps.Keys(regChange)) {
+		names := regChange[from]
+		slices.Sort(names)
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-regulatory", "This changes the regulatory mode of %s from %s to %s.",
+			listAnd(names), regWords(from), regWords(want)))
+	}
+	if len(behind) > 0 {
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s %s a version that cannot follow a mesh-wide change: install the profile there by hand, or %s keep the old one.",
+			listAnd(behind), map[bool]string{true: "runs", false: "run"}[len(behind) == 1], map[bool]string{true: "it will", false: "they will"}[len(behind) == 1]))
+	}
+	if c := d.time.Clock(); !c.Synced {
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-clock", "This node's clock is not synchronised (%s): nodes switch when their own clocks reach the moment, so they may switch apart.", c.Note))
+	}
+	if m := d.meshChangeState(); m != nil && m.State == "pending" {
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-replaced", "This replaces the change from %s due at %s.", m.From, m.ApplyAt.Format("15:04:05")))
+	}
+	sortEffects(res.Effects)
+	if dryRun || !res.Changed {
+		return res, nil
+	}
+
+	p.Revision = max(d.currentRevision(), d.highestPeerRevision()) + 1
+	data, err := p.YAML("")
+	if err != nil {
+		return nil, err
+	}
+	me := d.identity()
+	if me == nil || d.gossip == nil || d.gossip.currentKey() == nil {
+		return nil, errors.New("gossip has not started: try again in a moment")
+	}
+	c := &meshChange{Rev: p.Revision, ApplyAt: at, From: cur.Callsign, Sender: true, YAML: string(data), State: "pending"}
+	if err := d.acceptMeshChange(c); err != nil {
+		return nil, err
+	}
+	m := &d.meshChanges
+	m.mu.Lock()
+	m.targets = nil
+	for _, peer := range d.peers.Peers() {
+		r := peer.Record
+		if ip := net.ParseIP(r.Addr); ip != nil && meshChangeFromPeer(r) {
+			m.targets = append(m.targets, &meshChangeTarget{callsign: r.Callsign, mac: r.MAC, ip: ip, state: "sent"})
+		}
+	}
+	if m.stop != nil {
+		close(m.stop)
+	}
+	stop := make(chan struct{})
+	m.stop = stop
+	m.mu.Unlock()
+	go d.sendMeshChange(c, stop)
+	d.log.Info("mesh-wide profile change sent", "revision", c.Rev, "apply_at", at.Format(time.RFC3339), "nodes", strings.Join(res.Nodes, " "))
+	res.Applied, res.Revision = true, c.Rev
+	return res, nil
+}
+
+// highestPeerRevision is the highest revision another node says it runs.
+func (d *Daemon) highestPeerRevision() uint64 {
+	var rev uint64
+	if d.peers == nil {
+		return 0
+	}
+	for _, p := range d.peers.Peers() {
+		rev = max(rev, p.Record.ProfileRev)
+	}
+	return rev
+}
+
+// sendMeshChange offers c to every target that has not answered, until all
+// have or the switch is well past.
+func (d *Daemon) sendMeshChange(c *meshChange, stop chan struct{}) {
+	me := d.identity()
+	key := d.gossip.currentKey()
+	cur, _ := d.conf()
+	pkt, err := gossip.SealOffer(key, &gossip.Offer{V: 1, MAC: me.MAC, Callsign: cur.Callsign, Rev: c.Rev, ApplyAtMS: c.ApplyAt.UnixMilli(), Profile: c.YAML})
+	if err != nil {
+		d.log.Error("cannot send the mesh-wide change", "err", err)
+		return
+	}
+	tick := time.NewTicker(meshChangeResend)
+	defer tick.Stop()
+	for {
+		m := &d.meshChanges
+		m.mu.Lock()
+		var waiting []*meshChangeTarget
+		for _, t := range m.targets {
+			if t.state == "sent" {
+				waiting = append(waiting, t)
+			}
+		}
+		m.mu.Unlock()
+		if len(waiting) == 0 || time.Now().After(c.ApplyAt.Add(meshChangeLinger)) {
+			return
+		}
+		for _, t := range waiting {
+			_ = d.gossip.sendTo(pkt, t.ip)
+		}
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// handleProfileOffer takes another node's offer.
+func (d *Daemon) handleProfileOffer(key, pkt []byte, from *net.UDPAddr) error {
+	o, err := gossip.OpenOffer(key, pkt)
+	if err != nil {
+		return err
+	}
+	me := d.identity()
+	if me == nil || o.MAC == me.MAC {
+		return nil
+	}
+	ok, why := true, ""
+	p, err := config.ParseProfile([]byte(o.Profile))
+	_, curProfile := d.conf()
+	switch {
+	case err != nil:
+		ok, why = false, "the profile is not valid here: "+err.Error()
+	case p.Revision != o.Rev:
+		ok, why = false, "the offer's revision does not match its profile"
+	case p.MeshID != curProfile.MeshID || p.SAEPassphrase != curProfile.SAEPassphrase:
+		ok, why = false, "a mesh-wide change cannot change the mesh ID or the secret"
+	case o.ApplyAtMS > time.Now().Add(meshChangeMax+time.Minute).UnixMilli():
+		ok, why = false, "the switch is too far in the future (clocks apart?)"
+	}
+	if ok {
+		at := time.UnixMilli(o.ApplyAtMS)
+		if o.ApplyAtMS == 0 {
+			at = time.Now()
+		}
+		have := d.currentRevision()
+		switch {
+		case o.Rev < have:
+			ok, why = false, fmt.Sprintf("this node already has revision %d", have)
+		case o.Rev == have:
+			// A repeat, or this node has it already: answer again.
+		default:
+			c := &meshChange{Rev: o.Rev, ApplyAt: at, From: o.Callsign, YAML: o.Profile, State: "pending"}
+			if err := d.acceptMeshChange(c); err != nil {
+				ok, why = false, err.Error()
+			} else {
+				d.log.Info("mesh-wide profile change received", "revision", o.Rev, "from", o.Callsign, "apply_at", at.Format(time.RFC3339))
+			}
+		}
+	}
+	if d.gossip == nil {
+		return nil // not started (tests)
+	}
+	ack, err := gossip.SealMessage(key, gossip.AckMagic, &gossip.Ack{V: 1, MAC: me.MAC, Rev: o.Rev, OK: ok, Err: gossip.TrimErr(why)})
+	if err != nil {
+		return err
+	}
+	return d.gossip.sendTo(ack, from.IP)
+}
+
+// handleProfileAck records a node's answer on the sender.
+func (d *Daemon) handleProfileAck(key, pkt []byte) error {
+	a, err := gossip.OpenAck(key, pkt)
+	if err != nil {
+		return err
+	}
+	m := &d.meshChanges
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur == nil || !m.cur.Sender || a.Rev != m.cur.Rev {
+		return nil
+	}
+	for _, t := range m.targets {
+		if t.mac == a.MAC {
+			t.state = "has it"
+			if !a.OK {
+				t.state = "refused: " + a.Err
+			}
+		}
+	}
+	return nil
+}
+
+// handleProfileRequest answers a node that asks for the profile of a
+// revision this node runs, or is waiting to switch to.
+func (d *Daemon) handleProfileRequest(key, pkt []byte, from *net.UDPAddr) error {
+	r, err := gossip.OpenRequest(key, pkt)
+	if err != nil {
+		return err
+	}
+	me := d.identity()
+	if me == nil {
+		return nil
+	}
+	m := &d.meshChanges
+	m.mu.Lock()
+	if m.answer == nil {
+		m.answer = map[string]time.Time{}
+	}
+	who := from.IP.String()
+	recent := time.Since(m.answer[who]) < 5*time.Second
+	if !recent {
+		m.answer[who] = time.Now()
+	}
+	pending := m.cur
+	m.mu.Unlock()
+	if recent {
+		return nil
+	}
+	o := &gossip.Offer{V: 1, MAC: me.MAC, Rev: r.Rev}
+	cur, curProfile := d.conf()
+	o.Callsign = cur.Callsign
+	switch {
+	case curProfile.Revision == r.Rev:
+		data, err := curProfile.YAML("")
+		if err != nil {
+			return err
+		}
+		o.Profile = string(data)
+	case pending != nil && pending.Rev == r.Rev && pending.State == "pending":
+		o.Profile, o.ApplyAtMS = pending.YAML, pending.ApplyAt.UnixMilli()
+	default:
+		return nil
+	}
+	pkt, err = gossip.SealOffer(key, o)
+	if err != nil {
+		return err
+	}
+	return d.gossip.sendTo(pkt, from.IP)
+}
+
+// askForNewerProfile asks a node that runs a higher revision for it: this
+// node missed a change. Called on every gossip pass; asks at most every
+// meshChangeAskEvery.
+func (d *Daemon) askForNewerProfile(key []byte) {
+	have := d.currentRevision()
+	var best *gossip.Record
+	for _, p := range d.peers.Peers() {
+		r := p.Record
+		if r.ProfileRev > have && (best == nil || r.ProfileRev > best.ProfileRev) && net.ParseIP(r.Addr) != nil {
+			rr := r
+			best = &rr
+		}
+	}
+	if best == nil {
+		return
+	}
+	m := &d.meshChanges
+	m.mu.Lock()
+	due := time.Since(m.asked) >= meshChangeAskEvery
+	if due {
+		m.asked = time.Now()
+	}
+	m.mu.Unlock()
+	me := d.identity()
+	if !due || me == nil {
+		return
+	}
+	pkt, err := gossip.SealMessage(key, gossip.RequestMagic, &gossip.Request{V: 1, MAC: me.MAC, Rev: best.ProfileRev})
+	if err != nil {
+		return
+	}
+	d.log.Info("another node runs a newer mesh profile; asking it", "node", best.Callsign, "revision", best.ProfileRev, "this_node", have)
+	_ = d.gossip.sendTo(pkt, net.ParseIP(best.Addr))
+}
+
+// acceptMeshChange keeps c, on disk too, and arranges the switch.
+func (d *Daemon) acceptMeshChange(c *meshChange) error {
+	if err := d.saveMeshChange(c); err != nil {
+		return fmt.Errorf("cannot keep the change: %w", err)
+	}
+	m := &d.meshChanges
+	m.mu.Lock()
+	m.cur = c
+	if m.timer != nil {
+		m.timer.Stop()
+	}
+	m.timer = time.AfterFunc(max(0, time.Until(c.ApplyAt)), func() { d.applyMeshChange(c.Rev) })
+	m.mu.Unlock()
+	return nil
+}
+
+// applyMeshChange installs the change with revision rev, if it is still the
+// one waiting.
+func (d *Daemon) applyMeshChange(rev uint64) {
+	m := &d.meshChanges
+	m.mu.Lock()
+	c := m.cur
+	m.mu.Unlock()
+	if c == nil || c.Rev != rev || c.State != "pending" {
+		return
+	}
+	err := d.installMeshProfile(c)
+	m.mu.Lock()
+	if m.cur == c {
+		c.State, c.Done = "applied", time.Now()
+		if err != nil {
+			c.State, c.Error = "failed", err.Error()
+		}
+	}
+	m.mu.Unlock()
+	if err != nil {
+		d.log.Error("mesh-wide profile change failed", "revision", rev, "err", err)
+	} else {
+		d.log.Info("mesh-wide profile change in force", "revision", rev, "from", c.From)
+	}
+	_ = os.Remove(filepath.Join(d.opts.StateDir, meshChangeFile))
+	d.Kick("mesh-wide profile change")
+}
+
+// installMeshProfile writes the change's profile and reloads, as a
+// profile change through the API does.
+func (d *Daemon) installMeshProfile(c *meshChange) error {
+	p, err := config.ParseProfile([]byte(c.YAML))
+	if err != nil {
+		return err
+	}
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	cur, curProfile := d.conf()
+	if curProfile.Revision >= p.Revision {
+		return nil // in force already
+	}
+	data, err := p.YAML(fmt.Sprintf(profileFileHeader, stamp()) + fmt.Sprintf("\nRevision %d, a mesh-wide change from %s.", p.Revision, c.From))
+	if err != nil {
+		return err
+	}
+	return d.commit(&fileChange{path: d.profilePath(cur), data: data, mode: 0o600})
+}
+
+func (d *Daemon) saveMeshChange(c *meshChange) error {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	// The profile in it holds the mesh secret.
+	return writeFileAtomic(filepath.Join(d.opts.StateDir, meshChangeFile), data, 0o600)
+}
+
+// loadMeshChange picks up a change accepted before a restart.
+func (d *Daemon) loadMeshChange() {
+	data, err := os.ReadFile(filepath.Join(d.opts.StateDir, meshChangeFile))
+	if err != nil {
+		return
+	}
+	var c meshChange
+	if json.Unmarshal(data, &c) != nil || c.State != "pending" || c.Rev <= d.currentRevision() {
+		_ = os.Remove(filepath.Join(d.opts.StateDir, meshChangeFile))
+		return
+	}
+	d.log.Info("a mesh-wide profile change from before the restart is still due", "revision", c.Rev, "apply_at", c.ApplyAt.Format(time.RFC3339))
+	_ = d.acceptMeshChange(&c)
+}
+
+func (d *Daemon) meshChangeState() *meshChange {
+	m := &d.meshChanges
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cur == nil {
+		return nil
+	}
+	c := *m.cur
+	return &c
+}
+
+// meshChangeStatus is the change for status: pending, or done in the last
+// meshChangeShowFor.
+func (d *Daemon) meshChangeStatus() *status.MeshChange {
+	m := &d.meshChanges
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.cur
+	if c == nil || (c.State != "pending" && time.Since(c.Done) > meshChangeShowFor) {
+		return nil
+	}
+	st := &status.MeshChange{Revision: c.Rev, ApplyAt: c.ApplyAt, From: c.From, Sender: c.Sender, State: c.State, Error: c.Error}
+	if p, err := config.ParseProfile([]byte(c.YAML)); err == nil {
+		var links []string
+		for _, l := range p.AllLinks() {
+			links = append(links, fmt.Sprintf("%s at %d MHz", l.Name(), l.Width))
+		}
+		st.Summary = strings.Join(links, ", ")
+	}
+	if c.Sender {
+		for _, t := range m.targets {
+			st.Nodes = append(st.Nodes, status.MeshChangeNode{Callsign: t.callsign, State: t.state})
+		}
+	}
+	return st
+}
+
+// regWords says a gossip regulatory value in words: "unrestricted",
+// "country mode (US)".
+func regWords(v string) string {
+	if mode, country, ok := strings.Cut(v, ":"); ok {
+		return fmt.Sprintf("%s mode (%s)", mode, country)
+	}
+	return v
+}
+
+// oneNodeOnly are the effects of installing a profile on one node that do
+// not hold when every node switches at once: its links to the others drop
+// only because the others keep the old profile.
+var oneNodeOnly = []string{"this-node-only", "leaves-mesh", "links-drop", "link-restarts"}
+
+// meshWideEffects turns the effects of installing p on this node into those
+// of a change every node makes at the same moment: links whose settings
+// change restart everywhere at the switch, for a few seconds, and nothing
+// is cut off by the others keeping the old profile.
+func meshWideEffects(es []status.Warning, cur, p *config.Profile) []status.Warning {
+	es = slices.DeleteFunc(es, func(w status.Warning) bool { return slices.Contains(oneNodeOnly, w.Code) })
+	var restart []string
+	for _, l := range cur.AllLinks() {
+		if !slices.Contains(p.AllLinks(), l) {
+			restart = append(restart, linkName(l))
+		}
+	}
+	if len(restart) > 0 {
+		es = append(es, effect("warning", "mesh-change-restart", "At the switch, every node restarts %s: a few seconds without %s, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile.",
+			map[bool]string{true: "the " + restart[0] + " link", false: "the " + listAnd(restart) + " links"}[len(restart) == 1],
+			map[bool]string{true: "it", false: "them"}[len(restart) == 1]))
+	}
+	return es
+}

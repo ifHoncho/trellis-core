@@ -66,6 +66,20 @@ type ApplyResult struct {
 	// AP is how to join the client AP once the change is in force, when the
 	// change alters that (a new name or passphrase).
 	AP *status.APJoin `json:"ap,omitempty"`
+	// A mesh-wide profile change (POST /profile/mesh): the revision it
+	// gets, when every node switches to it, and the nodes it goes to.
+	Revision uint64     `json:"revision,omitempty"`
+	ApplyAt  *time.Time `json:"apply_at,omitempty"`
+	Nodes    []string   `json:"nodes,omitempty"`
+}
+
+// MeshProfileInput is a profile for every node of the mesh: sent from this
+// node to all the others, and switched to by all of them at one moment.
+type MeshProfileInput struct {
+	ProfileInput
+	// DelaySeconds is how long from now every node switches (default 60;
+	// 15 to 900): long enough for the profile to reach every node.
+	DelaySeconds int `json:"delay_s,omitempty"`
 }
 
 // ProfileExport is the mesh profile with its secret, in every form another

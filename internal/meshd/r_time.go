@@ -237,6 +237,10 @@ func gnssStatus(w *gnss.Watcher, now time.Time) status.GNSS {
 	}
 	g.Receiver, g.Device, g.Driver = true, st.Device, st.Driver
 	g.SatsUsed, g.SatsSeen = st.SatsUsed, st.SatsSeen
+	if n := len(st.Signals); n > 0 {
+		g.Signals = st.Signals[:min(n, 8)]
+		g.SatsSeen = max(g.SatsSeen, n)
+	}
 	if !st.Heard.IsZero() {
 		g.FixAgeMS = now.Sub(st.Heard).Milliseconds()
 	}
@@ -251,8 +255,19 @@ func gnssStatus(w *gnss.Watcher, now time.Time) status.GNSS {
 			g.AltM, g.VAccM = &alt, st.VAccM
 		}
 	}
-	if g.Fix == "none" {
-		g.Note = "no fix (indoors, covered, or still searching)"
+	switch {
+	case g.Fix != "none":
+	case len(g.Signals) > 0:
+		strong := 0
+		for _, s := range st.Signals {
+			if s >= 30 {
+				strong++
+			}
+		}
+		g.Note = fmt.Sprintf("no fix: %d satellites heard, the strongest at %d dB-Hz, %d at 30 or more. A fix needs about four at 30 or more for a minute; open sky gives 40 to 45",
+			len(st.Signals), g.Signals[0], strong)
+	default:
+		g.Note = "no fix, and no satellite heard (indoors, covered, the antenna not connected, or still searching)"
 	}
 	return g
 }

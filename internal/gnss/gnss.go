@@ -9,6 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,7 +46,15 @@ type State struct {
 	SatsUsed, SatsSeen int
 	// PPS is the last pulse-per-second report; zero without PPS.
 	PPS time.Time
-	Err string
+	// Signals are the signal strengths (C/N0, dB-Hz) of the satellites
+	// heard, strongest first, from the receiver's GSV sentences: they come
+	// before any fix, when gpsd's satellite report is still empty (it
+	// leaves out satellites whose position is not known yet).
+	Signals []int
+	Err     string
+
+	gsv     map[string][]int // talker (GP, BD, GL, GA, GN) → strengths being gathered
+	gsvDone map[string][]int
 }
 
 // Watcher keeps a State current from gpsd.
@@ -102,7 +113,9 @@ func (w *Watcher) follow(ctx context.Context, addr string) error {
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	if _, err := conn.Write([]byte(`?WATCH={"enable":true,"json":true,"pps":true};` + "\n")); err != nil {
+	// nmea: gpsd passes the receiver's sentences along too, for the
+	// signal strengths before a fix (GSV).
+	if _, err := conn.Write([]byte(`?WATCH={"enable":true,"json":true,"nmea":true,"pps":true};` + "\n")); err != nil {
 		return err
 	}
 	w.mu.Lock()
@@ -151,6 +164,10 @@ type report struct {
 // apply folds one line of gpsd's stream into st. Lines it does not know
 // are ignored.
 func apply(st *State, line []byte, now time.Time) {
+	if len(line) > 6 && line[0] == '$' {
+		applyGSV(st, string(line))
+		return
+	}
 	var r report
 	if json.Unmarshal(line, &r) != nil {
 		return
@@ -225,4 +242,46 @@ func Fix(mode int) string {
 		return "3D"
 	}
 	return "no fix"
+}
+
+// applyGSV takes one NMEA GSV sentence ("$GPGSV,2,1,07,05,,,26,…*6F"):
+// a talker's satellites in view, four per sentence, with their strengths.
+// A talker's set is complete at its last sentence.
+func applyGSV(st *State, line string) {
+	if len(line) < 7 || line[3:6] != "GSV" {
+		return
+	}
+	body, _, _ := strings.Cut(line[1:], "*")
+	f := strings.Split(body, ",")
+	if len(f) < 4 {
+		return
+	}
+	talker := f[0][:2]
+	total, err1 := strconv.Atoi(f[1])
+	num, err2 := strconv.Atoi(f[2])
+	if err1 != nil || err2 != nil || num < 1 || num > total {
+		return
+	}
+	if st.gsv == nil {
+		st.gsv, st.gsvDone = map[string][]int{}, map[string][]int{}
+	}
+	if num == 1 {
+		st.gsv[talker] = st.gsv[talker][:0]
+	}
+	// Groups of four after the count: PRN, elevation, azimuth, C/N0; an
+	// odd field at the end (NMEA 4.1's signal ID) is not one.
+	for i := 4; i+3 < len(f); i += 4 {
+		if snr, err := strconv.Atoi(f[i+3]); err == nil && snr > 0 {
+			st.gsv[talker] = append(st.gsv[talker], snr)
+		}
+	}
+	if num == total {
+		st.gsvDone[talker] = append([]int(nil), st.gsv[talker]...)
+		var all []int
+		for _, s := range st.gsvDone {
+			all = append(all, s...)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(all)))
+		st.Signals = all
+	}
 }

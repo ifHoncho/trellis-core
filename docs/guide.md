@@ -52,8 +52,14 @@ secret and regulatory mode. On any node already in the mesh, open
 Settings → Mesh profile → **Share with another node**, then set up the new
 node and scan that QR code in step 4.
 
-A profile change made in the web UI applies to that node only. To change
-the whole mesh, install the same profile on every node, farthest first.
+To change the mesh's links, channels or regulatory mode, edit the profile
+on any node (Settings → Mesh profile) and choose **Every node**. The node
+sends the change to all the others, shows who has it, and every node
+switches at the same moment, a minute later by default. A node that was
+out of reach takes the change when it next hears one that has it, as long
+as they still share a link. The review before sending names any node that
+cannot follow and any node whose regulatory mode would change.
+**This node only** is there for experiments on one node.
 
 ## 4. Connect phones and other devices
 

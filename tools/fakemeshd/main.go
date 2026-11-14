@@ -95,6 +95,9 @@ type fake struct {
 	password string
 	fails    int
 	mcast    uint64
+	// A mesh-wide change this node sent (SetMeshProfile).
+	meshChange     *status.MeshChange
+	meshChangeSent time.Time
 	// oneRadio is a node with one dual-band USB adapter in a two-link
 	// profile: it meshes on one link, the other has no radio here.
 	oneRadio bool
@@ -275,6 +278,23 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		HAccM: 3.2, VAccM: 5.1, SatsUsed: 9, SatsSeen: 14, FixAgeMS: int64(rand.IntN(900))}
 	st.Clock = status.Clock{Service: "chrony", Synced: true, Source: "GNSS receiver", SourceKind: "gnss", Stratum: 1,
 		OffsetMS: math.Round((rand.Float64()-0.5)*40) / 10, Serving: true}
+	if mc := f.meshChange; mc != nil {
+		// The other nodes answer one by one; every node switches at the
+		// moment.
+		c := *mc
+		since := now.Sub(f.meshChangeSent)
+		for i, n := range []string{"alpha-4", "bravo-5", "ops-6", "ridge-2", "truck-3"} {
+			state := "sent"
+			if since > time.Duration(i+1)*1500*time.Millisecond {
+				state = "has it"
+			}
+			c.Nodes = append(c.Nodes, status.MeshChangeNode{Callsign: n, State: state})
+		}
+		if now.After(c.ApplyAt) {
+			c.State = "applied"
+		}
+		st.MeshChange = &c
+	}
 	apRadio := st.Radios[len(st.Radios)-1].Fingerprint
 	if len(st.Radios) > 1 {
 		apRadio = st.Radios[1].Fingerprint
@@ -470,6 +490,43 @@ func (f *fake) profileFrom(in api.ProfileInput) (*config.Profile, error) {
 		return &p, p.Validate()
 	}
 	return nil, api.Invalid("give the profile in exactly one form: code, yaml, profile or new")
+}
+
+// SetMeshProfile answers as a node that sends a change to every node: a
+// switch in a minute, the other nodes answering one by one.
+func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryRun bool) (*api.ApplyResult, error) {
+	res, err := f.SetProfile(ctx, in.ProfileInput, true)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delay := time.Minute
+	if in.DelaySeconds != 0 {
+		delay = time.Duration(in.DelaySeconds) * time.Second
+	}
+	at := time.Now().Add(delay).Truncate(time.Second)
+	var effects []status.Warning
+	for _, e := range res.Effects {
+		switch e.Code {
+		case "this-node-only", "leaves-mesh", "links-drop", "link-restarts":
+		default:
+			effects = append(effects, e)
+		}
+	}
+	effects = append(effects, status.Warning{Level: "warning", Code: "mesh-change-restart",
+		Message: "At the switch, every node restarts the 5 GHz · ch 149 link: a few seconds without it, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile."})
+	res.Effects = append(effects, status.Warning{Level: "info", Code: "mesh-change",
+		Message: fmt.Sprintf("Every node switches at %s (in %s): this one and ridge-2, truck-3, alpha-4, bravo-5 and ops-6.", at.Format("15:04:05"), delay)},
+		status.Warning{Level: "warning", Code: "mesh-change-old", Message: "scout-7 runs a version that cannot follow a mesh-wide change: install the profile there by hand, or it will keep the old one."})
+	res.ApplyAt, res.Nodes = &at, []string{"alpha-4", "bravo-5", "ops-6", "ridge-2", "truck-3"}
+	if dryRun {
+		return res, nil
+	}
+	f.meshChange = &status.MeshChange{Revision: 4, ApplyAt: at, From: f.node.Callsign, Sender: true, State: "pending", Summary: "5 GHz · ch 149 at 80 MHz"}
+	f.meshChangeSent = time.Now()
+	res.Applied, res.Revision = true, 4
+	return res, nil
 }
 
 func (f *fake) SetProfile(ctx context.Context, in api.ProfileInput, dryRun bool) (*api.ApplyResult, error) {

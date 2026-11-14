@@ -23,7 +23,10 @@ make deploy                              # check, build, update every node, show
 make nodes                               # just show status from every node
 make deploy HOSTS=user@192.0.2.11      # one node only
 scripts/deploy.sh --no-check             # skip tests when iterating quickly
-# a node with no cable to your network: over the mesh, through one that has
+# a node that may be off your network: give its mesh address in deploy.hosts
+#   user@192.0.2.13 mesh=10.73.89.1
+# and it is reached over the mesh, through a node that answers, when its LAN
+# address does not; or, for every node at once:
 TRELLIS_SSH_JUMP=user@192.0.2.10 scripts/deploy.sh user@10.73.129.1
 ```
 

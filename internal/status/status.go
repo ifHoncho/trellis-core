@@ -25,15 +25,18 @@ type Status struct {
 	ClientNet ClientNet    `json:"client_network"`
 	Gateway   GatewayState `json:"gateway"`
 	// Clock is how this node keeps time, and GNSS its receiver (roadmap G1).
-	Clock     Clock      `json:"clock"`
-	GNSS      GNSS       `json:"gnss"`
-	Ports     []Port     `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
-	Nodes     []MeshNode `json:"nodes"` // other nodes, from gossip
-	Gossip    Gossip     `json:"gossip"`
-	Reconcile Reconcile  `json:"reconcile"`
-	Process   Process    `json:"process"`
-	Warnings  []Warning  `json:"warnings"`
-	Setup     Setup      `json:"setup"`
+	Clock Clock `json:"clock"`
+	GNSS  GNSS  `json:"gnss"`
+	// MeshChange is a mesh-wide profile change on its way, or the last one
+	// for a while after it is in force (meshd meshchange.go); nil when none.
+	MeshChange *MeshChange `json:"mesh_change,omitempty"`
+	Ports      []Port      `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
+	Nodes      []MeshNode  `json:"nodes"` // other nodes, from gossip
+	Gossip     Gossip      `json:"gossip"`
+	Reconcile  Reconcile   `json:"reconcile"`
+	Process    Process     `json:"process"`
+	Warnings   []Warning   `json:"warnings"`
+	Setup      Setup       `json:"setup"`
 }
 
 // Setup says whether the node still waits to be provisioned. A node with
@@ -611,9 +614,36 @@ type GNSS struct {
 	VAccM    float64 `json:"v_acc_m,omitempty"`
 	SatsUsed int     `json:"sats_used"`
 	SatsSeen int     `json:"sats_seen"`
+	// Signals are the strengths (C/N0, dB-Hz) of the satellites heard,
+	// strongest first, at most 8: known before any fix.
+	Signals []int `json:"signals,omitempty"`
 	// FixAgeMS: since the receiver's last report.
 	FixAgeMS int64 `json:"fix_age_ms,omitempty"`
 	// PPS: pulse-per-second reports arrive (sub-millisecond time).
 	PPS  bool   `json:"pps"`
 	Note string `json:"note,omitempty"`
+}
+
+// MeshChange is a profile change for the whole mesh: one node sends it to
+// all the others, and every node switches to it at ApplyAt.
+type MeshChange struct {
+	Revision uint64    `json:"revision"`
+	ApplyAt  time.Time `json:"apply_at"`
+	// From is the node that sent it; Sender: this node did.
+	From   string `json:"from"`
+	Sender bool   `json:"sender"`
+	// State: "pending" (switches at ApplyAt), "applied", or "failed".
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
+	// Summary is the change in words: "5 GHz · ch 149 at 80 MHz".
+	Summary string `json:"summary,omitempty"`
+	// Nodes is where it stands on each other node, on the node that sent
+	// it: "sent" (no answer yet), "has it", or "refused: why".
+	Nodes []MeshChangeNode `json:"nodes,omitempty"`
+}
+
+// MeshChangeNode is one node's answer to a mesh-wide change.
+type MeshChangeNode struct {
+	Callsign string `json:"callsign"`
+	State    string `json:"state"`
 }

@@ -168,6 +168,6 @@ export function clockShort(c) {
 // "no fix".
 export function gnssShort(g) {
   if (!g || !g.receiver) return 'no receiver';
-  if (g.fix === 'none') return 'no fix' + (g.sats_seen ? ` · ${g.sats_seen} satellites seen` : '');
+  if (g.fix === 'none') return 'no fix' + (g.sats_seen ? ` · ${g.sats_seen} satellites heard` : '') + ((g.signals || []).length ? `, strongest ${g.signals[0]} dB-Hz` : '');
   return `${g.fix.toUpperCase()} fix · ${plural(g.sats_used, 'satellite')}` + (g.h_acc_m ? ` · ±${Math.round(g.h_acc_m)} m` : '');
 }

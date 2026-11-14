@@ -27,9 +27,12 @@
 # SSH key: set TRELLIS_SSH_KEY=~/.ssh/yourkey if it has a non-default name
 # and is not the only key in ~/.ssh.
 #
-# Nodes with no cable to your network: reach them over the mesh, through a
-# node that has one, by their mesh address (10.73.N.1; meshctl status on any
-# node lists them):
+# Nodes with no cable to your network: give their mesh address (10.73.N.1;
+# meshctl status on any node lists them) on their deploy.hosts line,
+#   user@192.0.2.13 mesh=10.73.89.1
+# and when the LAN address does not answer, the node is reached at its mesh
+# address through another node of the list that does (its host key is still
+# the one known for the LAN address). Or, for every node at once:
 #   TRELLIS_SSH_JUMP=user@lan-node scripts/deploy.sh user@10.73.129.1
 set -euo pipefail
 
@@ -38,6 +41,8 @@ REMOTE_DIR="trellis-deploy"
 CHECK=1
 MODE=deploy
 HOSTS=()
+declare -A MESH=()   # LAN host (no user) → mesh address, from deploy.hosts
+LISTED=()            # every host in deploy.hosts: candidates to reach the others through
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -54,10 +59,17 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-if [ ${#HOSTS[@]} -eq 0 ] && [ -f "$ROOT/deploy.hosts" ]; then
+# deploy.hosts gives the hosts when none are named, and the mesh= address of
+# any host either way.
+if [ -f "$ROOT/deploy.hosts" ]; then
+  named=${#HOSTS[@]}
   while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%%#*}"; line="$(echo "$line" | tr -d '[:space:]')"
-    [ -n "$line" ] && HOSTS+=("$line")
+    line="${line%%#*}"
+    read -r host extra _ <<<"$line" || true
+    [ -n "${host:-}" ] || continue
+    [ "$named" -eq 0 ] && HOSTS+=("$host")
+    LISTED+=("$host")
+    case "${extra:-}" in mesh=*) MESH["${host#*@}"]="${extra#mesh=}" ;; esac
   done < "$ROOT/deploy.hosts"
 fi
 if [ ${#HOSTS[@]} -eq 0 ]; then
@@ -89,13 +101,49 @@ if [ -n "${TRELLIS_SSH_JUMP:-}" ]; then
   [ -n "$KEY" ] && JUMP_CMD+=" -o IdentityFile=$KEY"
   SSH_OPTS+=(-o "ProxyCommand=$JUMP_CMD -W %h:%p $TRELLIS_SSH_JUMP")
 fi
+# Nodes off the LAN with a mesh= address: through the first node of the
+# list that answers, by a ProxyCommand that connects every other host
+# directly.
+PROXY=""
+if [ -z "${TRELLIS_SSH_JUMP:-}" ] && [ ${#MESH[@]} -gt 0 ]; then
+  reach() { timeout 3 bash -c 'exec 3<>"/dev/tcp/$0/22"' "$1" 2>/dev/null; }
+  declare -A VIA=()
+  jump=""
+  for h in "${HOSTS[@]}"; do
+    reach "${h#*@}" || { [ -n "${MESH[${h#*@}]:-}" ] && VIA["${h#*@}"]=1; }
+  done
+  if [ ${#VIA[@]} -gt 0 ]; then
+    for h in "${HOSTS[@]}" "${LISTED[@]}"; do
+      [ -z "${VIA[${h#*@}]:-}" ] && reach "${h#*@}" && { jump="$h"; break; }
+    done
+  fi
+  if [ ${#VIA[@]} -gt 0 ] && [ -n "$jump" ]; then
+    PROXY="$(mktemp)"
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'case "$1" in'
+      for lan in "${!VIA[@]}"; do
+        jcmd="ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+        [ -n "$KEY" ] && jcmd+=" -o IdentityFile=$KEY"
+        printf '  %q) exec %s -W %q:"$2" %q ;;\n' "$lan" "$jcmd" "${MESH[$lan]}" "$jump"
+        echo "-- ${lan} is not on the LAN: reaching it over the mesh at ${MESH[$lan]} through ${jump}" >&2
+      done
+      echo 'esac'
+      # Everyone else: straight to the host.
+      echo 'exec 3<>"/dev/tcp/$1/$2" || exit 1'
+      echo 'cat <&3 & cat >&3'
+    } > "$PROXY"
+    chmod +x "$PROXY"
+    SSH_OPTS+=(-o "ProxyCommand=$PROXY %h %p")
+  fi
+fi
 # rsync takes its ssh command as one string. The options above survive that
 # only while none contains a space; the ProxyCommand does, so it goes
 # through a wrapper that keeps each option whole.
 RSYNC_RSH="ssh ${SSH_OPTS[*]}"
-if [ -n "${TRELLIS_SSH_JUMP:-}" ]; then
+if [ -n "${TRELLIS_SSH_JUMP:-}" ] || [ -n "$PROXY" ]; then
   RSYNC_RSH="$(mktemp)"
-  trap 'rm -f "$RSYNC_RSH"' EXIT
+  trap 'rm -f "$RSYNC_RSH" ${PROXY:+"$PROXY"}' EXIT
   { echo '#!/usr/bin/env bash'; printf 'exec ssh'; printf ' %q' "${SSH_OPTS[@]}"; echo ' "$@"'; } > "$RSYNC_RSH"
   chmod +x "$RSYNC_RSH"
 fi
