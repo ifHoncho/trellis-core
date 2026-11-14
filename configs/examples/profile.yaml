@@ -52,3 +52,6 @@ batman:
 positions:
   share: true                    # nodes with a GNSS fix put themselves on the team's ATAK map; false stops every
                                  # node and drops the last known positions (emissions control)
+# batman:
+#   multicast_flood: true        # fallback: every multicast group to every node (costs airtime on every link);
+#                                # only where the efficient path misbehaves. Change it mesh-wide.

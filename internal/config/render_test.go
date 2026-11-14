@@ -139,6 +139,17 @@ func TestProfileCode(t *testing.T) {
 	if back3, err := DecodeProfileCode(code3); err != nil || !reflect.DeepEqual(back3.Links, p3.Links) {
 		t.Errorf("four-link code round trip: %+v %v", back3, err)
 	}
+	// Flood mode travels too.
+	pf := p
+	pf.Batman.MulticastFlood = true
+	if codeF, err := pf.Code(); err != nil {
+		t.Fatal(err)
+	} else if backF, err := DecodeProfileCode(codeF); err != nil || !backF.Batman.MulticastFlood {
+		t.Errorf("multicast_flood lost in the code: %+v %v", backF, err)
+	}
+	if strings.Contains(string(y), "multicast_flood") {
+		t.Errorf("a profile without flooding writes the setting:\n%s", y)
+	}
 	// Position sharing turned off travels too, and survives YAML.
 	pn := p
 	no := false

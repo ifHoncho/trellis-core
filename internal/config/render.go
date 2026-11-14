@@ -208,6 +208,7 @@ type profileWire struct {
 	PinVer  string      `json:"pv"`
 	BLA     *bool       `json:"l,omitempty"`
 	Fanout  *int        `json:"f,omitempty"`
+	Flood   bool        `json:"mf,omitempty"` // only written when on, so older releases read codes without it
 	// NoPos: positions.share is off. Only written when it is, so codes
 	// for meshes that share positions still read on older releases.
 	NoPos bool `json:"np,omitempty"`
@@ -226,7 +227,7 @@ func (p Profile) Code() (string, error) {
 		Schema: p.Schema, Name: p.Name, MeshID: p.MeshID, Secret: p.SAEPassphrase, Mode: p.Regulatory.Mode, Country: p.Regulatory.Country,
 		Radio: radioWire(p.Radio), Prefix: p.Prefix, Algo: p.Batman.RoutingAlgo, OrigMS: p.Batman.OrigIntervalMS,
 		MinVer: p.Batman.MinVersion, PinVer: p.Batman.PinnedVersion, BLA: p.Batman.BridgeLoopAvoidance, Fanout: p.Batman.MulticastFanout,
-		NoPos: !p.Positions.Shared(),
+		Flood: p.Batman.MulticastFlood, NoPos: !p.Positions.Shared(),
 	}
 	// One more link travels as "r2", which nodes on older releases read too.
 	switch {
@@ -287,7 +288,7 @@ func DecodeProfileCode(code string) (*Profile, error) {
 	p := &Profile{
 		Schema: w.Schema, Name: w.Name, MeshID: w.MeshID, SAEPassphrase: w.Secret, Regulatory: Regulatory{Mode: w.Mode, Country: w.Country},
 		Radio: RadioPlan(w.Radio), Prefix: w.Prefix,
-		Batman: BatmanPlan{RoutingAlgo: w.Algo, OrigIntervalMS: w.OrigMS, MinVersion: w.MinVer, PinnedVersion: w.PinVer, BridgeLoopAvoidance: w.BLA, MulticastFanout: w.Fanout},
+		Batman: BatmanPlan{RoutingAlgo: w.Algo, OrigIntervalMS: w.OrigMS, MinVersion: w.MinVer, PinnedVersion: w.PinVer, BridgeLoopAvoidance: w.BLA, MulticastFanout: w.Fanout, MulticastFlood: w.Flood},
 	}
 	if w.NoPos {
 		no := false

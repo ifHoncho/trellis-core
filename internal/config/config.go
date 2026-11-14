@@ -181,6 +181,12 @@ type BatmanPlan struct {
 	// separate unicasts to up to this many listener nodes, and floods
 	// beyond (architecture §9). Unset: batman-adv's default, 16.
 	MulticastFanout *int `yaml:"multicast_fanout" json:"multicast_fanout"`
+	// MulticastFlood turns batman-adv's multicast optimisations off: every
+	// multicast packet goes to every node, listeners or not. A fallback for
+	// a mesh where the efficient path misbehaves (some phones, some
+	// plugins); it costs airtime on every link (architecture §9). It must
+	// be the same on every node, so change it mesh-wide.
+	MulticastFlood bool `yaml:"multicast_flood,omitempty" json:"multicast_flood,omitempty"`
 }
 
 // BLA reports whether bridge loop avoidance is on (default true).

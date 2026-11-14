@@ -908,6 +908,14 @@ then to flooding.
 - **No multicast allow-list on `bat0`.** ATAK plugins use extra groups (voice
   on `239.255.255.x`, for example). Only known chatter is dropped, so unknown
   ATAK groups keep working.
+- **Flood mode as a fallback.** `batman.multicast_flood: true` in the profile
+  turns the multicast optimisations off on every node, for a mesh where the
+  efficient path misbehaves. It is costly: flooded frames are broadcasts,
+  sent at the lowest rate, unacknowledged and rebroadcast by every node.
+  Measured with one 450 kbit/s video stream on five nodes sharing a 2.4 GHz
+  channel: about 2.8 times the bytes on air, and the channel 99% busy where
+  efficient multicast kept it at 20–40%. Not for video; for SA and voice
+  only on small meshes.
 - **Small CoT packets.** Recommend ATAK's protobuf mesh format (TAK Protocol
   v1) so SA stays under the 1280-byte limit with 50 destinations.
 - **Client AP.** Set `multicast_to_unicast=1` in hostapd so phones reliably

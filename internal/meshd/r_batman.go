@@ -162,7 +162,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		BridgeLoopAvoidance: boolp(d.profile.Batman.BLA()),
 		DistributedARPTable: boolp(false),
 		Fragmentation:       boolp(true),
-		MulticastForceflood: boolp(false),
+		MulticastForceflood: boolp(d.profile.Batman.MulticastFlood),
 		NetworkCoding:       boolp(false),
 		Bonding:             boolp(false),
 		APIsolation:         boolp(false),
@@ -272,6 +272,9 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	d.facts.Update(func(f *Facts) {
 		f.BatPresent, f.BatIfindex, f.BatAlgo, f.BatMTU, f.BatMAC = true, idx, mesh.AlgoName, mtu, link.Attrs().HardwareAddr.String()
 	})
+	if d.profile.Batman.MulticastFlood {
+		warn("info", "multicast-flood", "multicast floods to every node, listeners or not: batman.multicast_flood is on in the mesh profile")
+	}
 	if mf, err := d.bat.MulticastFlags(idx); err == nil {
 		wantAll := mf.Own&batadv.McastWantAllIPv4 != 0
 		switch {

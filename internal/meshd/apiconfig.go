@@ -868,10 +868,17 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 		if cur.Name != p.Name {
 			add("info", "mesh-name", "The mesh is renamed from %q to %q (a label only).", cur.Name, p.Name)
 		}
-		if cur.Batman != p.Batman && fmt.Sprint(cur.Batman.BLA(), deref(cur.Batman.MulticastFanout), cur.Batman.OrigIntervalMS, cur.Batman.MinVersion, cur.Batman.PinnedVersion) !=
-			fmt.Sprint(p.Batman.BLA(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion) {
+		if cur.Batman != p.Batman && fmt.Sprint(cur.Batman.BLA(), deref(cur.Batman.MulticastFanout), cur.Batman.OrigIntervalMS, cur.Batman.MinVersion, cur.Batman.PinnedVersion, cur.Batman.MulticastFlood) !=
+			fmt.Sprint(p.Batman.BLA(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion, p.Batman.MulticastFlood) {
 			meshChange = true
 			add("info", "batman-settings", "batman-adv settings change; they should be the same on every node.")
+		}
+		if cur.Batman.MulticastFlood != p.Batman.MulticastFlood {
+			if p.Batman.MulticastFlood {
+				add("warning", "multicast-flood", "Multicast floods: every group (ATAK, voice, video) goes to every node over every link, whether anyone there listens or not. Use it only where the efficient path misbehaves; it costs airtime everywhere.")
+			} else {
+				add("info", "multicast-flood", "Multicast goes back to the efficient path: each group only to the nodes with listeners.")
+			}
 		}
 	}
 	if !setup && cur.Positions.Shared() != p.Positions.Shared() {
