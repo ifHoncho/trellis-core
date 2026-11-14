@@ -6,7 +6,7 @@
 // changes) and nodes can be dragged where the operator wants them; those
 // places are remembered in this browser.
 import { h } from './dom.js';
-import { mbps, linkQuality, plural } from './fmt.js';
+import { mbps, linkQuality, plural, linkName, linkAt } from './fmt.js';
 import { state, redraw, shortMac } from './state.js';
 
 // One coordinate space for every drawing of the mesh, so the overview and
@@ -320,7 +320,7 @@ export function topology(topo, opts = {}) {
       mine.length ? h('div.tip-links', [...mine].sort((x, y) => rate(y) - rate(x)).map((l) => {
         const out = l.a === fn.id ? l.ab_mbps : l.ba_mbps, back = l.a === fn.id ? l.ba_mbps : l.ab_mbps;
         const other = byId.get(l.a === fn.id ? l.b : l.a);
-        return h('div', h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a)),
+        return h('div', h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a)), h('span.faint', edgeName(l)),
           h('span.num', out > 0 ? `→ ${mbps(out)}` : '→ –'), h('span.num', back > 0 ? `← ${mbps(back)}` : '← –'));
       })) : null,
       fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'shares its uplink' : 'uplink down') : null,
@@ -334,6 +334,15 @@ export function topology(topo, opts = {}) {
       onpointerdown: (e) => { if (e.target === e.currentTarget && ui.sel) { ui.sel = null; redraw(); } } },
       h('g', linkEls), h('g', flowEls), h('g', labelEls), h('g', nodeEls)),
     tip);
+}
+
+// edgeName names the link an edge of the map is on, by its band and
+// channel as everywhere in the UI ("5 GHz · ch 149"), from the mesh link
+// the nodes report it on; "wired" for a cable, empty when neither end says.
+function edgeName(l) {
+  if (l.medium === 'wired') return 'wired';
+  const link = state.status && linkAt(state.status, l.mesh_link);
+  return link ? linkName(link, state.status) : '';
 }
 
 export function legend() {

@@ -68,12 +68,18 @@ function defaultChannel(band, width, country, taken = []) {
   return candidates.find(ok) ?? DEFAULT_CHANNEL[band];
 }
 
-// linkLine describes one mesh link's channel: "5 GHz · channel 149 · 80 MHz".
+// linkLine describes one mesh link: its name as everywhere in the UI, then
+// its width: "5 GHz · ch 149 · 80 MHz".
 export function linkLine(l) {
   const w = l.width_mhz ?? l.width;
   const run = l.running_width_mhz && l.running_width_mhz !== w ? ` (running ${l.running_width_mhz})` : '';
-  return `${bandName(l.band)} · channel ${l.channel} · ${w} MHz${run}`;
+  return `${bandName(l.band)} · ch ${l.channel} · ${w} MHz${run}`;
 }
+
+// linkOrder is a link's place in a profile being edited, in words: the order
+// is which links a node with fewer radios takes first.
+const ORDINALS = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth', 'Tenth'];
+export const linkOrder = (i) => `${ORDINALS[i] || 'Next'} link`;
 
 const select = (value, options, onchange) => h('select.select', { value: String(value), onchange: (e) => { onchange(e.target.value); redraw(); } },
   options.map(([v, label]) => h('option', { value: String(v) }, label)));

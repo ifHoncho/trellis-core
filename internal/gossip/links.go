@@ -51,6 +51,11 @@ type Link struct {
 	Kbps   uint32 `json:"t"`           // batman-adv's throughput estimate towards the neighbour
 	Signal int    `json:"s,omitempty"` // dBm received from the neighbour; 0 when wired or unknown
 	Wired  bool   `json:"w,omitempty"`
+	// MeshLink is the mesh link the neighbour is heard on, numbered from 1
+	// in the mesh profile's order, which every node of the mesh shares: the
+	// asker names it by its band and channel. 0 when wired, or from a node
+	// that does not send it (older releases ignore and omit the field).
+	MeshLink int `json:"k,omitempty"`
 }
 
 // SealMessage encodes and authenticates a query or a reply.

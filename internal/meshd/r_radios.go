@@ -120,7 +120,7 @@ func (r *radioReconciler) meshLinkSetup(rd *radio.Radio, ifname string, rp confi
 			}
 		}
 	} else if rd.Wiphy != nil {
-		checkMeshChannel(rd, ifname, rp, alpha2, warn)
+		checkMeshChannel(rd, rp, alpha2, warn)
 	}
 	return meshIf, mtu, changed
 }
@@ -129,22 +129,23 @@ func (r *radioReconciler) meshLinkSetup(rd *radio.Radio, ifname string, rp confi
 // say about a Wi-Fi mesh link's channel. Trellis refuses nothing here: the
 // link is started either way, and these say why it may not come up, or not
 // at the width asked for.
-func checkMeshChannel(rd *radio.Radio, ifname string, rp config.RadioPlan, alpha2 string, warn func(level, code, format string, args ...any)) {
+func checkMeshChannel(rd *radio.Radio, rp config.RadioPlan, alpha2 string, warn func(level, code, format string, args ...any)) {
 	freq, _ := config.ChannelFrequencyMHz(rp.Band, rp.Channel)
+	link := "the " + linkName(rp) + " link"
 	f := rd.Wiphy.Frequency(uint32(freq))
 	switch {
 	case f == nil:
-		warn("error", "channel-unsupported", "%s (%s) has no channel %d (%d MHz): this link cannot start on it", rd.Phy, ifname, rp.Channel, freq)
+		warn("error", "channel-unsupported", "%s has no channel %d (%d MHz): %s cannot start on it", rd.Name(), rp.Channel, freq, link)
 		return
 	case f.Disabled:
-		warn("error", "channel-disabled", "regulatory domain %s disables channel %d (%d MHz) on %s: the kernel lets %s transmit nowhere there", alpha2, rp.Channel, freq, rd.Phy, ifname)
+		warn("error", "channel-disabled", "regulatory domain %s disables channel %d (%d MHz) on %s: %s cannot transmit there", alpha2, rp.Channel, freq, rd.Name(), link)
 		return
 	case f.Radar:
-		warn("warning", "channel-dfs", "channel %d (%d MHz) for %s needs radar detection (DFS) under regulatory domain %s: the mesh starts after a channel availability check "+
+		warn("warning", "channel-dfs", "channel %d (%d MHz) for %s needs radar detection (DFS) under regulatory domain %s: the link starts after a channel availability check "+
 			"(a minute or more), where the driver supports radar detection on a mesh point, and stops if radar is heard",
-			rp.Channel, freq, ifname, alpha2)
+			rp.Channel, freq, link, alpha2)
 	case f.NoIR:
-		warn("error", "channel-no-ir", "regulatory domain %s makes channel %d (%d MHz) passive-only (no-IR) on %s: the kernel does not let %s start a mesh there", alpha2, rp.Channel, freq, rd.Phy, ifname)
+		warn("error", "channel-no-ir", "regulatory domain %s makes channel %d (%d MHz) passive-only (no-IR) on %s: the kernel does not let %s start there", alpha2, rp.Channel, freq, rd.Name(), link)
 	}
 	if !f.Radar {
 		var radar []int
@@ -155,17 +156,17 @@ func checkMeshChannel(rd *radio.Radio, ifname string, rp config.RadioPlan, alpha
 		}
 		if len(radar) > 0 {
 			warn("warning", "channel-dfs", "the %d MHz channel around channel %d for %s includes channels that need radar detection (DFS) under regulatory domain %s (%s): "+
-				"the mesh starts after a channel availability check (a minute or more), where the driver supports radar detection on a mesh point, and stops if radar is heard",
-				rp.Width, rp.Channel, ifname, alpha2, config.JoinInts(radar))
+				"the link starts after a channel availability check (a minute or more), where the driver supports radar detection on a mesh point, and stops if radar is heard",
+				rp.Width, rp.Channel, link, alpha2, config.JoinInts(radar))
 		}
 	}
 	switch {
 	case rp.Width >= 160 && f.No160MHz:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 160 MHz channel around channel %d: %s runs narrower", rd.Phy, alpha2, rp.Channel, ifname)
+		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 160 MHz channel around channel %d: %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
 	case rp.Width >= 80 && f.No80MHz:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 80 MHz channel around channel %d: %s runs narrower", rd.Phy, alpha2, rp.Channel, ifname)
+		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 80 MHz channel around channel %d: %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
 	case rp.Width == 40 && f.NoHT40Minus && f.NoHT40Plus:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 40 MHz channel around channel %d: %s runs at 20 MHz", rd.Phy, alpha2, rp.Channel, ifname)
+		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 40 MHz channel around channel %d: %s runs at 20 MHz", rd.Name(), alpha2, rp.Channel, link)
 	}
 }
 
@@ -301,7 +302,7 @@ func (r *radioReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 	}
 	r.planKey = key
 	plan := radio.MakePlan(radio.Input{
-		Radios: radios, MeshBand: profile.Radio.Band, MoreBands: linkBands(profile), APEnabled: cfg.APEnabled(), Roles: cfg.Radios.Roles, Current: current,
+		Radios: radios, MeshBand: profile.Radio.Band, MoreBands: linkBands(profile), LinkNames: profile.LinkNames(), APEnabled: cfg.APEnabled(), Roles: cfg.Radios.Roles, Current: current,
 	})
 	r.booted = true
 

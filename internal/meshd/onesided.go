@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/nl80211"
 )
 
@@ -57,7 +58,7 @@ func tooWeak(st nl80211.Station, widthMHz int) bool {
 
 // checkOneSided looks at every established peer on the link and warns for
 // those that fail more often than not. name gives a peer's callsign.
-func (m *meshLinkReconciler) checkOneSided(ifindex int, ifname, band string, widthMHz int, warn func(level, code, format string, args ...any)) {
+func (m *meshLinkReconciler) checkOneSided(ifindex int, ifname string, rp config.RadioPlan, widthMHz int, warn func(level, code, format string, args ...any)) {
 	d := m.d
 	if d.nl == nil || ifindex == 0 {
 		return
@@ -114,10 +115,10 @@ func (m *meshLinkReconciler) checkOneSided(ifindex int, ifname, band string, wid
 				why += fmt.Sprintf(" (this node hears it at %d dBm)", st.SignalAvgDBm)
 			}
 		}
-		msg := fmt.Sprintf("the %s link to %s on %s is established but cannot carry traffic: %s. "+
+		msg := fmt.Sprintf("the %s link to %s is established but cannot carry traffic: %s. "+
 			"The two are at the edge of range on this band, often in one direction only, when one transmits much more strongly than the other. "+
 			"Traffic goes around this link where it can. Move them closer, use a narrower width or better antennas, or let this pair meet on a band that reaches further (2.4 GHz, HaLow)",
-			bandName(band), d.peerName(mac), ifname, why)
+			linkName(rp), d.peerName(mac), why)
 		m.oneSidedMsg[mac] = msg
 		if !was {
 			d.log.Warn("mesh link established but cannot carry traffic", "interface", ifname, "peer", d.peerName(mac), "signal_avg_dbm", st.SignalAvgDBm, "width_mhz", widthMHz, "failed", failed, "sent", sent)

@@ -2,7 +2,7 @@
 import { h } from '../dom.js';
 import { state, history, alerts, nameOf } from '../state.js';
 import { panel, stat, dot, pill, spark, notice, bars } from '../ui.js';
-import { mbps, since, bandName, roleName, roleLink, meshLinks, plural, signal, carried } from '../fmt.js';
+import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried } from '../fmt.js';
 import { topology } from '../topo.js';
 
 // headline is one sentence on the node's state, most serious first.
@@ -48,12 +48,12 @@ export function overview() {
       h('div.hero-facts',
         h('div', h('span', 'Address'), st.node.address.split('/')[0]),
         h('div', h('span', 'Up'), since(st.started_at)),
-        // Every link of the profile; one this node has no radio for is
-        // the mesh's, not this node's, and says so.
-        links.map((l, i) => h('div', h('span', links.length > 1 ? `Mesh link ${i + 1}` : 'Mesh channel'),
-          `${bandName(l.band || st.profile.band)} · ch ${l.channel || st.profile.channel} · ${l.width_mhz || st.profile.width_mhz} MHz`,
-          l.running_width_mhz && l.running_width_mhz !== (l.width_mhz || st.profile.width_mhz) ? h('span.warn', ` (running ${l.running_width_mhz})`) : null,
-          links.length > 1 && !carried(l) ? h('span.faint', ' · not on this node') : null)),
+        // Every link of the profile, by its band and channel; one this node
+        // has no radio for is the mesh's, not this node's, and says so.
+        h('div', h('span', links.length > 1 ? 'Mesh links' : 'Mesh link'),
+          links.map((l) => h('div', `${linkName(l, st)} · ${linkWidth(l, st)} MHz`,
+            l.running_width_mhz && l.running_width_mhz !== linkWidth(l, st) ? h('span.warn', ` (running ${l.running_width_mhz})`) : null,
+            links.length > 1 && !carried(l) ? h('span.faint', ' · not on this node') : null))),
         h('div', h('span', 'Version'), st.version))),
 
     h('div.grid',
@@ -90,11 +90,13 @@ export function overview() {
 
       panel('Radios', { class: 'c4', meta: h('a', { href: '#/radios' }, 'Roles →') },
         st.radios.length ? st.radios.map((r) => {
-          const link = links[roleLink(r.role) - 1];
-          const band = link ? bandName(link.band || st.profile.band) : r.role === 'ap' ? bandName(st.ap.band) : '';
+          // The badge says what the radio does; the line under its name,
+          // on which link (band and channel), as everywhere else.
+          const link = linkAt(st, roleLink(r.role));
+          const on = link ? linkName(link, st) : r.role === 'ap' && st.ap.interface ? `${bandName(st.ap.band)} · ch ${st.ap.channel}` : '';
           return h('div.radio-line',
-            pill(r.role === 'unused' ? 'idle' : r.role.replace(/^mesh(\d+)/, 'mesh $1').replace('+', ' + '), r.role === 'unused' ? 'plain' : r.role.includes('mesh') ? 'solid' : 'accent'),
-            h('div', h('div', { style: { fontSize: '14px' } }, r.label || r.chipset || r.driver), h('div.faint.mono', { style: { fontSize: '12px' } }, [r.phy, r.bus, band].filter(Boolean).join(' · '))),
+            pill(roleKind(r.role), r.role === 'unused' ? 'plain' : r.role.includes('mesh') ? 'solid' : 'accent'),
+            h('div', h('div', { style: { fontSize: '14px' } }, r.label || r.chipset || r.driver), h('div.faint.mono', { style: { fontSize: '12px' } }, [on, r.phy].filter(Boolean).join(' · '))),
             // The best signal on this radio's own link: each link has its own peers.
             link && (link.peers || []).length ? bars(Math.max(...link.peers.map((p) => p.signal_dbm))) : null);
         }) : h('div.faint', st.mesh_link.transport === 'wired' ? 'No radios: the mesh runs over wired ports.' : 'No radios found.')),

@@ -6,7 +6,7 @@ import { state, redraw, toast } from '../state.js';
 import { brandMark, field, button, notice, qr, toggle, icon } from '../ui.js';
 import { bandName } from '../fmt.js';
 import { canScan, canScanImages, startScan, scanImage } from '../scan.js';
-import { linkFields, nextLink } from '../links.js';
+import { linkFields, linkOrder, nextLink } from '../links.js';
 
 let refresh = () => {};
 
@@ -181,7 +181,7 @@ function wizard() {
         h('span')),
       ui.links.map((l, i) => {
         const others = ui.links.filter((x) => x !== l);
-        const row = linkFields(l, i === 0 ? 'radio' : `links[${i - 1}]`, ui.fields, { title: ui.links.length > 1 ? `Mesh link ${i + 1}` : '', country: ui.country, others });
+        const row = linkFields(l, i === 0 ? 'radio' : `links[${i - 1}]`, ui.fields, { title: ui.links.length > 1 ? linkOrder(i) : '', country: ui.country, others });
         return i === 0 ? row : h('div.link-row', row,
           h('div.row.end', button('Remove this link', () => { ui.links.splice(i, 1); redraw(); }, 'small')));
       }),

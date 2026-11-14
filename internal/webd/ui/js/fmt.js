@@ -69,21 +69,69 @@ export function roleLink(r) {
   return m ? Number(m[1]) : 0;
 }
 
-// roleName is a radio role in words: "Mesh link", "Mesh link 3",
-// "Mesh 2 + Wi-Fi", "Client Wi-Fi".
-export function roleName(r) {
+// meshLinks lists a status's mesh links in order: the first, then the
+// profile's further ones (each has index, band, channel, width_mhz, peers).
+export const meshLinks = (st) => [st.mesh_link, ...(st.more_links || [])];
+
+// linkName is what the UI calls a mesh link, on every page: its band and
+// channel, "5 GHz · ch 149", which is the same on every node of the mesh.
+// Interface names (mesh0, mesh1) and link numbers are not shown.
+export function linkName(l, st) {
+  if (!l) return '–';
+  const band = l.band || (l.index === 1 && st ? st.profile.band : '');
+  const ch = l.channel || (l.index === 1 && st ? st.profile.channel : 0);
+  if (!band) return l.transport === 'wired' ? 'wired' : '–';
+  return `${bandName(band)} · ch ${ch}`;
+}
+
+// linkWidth is a link's width in MHz as the profile sets it.
+export const linkWidth = (l, st) => l.width_mhz || (l.index === 1 ? st.profile.width_mhz : 0);
+
+// linkAt is mesh link n (from 1, as roles and the topology count them).
+export const linkAt = (st, n) => (n > 0 ? meshLinks(st)[n - 1] || null : null);
+
+// linkOn is the mesh link whose interface is ifname, or null (a wired port).
+export const linkOn = (st, ifname) => meshLinks(st).find((l) => l.interface && l.interface === ifname) || null;
+
+// fewerRadios describes a node with fewer mesh radios than the profile has
+// links (one dual-band USB adapter, typically): it meshes on the links its
+// radios are on and nowhere else. Null when every link has a radio, or
+// before the node has decided.
+export function fewerRadios(st) {
+  const links = meshLinks(st);
+  const radios = (st.radios || []).filter((r) => r.mesh_point && !r.ignored);
+  if (links.length < 2 || radios.length >= links.length || st.mesh_link.transport === 'not yet determined') return null;
+  const on = links.filter(carried), off = links.filter((l) => !carried(l));
+  const and = (xs) => xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
+  const one = radios.length === 1;
+  return {
+    on, off, radios,
+    lead: `${one ? 'This node has one mesh radio' : `This node has ${radios.length} mesh radios`} for ${links.length} links` +
+      (one && radios[0].bands && radios[0].bands.length > 1 ? ', and it works on one band at a time' : '') + '. ' +
+      (on.length ? `It is on ${and(on.map((l) => linkName(l, st)))} now, and connects directly only to nodes on ${on.length === 1 ? 'that channel' : 'those channels'}; ` +
+        `it reaches nodes on ${and(off.map((l) => linkName(l, st)))} only through a node that carries both.` : 'It is on no link yet.'),
+  };
+}
+
+// roleKind is a radio role in one or two words, for a badge: "mesh",
+// "mesh + Wi-Fi", "Wi-Fi", "idle". Which link is told by linkName.
+export function roleKind(r) {
+  if (!r || r === 'unused') return 'idle';
+  if (r === 'ap') return 'Wi-Fi';
+  return roleLink(r) ? (r.endsWith('+ap') ? 'mesh + Wi-Fi' : 'mesh') : r;
+}
+
+// roleName is a radio role in words, naming its link: "Mesh on 5 GHz · ch
+// 149", "Mesh on 2.4 GHz · ch 6 + client Wi-Fi", "Client Wi-Fi", "Unused".
+export function roleName(r, st) {
   if (!r) return '–';
   if (r === 'unused') return 'Unused';
   if (r === 'ap') return 'Client Wi-Fi';
   const n = roleLink(r);
   if (!n) return r;
-  if (r.endsWith('+ap')) return n === 1 ? 'Mesh + Wi-Fi' : `Mesh ${n} + Wi-Fi`;
-  return n === 1 ? 'Mesh link' : `Mesh link ${n}`;
+  const on = st && linkAt(st, n) ? ` on ${linkName(linkAt(st, n), st)}` : '';
+  return `Mesh${on}${r.endsWith('+ap') ? ' + client Wi-Fi' : ''}`;
 }
-
-// meshLinks lists a status's mesh links in order: the first, then the
-// profile's further ones (each has index, band, channel, width_mhz, peers).
-export const meshLinks = (st) => [st.mesh_link, ...(st.more_links || [])];
 
 // radioBands names one radio's bands: "2.4/5 GHz", "HaLow".
 export function radioBands(bands) {

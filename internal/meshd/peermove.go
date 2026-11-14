@@ -21,13 +21,38 @@ import (
 const (
 	peerLiveMS  = 1500
 	peerStaleMS = 3000
+	// offChannelMS is how long a peer must have been silent on a link for
+	// a failed SAE exchange with it to mean "not on this channel" rather
+	// than "another passphrase": a peer on the channel beacons every 100 ms.
+	offChannelMS = 5000
+	// strayMS is how long a peer entry that never got established may sit
+	// silent on a link before meshd removes it (strayPeers).
+	strayMS = 60000
 )
 
 // linkPeer is one peer entry on one of this node's mesh links.
 type linkPeer struct {
-	link       int
-	mac        string
-	inactiveMS uint32
+	link        int
+	mac         string
+	inactiveMS  uint32
+	established bool
+}
+
+// strayPeers picks the entries of peers that are not on the link's channel
+// at all: never established, and silent for a minute. Every link of a mesh
+// has the same mesh ID, and a radio scanning before it joins (or a peer that
+// changed band) hears beacons from another link's channel; the kernel takes
+// those nodes for peer candidates of this link, and SAE then knocks where
+// they cannot answer. Such entries show as "holding" and time out only
+// after many minutes.
+func strayPeers(peers []linkPeer) []linkPeer {
+	var out []linkPeer
+	for _, p := range peers {
+		if !p.established && p.inactiveMS >= strayMS {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // movedPeers picks the leftover entries: a peer address present on several
@@ -86,7 +111,8 @@ func (d *Daemon) leaveLink(i int, why string) {
 	}
 }
 
-// dropMovedPeers removes leftover peer entries (see above). It returns
+// dropMovedPeers removes leftover peer entries (see above), and the entries
+// of peers that are not on a link's channel (strayPeers). It returns
 // whether it removed any, and whether to look again soon.
 func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 	if d.nl == nil {
@@ -104,7 +130,7 @@ func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 			}
 		}
 	})
-	if len(links) < 2 {
+	if len(links) == 0 {
 		return false, false
 	}
 	ifindex := map[int]int{}
@@ -116,10 +142,23 @@ func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 			continue
 		}
 		for _, s := range sts {
-			peers = append(peers, linkPeer{link: l.i, mac: s.MAC.String(), inactiveMS: s.InactiveMS})
+			peers = append(peers, linkPeer{link: l.i, mac: s.MAC.String(), inactiveMS: s.InactiveMS, established: s.Established()})
 		}
 	}
-	stale, pending := movedPeers(peers)
+	var stale []linkPeer
+	var pending bool
+	if len(links) > 1 {
+		stale, pending = movedPeers(peers)
+	}
+	moved := map[string]bool{}
+	for _, p := range stale {
+		moved[meshIfname(p.link)+" "+p.mac] = true
+	}
+	for _, p := range strayPeers(peers) {
+		if !moved[meshIfname(p.link)+" "+p.mac] {
+			stale = append(stale, p)
+		}
+	}
 	if d.movedAt == nil {
 		d.movedAt = map[string]time.Time{}
 	}
@@ -145,6 +184,9 @@ func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 		switch {
 		case err != nil && first:
 			d.log.Warn("could not remove a peer's leftover entry; the link it moved to may carry no traffic until the entry times out", "interface", name, "peer", p.mac, "err", err)
+		case err == nil && first && !moved[key]:
+			d.log.Info("removed a peer candidate that is not on this link's channel (heard while scanning, or it changed band)", "interface", name, "peer", p.mac, "silent", time.Duration(p.inactiveMS)*time.Millisecond)
+			changed = true
 		case err == nil && first:
 			d.log.Info("removed a peer's leftover entry: it moved its radio to another mesh link", "interface", name, "peer", p.mac, "silent", time.Duration(p.inactiveMS)*time.Millisecond)
 			changed = true

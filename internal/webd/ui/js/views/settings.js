@@ -3,9 +3,9 @@ import { h } from '../dom.js';
 import { get, put, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill } from '../ui.js';
-import { bandName, since, duration, count, meshLinks, meshRadios, carried } from '../fmt.js';
+import { bandName, since, duration, count, meshLinks, meshRadios, carried, fewerRadios } from '../fmt.js';
 import { ensureConfig, cfg, saveBar, saveProfile, loadConfig } from '../config.js';
-import { linkFields, linkLine, nextLink } from '../links.js';
+import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
   ['node', 'Node'], ['wifi', 'Wi-Fi'], ['internet', 'Internet'], ['ports', 'Ports'],
@@ -154,12 +154,17 @@ function profileSection(d, st) {
     panel('The mesh this node belongs to', { tools: [button('Share with another node', shareProfile, 'small primary')] },
       kv([
         ['Mesh', h('span', cur.name, h('span.faint', `  ·  on the air as ${cur.mesh_id}`))],
-        [many ? 'Mesh link 1' : 'Channel', h('span', linkLine({ ...cur.radio, running_width_mhz: live[0] && live[0].running_width_mhz }), here(0))],
-        ...(cur.links || []).map((l, i) => [`Mesh link ${i + 2}`, h('span', linkLine({ ...l, running_width_mhz: live[i + 1] && live[i + 1].running_width_mhz }), here(i + 1))]),
+        // The links by name, in the profile's order (the order a node with
+        // fewer radios takes them in).
+        [many ? 'Mesh links' : 'Mesh link', h('div', [cur.radio, ...(cur.links || [])].map((l, i) =>
+          h('div', linkLine({ ...l, running_width_mhz: live[i] && live[i].running_width_mhz }), here(i))))],
         ['Regulatory', cur.regulatory.mode === 'unrestricted' ? h('span.warn', 'unrestricted') : `country (${cur.regulatory.country})`],
         ['Addresses', cur.prefix],
         ['Secret', h('span.sans.dim', 'kept on the node; shared only through “Share with another node”')],
-      ])),
+      ]),
+      // A node that cannot carry every link uses some of them only.
+      fewerRadios(st) ? h('div', { style: { marginTop: '14px' } }, notice({ level: 'info', message: fewerRadios(st).lead + ' Which link it uses is chosen on the Radios page.' },
+        h('a', { href: '#/radios', style: { marginLeft: '6px' } }, 'Radios →'))) : null),
     panel('Channel and rules', { meta: `on ${st.node.callsign} only` },
       h('div.form',
         notice({ level: 'warning', message: others.length
@@ -172,9 +177,9 @@ function profileSection(d, st) {
             return h('div', h('span.mono', n.callsign), h('span', { class: r ? 'dim' : 'faint', title: r ? null : 'This node runs a version that does not report its radios.' }, r || 'not reported'));
           })),
           h('span.hint', 'A link only reaches the nodes that have a radio for its band. One radio carries one link at a time.')) : null,
-        linkFields(p.radio, 'radio', ui.fields, { title: (p.links || []).length ? 'Mesh link 1' : '', country: p.regulatory.country, others: p.links || [] }),
+        linkFields(p.radio, 'radio', ui.fields, { title: (p.links || []).length ? linkOrder(0) : '', country: p.regulatory.country, others: p.links || [] }),
         (p.links || []).map((l, i) => h('div.link-row',
-          linkFields(l, `links[${i}]`, ui.fields, { title: `Mesh link ${i + 2}`, country: p.regulatory.country, others: [p.radio, ...p.links.filter((x) => x !== l)] }),
+          linkFields(l, `links[${i}]`, ui.fields, { title: linkOrder(i + 1), country: p.regulatory.country, others: [p.radio, ...p.links.filter((x) => x !== l)] }),
           h('div.row.end',
             // Swap with the link before: the order is which link a node
             // with too few radios takes first.

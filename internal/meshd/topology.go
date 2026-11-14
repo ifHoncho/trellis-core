@@ -54,17 +54,18 @@ func topoInterval(peers int) time.Duration {
 // localLinks reports this node's direct links, the strongest first.
 func (d *Daemon) localLinks() (links []gossip.Link, more int) {
 	var batIfindex int
-	wifi := map[int]bool{} // ifindexes of the mesh radios' interfaces
+	// The mesh radios' interfaces, and the mesh link (from 1) each carries.
+	wifi := map[int]int{}
 	d.facts.Read(func(f *Facts) {
 		batIfindex = f.BatIfindex
 		// mesh0 is a radio's interface whenever it exists (wired mesh
 		// ports are hard interfaces of their own).
 		if f.MeshIfindex != 0 {
-			wifi[f.MeshIfindex] = true
+			wifi[f.MeshIfindex] = 1
 		}
-		for _, l := range f.MoreLinks {
+		for i, l := range f.MoreLinks {
 			if l.Ifindex != 0 {
-				wifi[l.Ifindex] = true
+				wifi[l.Ifindex] = i + 2
 			}
 		}
 	})
@@ -92,7 +93,8 @@ func (d *Daemon) localLinks() (links []gossip.Link, more int) {
 		return nil, 0
 	}
 	for _, n := range ns {
-		l := gossip.Link{Local: local[n.HardIfindex], Remote: n.Address.String(), Kbps: uint32(n.Throughput.Kbps()), Wired: !wifi[n.HardIfindex]}
+		k := wifi[n.HardIfindex]
+		l := gossip.Link{Local: local[n.HardIfindex], Remote: n.Address.String(), Kbps: uint32(n.Throughput.Kbps()), Wired: k == 0, MeshLink: k}
 		if l.Local == "" {
 			continue
 		}
@@ -346,9 +348,12 @@ func (d *Daemon) Topology(ctx context.Context) (*status.Topology, error) {
 			}
 			mbps := float64(l.Kbps) / 1000
 			if tl, ok := links[key]; !ok {
-				links[key] = &status.TopoLink{A: id, B: other, ABMbps: mbps, ASignalDBm: l.Signal, Medium: medium, AMAC: a, BMAC: b}
+				links[key] = &status.TopoLink{A: id, B: other, ABMbps: mbps, ASignalDBm: l.Signal, Medium: medium, AMAC: a, BMAC: b, MeshLink: l.MeshLink}
 			} else if tl.A == other {
 				tl.BAMbps, tl.BSignalDBm = mbps, l.Signal
+				if tl.MeshLink == 0 {
+					tl.MeshLink = l.MeshLink // the other end may be the older one
+				}
 			}
 		}
 	}

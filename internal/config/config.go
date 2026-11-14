@@ -100,6 +100,16 @@ func (p *Profile) AllLinks() []RadioPlan {
 	return append([]RadioPlan{p.Radio}, p.Links...)
 }
 
+// LinkNames names every link by its band and channel (RadioPlan.Name), the
+// first link's first.
+func (p *Profile) LinkNames() []string {
+	var names []string
+	for _, l := range p.AllLinks() {
+		names = append(names, l.Name())
+	}
+	return names
+}
+
 // Link returns mesh link i (0 is Radio) and whether the profile has it.
 func (p *Profile) Link(i int) (RadioPlan, bool) {
 	switch {
@@ -960,6 +970,13 @@ func ChannelFrequencyMHz(band string, ch int) (int, error) {
 		return 0, fmt.Errorf("6 GHz channel numbers run from 1 to 233 (got %d)", ch)
 	}
 	return 0, fmt.Errorf("unsupported band %q", band)
+}
+
+// Name is what the UI, messages and meshctl call a mesh link: its band and
+// channel ("5 GHz · ch 149"), the same on every node of the mesh. Interface
+// names (mesh0, mesh1) are for logs and kernel tools.
+func (rp RadioPlan) Name() string {
+	return fmt.Sprintf("%s · ch %d", BandName(rp.Band), rp.Channel)
 }
 
 // ChannelWidths are the widths in MHz a mesh link can ask for in a band.

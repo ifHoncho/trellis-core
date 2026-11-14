@@ -15,20 +15,20 @@ func TestMovedPeers(t *testing.T) {
 		stale   []linkPeer
 		pending bool
 	}{
-		"one link each": {peers: []linkPeer{{0, alpha5, 40}, {1, node2, 20}}},
+		"one link each": {peers: []linkPeer{{0, alpha5, 40, true}, {1, node2, 20, true}}},
 		// node-2 moved to 5 GHz (mesh1), still listed on mesh0.
-		"moved": {peers: []linkPeer{{0, node2, 151684}, {1, node2, 80}, {0, alpha5, 40}},
-			stale: []linkPeer{{0, node2, 151684}}},
-		"moved the other way": {peers: []linkPeer{{0, node2, 12}, {1, node2, 9000}},
-			stale: []linkPeer{{1, node2, 9000}}},
-		"just moved: wait": {peers: []linkPeer{{0, node2, 2000}, {1, node2, 30}}, pending: true},
+		"moved": {peers: []linkPeer{{0, node2, 151684, true}, {1, node2, 80, true}, {0, alpha5, 40, true}},
+			stale: []linkPeer{{0, node2, 151684, true}}},
+		"moved the other way": {peers: []linkPeer{{0, node2, 12, true}, {1, node2, 9000, true}},
+			stale: []linkPeer{{1, node2, 9000, true}}},
+		"just moved: wait": {peers: []linkPeer{{0, node2, 2000, true}, {1, node2, 30, true}}, pending: true},
 		// Two adapters with one address (cheap clones) on two links: both
 		// live, both stay.
-		"same address on two live radios": {peers: []linkPeer{{0, node2, 30}, {1, node2, 60}}},
+		"same address on two live radios": {peers: []linkPeer{{0, node2, 30, true}, {1, node2, 60, true}}},
 		// Gone from both: its entries time out by themselves.
-		"silent everywhere": {peers: []linkPeer{{0, node2, 9000}, {1, node2, 8000}}},
-		"three links": {peers: []linkPeer{{0, node2, 7000}, {1, node2, 100}, {2, node2, 5000}},
-			stale: []linkPeer{{0, node2, 7000}, {2, node2, 5000}}},
+		"silent everywhere": {peers: []linkPeer{{0, node2, 9000, true}, {1, node2, 8000, true}}},
+		"three links": {peers: []linkPeer{{0, node2, 7000, true}, {1, node2, 100, true}, {2, node2, 5000, true}},
+			stale: []linkPeer{{0, node2, 7000, true}, {2, node2, 5000, true}}},
 	} {
 		stale, pending := movedPeers(c.peers)
 		if len(stale) != len(c.stale) || pending != c.pending {
@@ -44,6 +44,25 @@ func TestMovedPeers(t *testing.T) {
 				t.Errorf("%s: stale %v, want %v among them", name, stale, want)
 			}
 		}
+	}
+}
+
+// A peer candidate heard on another link's channel (while the radio
+// scanned, or before the peer changed band) never gets established on this
+// link and stays silent here: it goes after a minute. Established peers,
+// and candidates still being heard, stay.
+func TestStrayPeers(t *testing.T) {
+	node2, alpha5, picm := "a0:b0:c0:00:02:26", "a0:b0:c0:00:81:ea", "a0:b0:c0:00:89:fa"
+	peers := []linkPeer{
+		{1, picm, 40, true},                  // the real peer on 5 GHz
+		{1, node2, 185000, false},            // heard on 2.4 GHz during the scan
+		{1, alpha5, 20000, false},            // the same, not a minute yet
+		{0, picm, 70000, true},               // established: never a stray, whatever its silence
+		{1, "a0:b0:c0:00:52:de", 300, false}, // on the channel, peering now
+	}
+	got := strayPeers(peers)
+	if len(got) != 1 || got[0].mac != node2 {
+		t.Errorf("strays %v, want only %s", got, node2)
 	}
 }
 

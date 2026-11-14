@@ -104,13 +104,14 @@ web-wan:
 # "trellis-demo". SETUP=1 shows the setup wizard of an unprovisioned node;
 # LINKS=2 gives the made-up node a HaLow radio and a second mesh link,
 # LINKS=3 a third link on 2.4 GHz as well. BARE=1 is a node with no
-# per-radio rules, as freshly installed.
+# per-radio rules, as freshly installed. ONE_RADIO=1 is a node with one
+# dual-band adapter in a 2.4 + 5 GHz profile.
 # UI files are built into the binary, so run it again after editing them.
 UI_DEV_DIR ?= $(or $(XDG_RUNTIME_DIR),/tmp)/trellis-ui-dev
 ui-dev: build
 	$(GO) build -o bin/fakemeshd ./tools/fakemeshd
 	@mkdir -p $(UI_DEV_DIR)
 	@echo "== http://127.0.0.1:8480  (password: trellis-demo; Ctrl-C stops both)"
-	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) & fake=$$!; \
+	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) & fake=$$!; \
 	  trap "kill $$fake 2>/dev/null" EXIT INT TERM; sleep 0.5; \
 	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --listen 127.0.0.1:8480 --plain-http

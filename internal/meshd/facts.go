@@ -91,14 +91,27 @@ func (f *Facts) Read(fn func(*Facts)) {
 	fn(f)
 }
 
-// AddSAEFailure records a rejected peer, keeping the last 20.
-func (f *Facts) AddSAEFailure(mac, kind, msg string) {
+// AddSAEFailure records a rejected peer on a link's interface, keeping the
+// last 20 of all links.
+func (f *Facts) AddSAEFailure(ifname, mac, kind, msg string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.SAEFailures = append(f.SAEFailures, status.SAEEvent{Time: time.Now(), MAC: mac, Kind: kind, Message: msg})
+	f.SAEFailures = append(f.SAEFailures, status.SAEEvent{Time: time.Now(), Interface: ifname, MAC: mac, Kind: kind, Message: msg})
 	if len(f.SAEFailures) > 20 {
 		f.SAEFailures = f.SAEFailures[len(f.SAEFailures)-20:]
 	}
+}
+
+// saeFailures are the recorded failures on interface ifname; first adds
+// those recorded without one.
+func (f *Facts) saeFailures(ifname string, first bool) []status.SAEEvent {
+	out := []status.SAEEvent{}
+	for _, e := range f.SAEFailures {
+		if (ifname != "" && e.Interface == ifname) || (first && e.Interface == "") {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (f *Facts) bridgeAddress() string {

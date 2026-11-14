@@ -560,7 +560,7 @@ func TestProfileEffectsLinks(t *testing.T) {
 			t.Errorf("adding a link should cost nothing: %+v", e)
 		}
 	}
-	if msg := effectText(es, "link-added"); !strings.Contains(msg, "Mesh link 2 is new: 5 GHz channel 149 (80 MHz)") ||
+	if msg := effectText(es, "link-added"); !strings.Contains(msg, "New link: 5 GHz channel 149 (80 MHz)") ||
 		!strings.Contains(msg, "No 5 GHz mesh radio on alpha-5 and zulu-3: they stay without this link") {
 		t.Errorf("added link: %+v", es)
 	}

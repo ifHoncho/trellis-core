@@ -200,7 +200,7 @@ func TestLinkMessages(t *testing.T) {
 
 	full := &Links{V: 1, MAC: "02:00:00:00:00:02", Nonce: 42, Clients: 3, Selected: 7}
 	for i := 0; i < MaxLinks; i++ {
-		full.Links = append(full.Links, Link{Local: "a0:b0:c0:00:02:26", Remote: fmt.Sprintf("a0:b0:c0:00:89:%02x", i), Kbps: 866700, Signal: -100})
+		full.Links = append(full.Links, Link{Local: "a0:b0:c0:00:02:26", Remote: fmt.Sprintf("a0:b0:c0:00:89:%02x", i), Kbps: 866700, Signal: -100, MeshLink: 10})
 	}
 	pkt, err = SealMessage(key, LinksMagic, full)
 	if err != nil {

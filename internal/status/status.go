@@ -176,10 +176,12 @@ type Peer struct {
 
 // SAEEvent records a rejected peer.
 type SAEEvent struct {
-	Time    time.Time `json:"time"`
-	MAC     string    `json:"mac"`
-	Kind    string    `json:"kind"` // failure or blocked
-	Message string    `json:"message"`
+	Time time.Time `json:"time"`
+	// Interface is the mesh link's interface it happened on.
+	Interface string `json:"interface,omitempty"`
+	MAC       string `json:"mac"`
+	Kind      string `json:"kind"` // failure or blocked
+	Message   string `json:"message"`
 }
 
 // Batman is the batman-adv state.
@@ -465,6 +467,9 @@ type TopoLink struct {
 	Medium     string `json:"medium"` // wifi or wired
 	AMAC       string `json:"a_mac"`  // each end's interface address
 	BMAC       string `json:"b_mac"`
+	// MeshLink is the mesh link the two meet on, numbered from 1 in the
+	// profile's order (MeshLink.Index); 0 when wired or not reported.
+	MeshLink int `json:"mesh_link,omitempty"`
 }
 
 // MeshNode is another node as gossip describes it.

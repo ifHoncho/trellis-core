@@ -39,7 +39,7 @@ func TestCheckMeshChannel(t *testing.T) {
 		{165, 40, ""},
 	} {
 		var got []string
-		checkMeshChannel(rd, "mesh1", config.RadioPlan{Band: config.Band5G, Channel: c.ch, Width: c.width}, "US", func(level, code, format string, args ...any) {
+		checkMeshChannel(rd, config.RadioPlan{Band: config.Band5G, Channel: c.ch, Width: c.width}, "US", func(level, code, format string, args ...any) {
 			got = append(got, level+":"+code)
 		})
 		if c.want == "" && len(got) > 0 || c.want != "" && (len(got) != 1 || got[0] != c.want) {
@@ -54,7 +54,7 @@ func TestCheckMeshChannel(t *testing.T) {
 	}
 	for width, want := range map[int]string{160: "52, 56, 60, 64", 80: "", 20: ""} {
 		var got []string
-		checkMeshChannel(us, "mesh1", config.RadioPlan{Band: config.Band5G, Channel: 36, Width: width}, "US", func(level, code, format string, args ...any) {
+		checkMeshChannel(us, config.RadioPlan{Band: config.Band5G, Channel: 36, Width: width}, "US", func(level, code, format string, args ...any) {
 			got = append(got, level+":"+code+" "+fmt.Sprintf(format, args...))
 		})
 		switch {
@@ -69,7 +69,7 @@ func TestCheckMeshChannel(t *testing.T) {
 	}
 
 	var msg string
-	checkMeshChannel(rd, "mesh1", config.RadioPlan{Band: config.Band5G, Channel: 52, Width: 20}, "US", func(level, code, format string, args ...any) {
+	checkMeshChannel(rd, config.RadioPlan{Band: config.Band5G, Channel: 52, Width: 20}, "US", func(level, code, format string, args ...any) {
 		msg = format
 	})
 	if strings.Contains(msg, "cannot start") {

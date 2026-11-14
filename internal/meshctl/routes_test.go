@@ -97,12 +97,12 @@ func TestMeshLinkNeighbours(t *testing.T) {
 	st.MeshLink = status.MeshLink{Index: 1, Interface: "mesh0", Transport: "wifi+wired", Band: "2g", Channel: 6, Peers: peers, WiredPorts: []string{"eth1"}}
 	st.MoreLinks = []status.MeshLink{{Index: 2, Transport: "none", Band: "5g", Channel: 149, Peers: []status.Peer{}}}
 	var buf bytes.Buffer
-	printMeshLink(&buf, "Mesh link 2", st.MoreLinks[0], st, false)
-	if out := buf.String(); !strings.Contains(out, "no radio here for this link: 5g ch 149") || strings.Contains(out, "batman only") || strings.Contains(out, "DIRECT LINK") {
+	printMeshLink(&buf, linkTitle(st.MoreLinks[0]), st.MoreLinks[0], st, false)
+	if out := buf.String(); !strings.Contains(out, "Mesh link 5 GHz · ch 149: transport none (no radio here for this link") || strings.Contains(out, "batman only") || strings.Contains(out, "DIRECT LINK") {
 		t.Errorf("a link without a radio lists another link's neighbours:\n%s", out)
 	}
 	buf.Reset()
-	printMeshLink(&buf, "Mesh link", st.MeshLink, st, true)
+	printMeshLink(&buf, linkTitle(st.MeshLink), st.MeshLink, st, true)
 	if out := buf.String(); !strings.Contains(out, "batman only (eth1)") || strings.Count(out, "ESTAB") != 3 {
 		t.Errorf("first link: its radio peers and the wired neighbour:\n%s", out)
 	}
@@ -114,13 +114,13 @@ func TestMeshLinkNeighbours(t *testing.T) {
 		st.Batman.Neighbors[i].Via = "mesh1"
 	}
 	buf.Reset()
-	printMeshLink(&buf, "Mesh link", st.MeshLink, st, true)
-	if out := buf.String(); !strings.Contains(out, "no radio here for this link: 2g ch 6") || strings.Contains(out, "DIRECT LINK") {
+	printMeshLink(&buf, linkTitle(st.MeshLink), st.MeshLink, st, true)
+	if out := buf.String(); !strings.Contains(out, "Mesh link 2.4 GHz · ch 6: transport none (no radio here for this link") || strings.Contains(out, "DIRECT LINK") {
 		t.Errorf("first link without a radio:\n%s", out)
 	}
 	buf.Reset()
-	printMeshLink(&buf, "Mesh link 2", st.MoreLinks[0], st, false)
-	if out := buf.String(); strings.Count(out, "ESTAB") != 3 || !strings.Contains(out, "5g ch 149") {
+	printMeshLink(&buf, linkTitle(st.MoreLinks[0]), st.MoreLinks[0], st, false)
+	if out := buf.String(); strings.Count(out, "ESTAB") != 3 || !strings.Contains(out, "Mesh link 5 GHz · ch 149: transport wifi, mesh1") {
 		t.Errorf("second link with the node's only radio:\n%s", out)
 	}
 }

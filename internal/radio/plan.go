@@ -59,6 +59,9 @@ type Input struct {
 	// MoreBands are the bands of the profile's further links, in order:
 	// MoreBands[0] is the second link's.
 	MoreBands []string
+	// LinkNames name the links for notices, the first link's first: their
+	// band and channel ("5 GHz · ch 149"), as the UI names them. Optional.
+	LinkNames []string
 	APEnabled bool
 	Roles     config.RoleOverrides
 	// Current is the active assignment (fingerprint → role), or nil at boot.
@@ -74,6 +77,8 @@ func (in Input) bands() []string {
 
 // Plan is the result: which radio carries which role.
 type Plan struct {
+	names []string // Input.LinkNames, for notices
+
 	// Mesh is the first link's radio (Links[0]), or nil.
 	Mesh *Radio `json:"-"`
 	// Links has one entry per profile link, in order: the radio that carries
@@ -302,18 +307,31 @@ func MakePlan(in Input) *Plan {
 	return p
 }
 
-// linkName is how notices call mesh link i: "mesh" for the first, as ever,
-// then "mesh link 2", "mesh link 3", …
-func linkName(i int) string {
+// linkName is how notices call mesh link i: "the 5 GHz · ch 149 link" when
+// the input names the links; else "mesh" for the first, then "mesh link 2",
+// "mesh link 3", …
+func (p *Plan) linkName(i int) string {
+	if i < len(p.names) && p.names[i] != "" {
+		return "the " + p.names[i] + " link"
+	}
 	if i == 0 {
 		return "mesh"
 	}
 	return fmt.Sprintf("mesh link %d", i+1)
 }
 
+// linkBand is linkName with the link's band when the name lacks it:
+// "the 5 GHz · ch 149 link", or "mesh link 2 (5g)".
+func (p *Plan) linkBand(i int, band string) string {
+	if i < len(p.names) && p.names[i] != "" {
+		return p.linkName(i)
+	}
+	return fmt.Sprintf("%s (%s)", p.linkName(i), band)
+}
+
 func plan(in Input) *Plan {
 	bands := in.bands()
-	p := &Plan{Roles: map[string]Role{}, APBand: apBandFor(bands), Links: make([]*Radio, len(bands)), APLink: -1}
+	p := &Plan{Roles: map[string]Role{}, APBand: apBandFor(bands), Links: make([]*Radio, len(bands)), APLink: -1, names: in.LinkNames}
 	for _, r := range in.Radios {
 		p.Roles[r.Fingerprint] = RoleUnused
 	}
@@ -403,7 +421,7 @@ func plan(in Input) *Plan {
 					if i == 0 {
 						p.note("warning", "ap-shares-mesh-radio", "no free radio: the client AP shares the mesh radio, channel and airtime")
 					} else {
-						p.note("warning", "ap-shares-mesh-radio", "no free radio: the client AP shares the radio, channel and airtime of %s", linkName(i))
+						p.note("warning", "ap-shares-mesh-radio", "no free radio: the client AP shares the radio, channel and airtime of %s", p.linkName(i))
 					}
 					break
 				}
@@ -485,7 +503,7 @@ func (p *Plan) planLinks(in Input, bands []string) {
 			if i == 0 {
 				p.note("info", "mesh-disabled", "mesh role disabled in node config")
 			} else {
-				p.note("info", key+"-disabled", "%s (%s) disabled in node config", linkName(i), band)
+				p.note("info", key+"-disabled", "%s disabled in node config", p.linkBand(i, band))
 			}
 		case "radio", "port":
 			var pinned *Radio
@@ -501,15 +519,15 @@ func (p *Plan) planLinks(in Input, bands []string) {
 				})
 			}
 			if pinned == nil {
-				p.note("error", key+"-pin-missing", "%s is pinned to %s%s, which is not present", linkName(i), sel.Mode+" ", sel.Radio+sel.Port)
+				p.note("error", key+"-pin-missing", "%s is pinned to %s%s, which is not present", p.linkName(i), sel.Mode+" ", sel.Radio+sel.Port)
 				continue
 			}
 			if j, taken := owner[pinned]; taken {
-				p.note("error", key+"-pin-conflict", "%s is pinned to %s, the radio %s is pinned to", linkName(i), pinned.Describe(), linkName(j))
+				p.note("error", key+"-pin-conflict", "%s is pinned to %s, the radio %s is pinned to", p.linkName(i), pinned.Describe(), p.linkName(j))
 				continue
 			}
 			if ok, why := in.meshEligibleFor(pinned, band, true); !ok {
-				p.note("error", key+"-pin-ineligible", "%s is pinned to %s, which cannot carry it: %s", linkName(i), pinned.Describe(), why)
+				p.note("error", key+"-pin-ineligible", "%s is pinned to %s, which cannot carry it: %s", p.linkName(i), pinned.Describe(), why)
 				continue
 			}
 			owner[pinned], fixed[pinned] = i, true
@@ -583,13 +601,13 @@ func (p *Plan) planLinks(in Input, bands []string) {
 		code := "no-" + config.LinkRoleKey(i) + "-radio"
 		switch {
 		case p.hasLink():
-			p.note("info", code, "no radio for %s (%s): this node meshes over %s", linkName(i), bands[i], p.carried(bands))
+			p.note("info", code, "no radio for %s: this node meshes over %s", p.linkBand(i, bands[i]), p.carried(bands))
 		case i == 0:
 			p.note("error", code, "no radio can carry the %s mesh: %s. Plug in an adapter that supports mesh point (docs/hardware.md lists tested ones)", bands[0], ineligibleSummary(in))
 		default:
 			// The first link is reported as the fault (above, or by its
 			// pin or its disabled role); this one only adds its band.
-			p.note("warning", code, "no radio left that can carry %s (%s)", linkName(i), bands[i])
+			p.note("warning", code, "no radio left that can carry %s", p.linkBand(i, bands[i]))
 		}
 	}
 }
@@ -602,7 +620,11 @@ func (p *Plan) carried(bands []string) string {
 		if lr == nil {
 			continue
 		}
-		name := linkName(i)
+		if i < len(p.names) && p.names[i] != "" {
+			names = append(names, p.linkName(i))
+			continue
+		}
+		name := p.linkName(i)
 		if i == 0 {
 			name = "the first mesh link"
 		}

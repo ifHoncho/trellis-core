@@ -3,7 +3,7 @@
 import { h } from '../dom.js';
 import { state, redraw } from '../state.js';
 import { panel, pill, kv, field, toggle, button, notice } from '../ui.js';
-import { bandName, roleName, roleLink, meshLinks } from '../fmt.js';
+import { bandName, roleName, roleKind, roleLink, meshLinks, linkName, linkAt, fewerRadios } from '../fmt.js';
 import { ensureConfig, saveBar, identify, cfg } from '../config.js';
 
 const SOURCES = { measured: 'measured', database: 'hardware database', driver: 'reported by the driver', config: 'set in this node’s config' };
@@ -64,14 +64,6 @@ function prune(draft) {
   draft.radios.devices = (draft.radios.devices || []).filter((d) => d.ignore || d.label || d.max_power_dbm != null);
 }
 
-// linkBand is the band of the mesh link a radio carries now, in words, so
-// that a dual-band radio shows which of its bands is in use.
-function linkBand(r, st) {
-  const n = roleLink(r.role);
-  const l = n ? meshLinks(st)[n - 1] : null;
-  return l ? bandName(l.band || st.profile.band) : '';
-}
-
 function radioCard(r, st, draft) {
   const d = rule(draft, r, false) || {};
   const set = (fn) => { fn(rule(draft, r, true)); prune(draft); redraw(); };
@@ -82,12 +74,14 @@ function radioCard(r, st, draft) {
         h('div.title', describe(r)),
         h('div.faint.mono', { style: { fontSize: '12.5px', marginTop: '3px' } }, [r.label ? r.chipset : null, r.phy, r.driver, r.port].filter(Boolean).join(' · '))),
       h('div.row',
-        pill(r.role === 'unused' ? 'no role' : roleName(r.role) + (linkBand(r, st) ? ` · ${linkBand(r, st)}` : ''), r.role === 'unused' ? 'plain' : 'solid'),
+        // What the radio does, and on which link, as on the overview.
+        linkAt(st, roleLink(r.role)) ? h('span.mono.dim', { style: { fontSize: '12.5px' } }, linkName(linkAt(st, roleLink(r.role)), st)) : null,
+        pill(r.role === 'unused' ? 'no role' : roleKind(r.role), r.role === 'unused' ? 'plain' : 'solid'),
         r.ignored ? pill('ignored', 'warn') : null,
         r.hard_blocked ? pill('rf-kill switch', 'bad') : null)),
     r.broken ? h('div', { style: { marginTop: '12px' } }, notice({ level: 'warning', message: r.broken })) : null,
     r.in_use ? h('div', { style: { marginTop: '12px' } }, notice({ level: 'info', message: 'The system uses this radio: ' + r.in_use })) : null,
-    differs ? h('div', { style: { marginTop: '12px' } }, notice({ level: 'info', message: `On the next start this radio would be ${roleName(r.recommended).toLowerCase()}. Roles do not move while the node runs, so a link never drops by surprise; pin a role above to move it now.` })) : null,
+    differs ? h('div', { style: { marginTop: '12px' } }, notice({ level: 'info', message: `On the next start this radio would take this role: ${roleName(r.recommended, st)}. Roles do not move while the node runs, so a link never drops by surprise; pin a role above to move it now.` })) : null,
     h('div.facts',
       h('div.fact', h('span.label', 'Bands'), h('b', (r.bands || []).map(bandName).join(', ') || '–'),
         (r.bands || []).length > 1 ? h('span.faint', { style: { fontSize: '12.5px' } }, 'one at a time') : null),
@@ -112,22 +106,22 @@ function radioCard(r, st, draft) {
         : h('span.faint', { style: { fontSize: '13px' } }, 'no LED to blink')));
 }
 
-// linkSelect is the choice of radio for mesh link n (from 1): only radios
-// that have the link's band, and a hint that says where the link is now, or
-// why this node has no radio on it.
-function linkSelect(l, n, links, st, draft) {
-  const can = (r) => r.mesh_point && !r.ignored && (r.bands || []).includes(l.band);
+// linkSelect is the choice of radio for mesh link n (from 1), named by its
+// band and channel: only radios that have the link's band, and a hint that
+// says where the link is now, or why this node has no radio on it.
+function linkSelect(l, n, st, draft) {
+  const band = l.band || st.profile.band;
+  const can = (r) => r.mesh_point && !r.ignored && (r.bands || []).includes(band);
   const now = st.radios.find((r) => roleLink(r.role) === n);
   const able = st.radios.filter(can);
-  const where = `${bandName(l.band)} channel ${l.channel}`;
   let hint;
-  if (now) hint = `${where}, on ${describe(now)}. Moving it drops the link for a few seconds.`;
-  else if (!able.length) hint = `${where}. No radio on this node has ${bandName(l.band)}: it meshes over its other links.`;
+  if (now) hint = `On ${describe(now)}. Moving it drops the link for a few seconds.`;
+  else if (!able.length) hint = `No radio on this node has ${bandName(band)}: it meshes over its other links.`;
   else {
-    const busy = able.map((r) => `${describe(r)} carries ${roleLink(r.role) ? 'mesh link ' + roleLink(r.role) : 'no link'}`).join('; ');
-    hint = `${where}. No radio carries it here: ${busy}. A radio is on one link at a time; choose it here to move it to this one.`;
+    const busy = able.map((r) => `${describe(r)} carries ${roleLink(r.role) ? linkName(linkAt(st, roleLink(r.role)), st) : 'no link'}`).join('; ');
+    hint = `No radio carries it here: ${busy}. A radio is on one link at a time; choose it here to move it to this one.`;
   }
-  return roleSelect(links.length > 1 ? `Mesh link ${n}` : 'Mesh link', n === 1 ? 'mesh' : 'mesh' + n, st, draft, hint, can, now);
+  return roleSelect(`Mesh on ${linkName(l, st)}`, n === 1 ? 'mesh' : 'mesh' + n, st, draft, hint, can, now);
 }
 
 export function radios() {
@@ -137,20 +131,26 @@ export function radios() {
   const head = h('header.page-head', h('div', h('h1', 'Radios'),
     h('p.sub', 'The radio with the most transmit power carries the mesh; the weakest serves the node’s own Wi-Fi, which only has to reach its owner’s phone. Radios are told apart by a fingerprint, never by the name the kernel gives them.')));
   const meshRadioCount = st.radios.filter((r) => r.mesh_point && !r.ignored).length;
+  // A node that cannot carry every link: which one it is on, and how to
+  // choose another, before the choices themselves.
+  const few = fewerRadios(st);
+  const switchHow = few && few.on.length && few.off.length
+    ? `To use ${linkName(few.off[0], st)} instead, set “Mesh on ${linkName(few.on[0], st)}” to Off below and leave ${linkName(few.off[0], st)} on Automatic (or choose the radio for it). ` +
+      'Left on Automatic, a node like this one takes the links in the profile’s order (Settings → Mesh profile), which every node of the mesh shares.'
+    : '';
   if (!c.draft) return h('div.page', head, h('div.empty', c.error || 'Loading the configuration…'));
   const draft = c.draft;
   return h('div.page', head,
     (st.plan.notices || []).filter((n) => n.level !== 'info').length
       ? h('div.notices', st.plan.notices.filter((n) => n.level !== 'info').map((n) => notice(n))) : null,
     panel('Which radio does what', {},
+      few ? h('div', { style: { marginBottom: '14px' } }, notice({ level: 'info', message: few.lead }, switchHow ? h('div', { style: { marginTop: '6px' } }, switchHow) : null)) : null,
       links.length > 1 ? h('p.dim', { style: { fontSize: '14px', maxWidth: '85ch', marginBottom: '14px' } },
         `The mesh profile has ${links.length} links, each with its band and channel (Settings → Mesh profile). Here each link gets one of this node’s radios. `,
         'A radio carries one link at a time, a dual-band radio too: it is on one channel. ',
-        meshRadioCount < links.length
-          ? `This node has ${meshRadioCount === 1 ? 'one mesh radio' : meshRadioCount + ' mesh radios'} for ${links.length} links: left on Automatic, it takes the first links in the profile’s order that its radios can carry, and reaches the nodes on the other links through nodes that carry both.`
-          : 'A card with two radios, one per band, carries two links at once.') : null,
+        meshRadioCount < links.length ? '' : 'A card with two radios, one per band, carries two links at once.') : null,
       h('div.fields',
-        links.map((l, i) => linkSelect({ band: l.band || st.profile.band, channel: l.channel || st.profile.channel }, i + 1, links, st, draft)),
+        links.map((l, i) => linkSelect(l, i + 1, st, draft)),
         roleSelect('Client Wi-Fi', 'ap', st, draft, 'Shares a mesh radio when no other radio is free.', (r) => r.ap && !r.ignored, st.radios.find((r) => (r.role || '').split('+').includes('ap') || r.role === 'ap')))),
     st.radios.length ? st.radios.map((r) => radioCard(r, st, draft)) : h('div.empty', 'No Wi-Fi radios found on this node.'),
     saveBar());

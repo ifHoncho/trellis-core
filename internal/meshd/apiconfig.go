@@ -368,7 +368,7 @@ func (d *Daemon) previewPlan(n *config.Node, p *config.Profile) *radio.Plan {
 			}
 		})
 	}
-	return radio.MakePlan(radio.Input{Radios: radios, MeshBand: p.Radio.Band, MoreBands: linkBands(p), APEnabled: n.APEnabled(), Roles: n.Radios.Roles, Current: current})
+	return radio.MakePlan(radio.Input{Radios: radios, MeshBand: p.Radio.Band, MoreBands: linkBands(p), LinkNames: p.LinkNames(), APEnabled: n.APEnabled(), Roles: n.Radios.Roles, Current: current})
 }
 
 // nodeEffects lists what replacing the node configuration cur with n does
@@ -404,7 +404,7 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 		var left []string
 		for i, lr := range after.Links {
 			if l, ok := profile.Link(i); ok && lr != nil {
-				left = append(left, fmt.Sprintf("mesh link %d, %s", i+1, linkDesc(l)))
+				left = append(left, linkName(l))
 			}
 		}
 		peers := d.linkPeers(profile)
@@ -432,13 +432,16 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 				add("warning", "mesh-link-moves", "%s moves from %s to %s and drops for a few seconds.", title, name(was), name(now))
 			}
 		}
-		first := "The mesh link"
-		if max(len(before.Links), len(after.Links)) > 1 {
-			first = "Mesh link 1"
+		// Each link by its band and channel, as everywhere in the UI.
+		title := func(i int) string {
+			if l, ok := profile.Link(i); ok {
+				return "The " + linkName(l) + " link"
+			}
+			return "The mesh link"
 		}
-		link(first, before.MeshFingerprint(), after.MeshFingerprint())
+		link(title(0), before.MeshFingerprint(), after.MeshFingerprint())
 		for i := 1; i < max(len(before.Links), len(after.Links)); i++ {
-			link(fmt.Sprintf("Mesh link %d", i+1), before.LinkFingerprint(i), after.LinkFingerprint(i))
+			link(title(i), before.LinkFingerprint(i), after.LinkFingerprint(i))
 		}
 		was, now := before.APFingerprint(), after.APFingerprint()
 		switch {
@@ -635,6 +638,8 @@ func linkDesc(l config.RadioPlan) string {
 	return fmt.Sprintf("%s channel %d (%d MHz)", bandName(l.Band), l.Channel, l.Width)
 }
 
+func linkName(l config.RadioPlan) string { return l.Name() }
+
 // listAnd joins names for a sentence: "a", "a and b", "a, b and c"; past
 // six it counts the rest.
 func listAnd(names []string) string {
@@ -725,7 +730,7 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 				stay = append(stay, linkDesc(l))
 				kept = append(kept, peers(i)...)
 				if j != i {
-					moved = append(moved, fmt.Sprintf("%s becomes mesh link %d", linkDesc(l), j+1))
+					moved = append(moved, fmt.Sprintf("%s moves from place %d to %d", linkName(l), i+1, j+1))
 				}
 			}
 		}
@@ -798,7 +803,7 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			for _, j := range added {
 				meshChange = true
 				l := now[j]
-				msg := fmt.Sprintf("Mesh link %d is new: %s.", j+1, linkDesc(l))
+				msg := fmt.Sprintf("New link: %s.", linkDesc(l))
 				if len(gone)+len(noRadio) > 0 && len(now) == 1 {
 					msg = "" // the one link's move is told above
 				} else if carries(j) {
@@ -886,16 +891,4 @@ func deref(p *int) int {
 	return *p
 }
 
-func bandName(b string) string {
-	switch b {
-	case config.Band2G:
-		return "2.4 GHz"
-	case config.Band5G:
-		return "5 GHz"
-	case config.Band6G:
-		return "6 GHz"
-	case config.BandS1G:
-		return "HaLow"
-	}
-	return b
-}
+func bandName(b string) string { return config.BandName(b) }

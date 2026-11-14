@@ -72,6 +72,14 @@ var nodes = []fnode{
 	{"scout-7", 130, "6a:dc:ee:10:00:07", "a0:b0:c0:70:7a:ea", false, false, 1, 12},
 }
 
+// lastLinks are links on the profile's last link, when it has more than
+// one: nodes that meet on two bands, as a dual-band node does with its
+// neighbours. Their ends use each node's second interface address.
+var lastLinks = []flink{{0, 1, 31, 29, -48, -50}, {0, 4, 18, 16, -66, -69}, {1, 3, 27, 25, -55, -57}}
+
+// linkMAC is a node's interface address on its second mesh link.
+func linkMAC(orig string) string { return "a2" + orig[2:] }
+
 var links = []flink{
 	{0, 1, 86, 79, -52, -55}, {0, 2, 41, 38, -67, -66}, {0, 3, 120, 115, -44, -45}, {0, 4, 12, 9, -79, -81},
 	{1, 6, 22, 19, -74, -75}, {1, 3, 64, 60, -58, -59}, {2, 5, 54, 51, -61, -62}, {2, 4, 33, 30, -68, -70},
@@ -87,6 +95,9 @@ type fake struct {
 	password string
 	fails    int
 	mcast    uint64
+	// oneRadio is a node with one dual-band USB adapter in a two-link
+	// profile: it meshes on one link, the other has no radio here.
+	oneRadio bool
 }
 
 func newFake(setup bool, password string, links int, bare bool) *fake {
@@ -115,6 +126,15 @@ func newFake(setup bool, password string, links int, bare bool) *fake {
 		n.NodeID = 0
 	}
 	return &fake{started: time.Now().Add(-3*time.Hour - 17*time.Minute), node: n, profile: p, setup: setup, password: password, mcast: 48211}
+}
+
+// oneRadioNode makes the demo node one with a single dual-band adapter, on
+// the 2.4 GHz link of a profile with a 5 GHz link too.
+func (f *fake) oneRadioNode() {
+	f.oneRadio = true
+	f.profile.Radio = config.RadioPlan{Band: config.Band2G, Channel: 6, Width: 20}
+	f.profile.Links = []config.RadioPlan{{Band: config.Band5G, Channel: 149, Width: 80}}
+	f.node.Radios.Devices = nil
 }
 
 // drift moves a figure by up to pct percent, differently every call.
@@ -182,9 +202,24 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			st.Radios[1].Role, st.Radios[1].Recommended = role+"+ap", role+"+ap"
 			st.Radios[1].Interfaces = []string{ml.Interface + " (mesh point)", "ap0 (AP)"}
 			st.Plan.Notices = append(st.Plan.Notices, status.Warning{Level: "warning", Code: "ap-shares-mesh-radio",
-				Message: fmt.Sprintf("no free radio: the client AP shares the radio, channel and airtime of mesh link %d", i+2), Source: "radios"})
+				Message: fmt.Sprintf("no free radio: the client AP shares the radio, channel and airtime of the %s link", l.Name()), Source: "radios"})
 		}
 		st.MoreLinks = append(st.MoreLinks, ml)
+	}
+	if f.oneRadio {
+		// One MT7610U on the first link; the 5 GHz link has no radio here.
+		st.Radios = []status.Radio{{Fingerprint: "mac:a0:b0:c0:00:01:f1", FingerprintSource: "permanent-mac", Phy: "phy0", Chipset: "MediaTek MT7610U", Driver: "mt76x0u",
+			Bus: "usb", Port: "usb:1-1", DeviceID: "0e8d:7610", PermAddr: "a0:b0:c0:00:01:f1", Bands: []string{"2g", "5g"}, Streams: 1, MeshPoint: true, AP: true, MeshAndAP: true,
+			Power: map[string]status.PowerFact{"2g": {DBm: 14, Source: "driver"}, "5g": {DBm: 16, Source: "driver"}}, Role: "mesh", Recommended: "mesh",
+			Interfaces: []string{"mesh0 (mesh point)"}}}
+		for i := range st.MoreLinks {
+			st.MoreLinks[i].Interface, st.MoreLinks[i].Transport, st.MoreLinks[i].FreqMHz = "", "none", 0
+		}
+		st.Plan.MeshRadio, st.Plan.APRadio = st.Radios[0].Fingerprint, st.Radios[0].Fingerprint
+		st.Radios[0].Role, st.Radios[0].Recommended = "mesh+ap", "mesh+ap"
+		st.Radios[0].Interfaces = append(st.Radios[0].Interfaces, "ap0 (AP)")
+		st.Plan.Notices = []status.Warning{{Level: "info", Code: "mesh2-no-radio", Source: "radios",
+			Message: "no radio for the 5 GHz · ch 149 link: this node meshes over the 2.4 GHz · ch 6 link"}}
 	}
 	st.Batman = status.Batman{Interface: "bat0", Present: true, ModuleVersion: "2026.3", ModulePath: "/lib/modules/6.18.60+rpt-rpi-v8/updates/dkms/batman-adv.ko",
 		Algo: "BATMAN_V", MAC: self.mac, MTU: 1500, MTUOK: true, HardIfs: []status.HardIf{{Name: "mesh0", MAC: self.orig, Active: true, MTU: 1560}},
@@ -216,10 +251,28 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: drift(far.tput, 6), Best: true})
 	}
 	st.Batman.Originators = append(st.Batman.Originators, status.Originator{MAC: nodes[4].orig, NextHop: nodes[3].orig, Via: "mesh0", LastSeenMS: 420, ThroughputMbps: drift(31, 6)})
+	// Neighbours on the last link too: batman-adv lists a node once per
+	// link it is heard on.
+	if k := len(st.MoreLinks); k > 0 && !f.oneRadio {
+		ml := &st.MoreLinks[k-1]
+		for _, l := range lastLinks {
+			if l.a != 0 {
+				continue
+			}
+			peer := linkMAC(nodes[l.b].orig)
+			ml.Peers = append(ml.Peers, status.Peer{MAC: peer, SignalDBm: l.sigA + rand.IntN(3) - 1, TXMbps: drift(l.ab*3.1, 4), RXMbps: drift(l.ba*3.1, 4),
+				InactiveMS: uint32(rand.IntN(40)), ConnectedSeconds: uint32(now.Sub(f.started).Seconds()) - 60, PlinkState: "ESTAB", Established: true})
+			st.Batman.Neighbors = append(st.Batman.Neighbors, status.Neighbor{MAC: peer, Via: ml.Interface, LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: drift(l.ab, 6)})
+		}
+	}
 
 	st.Bridge = status.Bridge{Name: "br-mesh", Present: true, Ports: []string{"ap0", "bat0", "eth1"}, Address: "10.73.12.1/16", MTU: 1500}
 	apJoin := f.apJoin()
-	st.AP = status.AP{Enabled: f.node.APEnabled(), Interface: "ap0", Radio: st.Radios[1].Fingerprint, SSID: apJoin.SSID, Band: "2g", Channel: 1, FreqMHz: 2412,
+	apRadio := st.Radios[len(st.Radios)-1].Fingerprint
+	if len(st.Radios) > 1 {
+		apRadio = st.Radios[1].Fingerprint
+	}
+	st.AP = status.AP{Enabled: f.node.APEnabled(), Interface: "ap0", Radio: apRadio, SSID: apJoin.SSID, Band: "2g", Channel: 1, FreqMHz: 2412,
 		Hostapd: status.Helper{Running: true, PID: 840, State: "ENABLED"}, TXPowerDBm: 25, Clients: []status.Client{
 			{MAC: "02:09:3b:ba:06:e1", SignalDBm: -38 + rand.IntN(5), TXMbps: 144.4, RXMbps: drift(86, 20), InactiveMS: uint32(rand.IntN(3000)), ConnectedSeconds: 5120, IP: "10.73.12.105", Hostname: "Galaxy-S24"},
 			{MAC: "7e:21:5c:0d:88:3a", SignalDBm: -61 + rand.IntN(5), TXMbps: 72.2, RXMbps: drift(52, 20), InactiveMS: uint32(rand.IntN(9000)), ConnectedSeconds: 940, IP: "10.73.12.118", Hostname: "Pixel-8a"},
@@ -260,7 +313,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		{Name: "eth1", Role: "client", Why: "taken over from NetworkManager: a device without a DHCP server is plugged in", Carrier: true, Since: now.Add(-41 * time.Minute)},
 	}
 	for _, n := range nodes[1:] {
-		st.Nodes = append(st.Nodes, status.MeshNode{Callsign: n.callsign, NodeID: n.id, Address: fmt.Sprintf("10.73.%d.1", n.id), MAC: n.mac, Originators: []string{n.orig},
+		st.Nodes = append(st.Nodes, status.MeshNode{Callsign: n.callsign, NodeID: n.id, Address: fmt.Sprintf("10.73.%d.1", n.id), MAC: n.mac, Originators: []string{n.orig, linkMAC(n.orig)},
 			Version: "demo", Gateway: n.gw, WANHealthy: n.wanOK, HeardAgoMS: int64(rand.IntN(30000)), MeshRadios: n.radios()})
 	}
 	st.Nodes[5].Version = "4a48da6+1104.072526"
@@ -272,7 +325,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	}
 	st.Process = status.Process{PID: 790, OpenFiles: 31, Goroutines: 34}
 	st.Warnings = append(st.Warnings,
-		status.Warning{Level: "warning", Code: "weak-link", Message: "the link to bravo-5 is weak (-79 dBm): expect low throughput and retries", Source: "meshlink"},
+		status.Warning{Level: "warning", Code: "weak-link", Message: "the 5 GHz · ch 149 link to bravo-5 is weak (-79 dBm): expect low throughput and retries", Source: "meshlink"},
 		status.Warning{Level: "info", Code: "version-mismatch", Message: "scout-7 runs another Trellis build (4a48da6+1104.072526)", Source: "gossip"})
 	if f.setup {
 		st.Warnings = append(st.Warnings, status.Warning{Level: "info", Code: "setup-needed", Message: "this node has no mesh profile yet: it runs alone until it is set up"})
@@ -529,11 +582,17 @@ func (f *fake) Topology(ctx context.Context) (*status.Topology, error) {
 	}
 	for _, l := range links {
 		tl := status.TopoLink{A: nodes[l.a].mac, B: nodes[l.b].mac, ABMbps: drift(l.ab, 6), BAMbps: drift(l.ba, 6),
-			ASignalDBm: l.sigA + rand.IntN(3) - 1, BSignalDBm: l.sigB + rand.IntN(3) - 1, Medium: "wifi", AMAC: nodes[l.a].orig, BMAC: nodes[l.b].orig}
+			ASignalDBm: l.sigA + rand.IntN(3) - 1, BSignalDBm: l.sigB + rand.IntN(3) - 1, Medium: "wifi", AMAC: nodes[l.a].orig, BMAC: nodes[l.b].orig, MeshLink: 1}
 		if l.b == 6 {
 			tl.BAMbps, tl.BSignalDBm = 0, 0
 		}
 		t.Links = append(t.Links, tl)
+	}
+	if k := len(f.profile.Links); k > 0 && !f.oneRadio {
+		for _, l := range lastLinks {
+			t.Links = append(t.Links, status.TopoLink{A: nodes[l.a].mac, B: nodes[l.b].mac, ABMbps: drift(l.ab, 6), BAMbps: drift(l.ba, 6),
+				ASignalDBm: l.sigA, BSignalDBm: l.sigB, Medium: "wifi", AMAC: linkMAC(nodes[l.a].orig), BMAC: linkMAC(nodes[l.b].orig), MeshLink: k + 1})
+		}
 	}
 	return t, nil
 }
@@ -598,6 +657,7 @@ func main() {
 	setup := flag.Bool("setup", false, "pretend the node waits to be set up (no profile, no admin password)")
 	password := flag.String("password", "trellis-demo", "the admin password (ignored with --setup)")
 	bare := flag.Bool("bare", false, "a node with no per-radio rules, as freshly installed")
+	oneRadio := flag.Bool("one-radio", false, "a node with one dual-band adapter in a 2.4 + 5 GHz profile")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
 	flag.Parse()
 	if *socket == "" {
@@ -609,7 +669,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	srv := &api.Server{Provider: newFake(*setup, *password, *links, *bare), Socket: *socket, Log: slog.Default(), Mode: 0o600}
+	f := newFake(*setup, *password, *links, *bare)
+	if *oneRadio {
+		f.oneRadioNode()
+	}
+	srv := &api.Server{Provider: f, Socket: *socket, Log: slog.Default(), Mode: 0o600}
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "fakemeshd:", err)
 		os.Exit(1)

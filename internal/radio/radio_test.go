@@ -2,6 +2,7 @@ package radio
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"meridian/trellis/internal/config"
@@ -689,5 +690,28 @@ func TestPortPinOnDualBandCard(t *testing.T) {
 	roles.Mesh = config.RoleSelection{Mode: "port", Port: "usb:9-9"}
 	if p = MakePlan(Input{Radios: dbdcRadios(dbdcG, dbdcA), MeshBand: "2g", APEnabled: false, Roles: roles}); !hasNotice(p, "mesh-pin-missing") {
 		t.Errorf("empty port: notices %v", p.Notices)
+	}
+}
+
+// Notices name a link by its band and channel when the input names the
+// links, as the UI does, and keep the old wording otherwise.
+func TestPlanNoticesNameLinks(t *testing.T) {
+	rs := dbdcRadios(dbdcG, dbdcA)
+	AssignFingerprints(rs)
+	in := Input{Radios: rs, MeshBand: "5g", MoreBands: []string{"s1g"}, APEnabled: true, Roles: auto()}
+	text := func(p *Plan) string {
+		var all []string
+		for _, n := range p.Notices {
+			all = append(all, n.Message)
+		}
+		return strings.Join(all, "\n")
+	}
+	in.LinkNames = []string{"5 GHz · ch 149", "HaLow · ch 26"}
+	if got := text(MakePlan(in)); !strings.Contains(got, "no radio for the HaLow · ch 26 link: this node meshes over the 5 GHz · ch 149 link") {
+		t.Errorf("named links:\n%s", got)
+	}
+	in.LinkNames = nil
+	if got := text(MakePlan(in)); !strings.Contains(got, "no radio for mesh link 2 (s1g)") {
+		t.Errorf("unnamed links:\n%s", got)
 	}
 }

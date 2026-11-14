@@ -83,14 +83,19 @@ func (r *Radio) PermAddrString() string {
 
 // Describe is a one-line human description.
 func (r *Radio) Describe() string {
-	name := r.Label
-	if name == "" && r.HWDB != nil {
-		name = r.HWDB.Chipset
+	return fmt.Sprintf("%s (%s, %s, %s)", r.Name(), r.Phy, r.Device.Port, r.Fingerprint)
+}
+
+// Name is the radio as the operator knows it: its label, else its chipset,
+// else its driver.
+func (r *Radio) Name() string {
+	switch {
+	case r.Label != "":
+		return r.Label
+	case r.HWDB != nil && r.HWDB.Chipset != "":
+		return r.HWDB.Chipset
 	}
-	if name == "" {
-		name = r.Device.Driver
-	}
-	return fmt.Sprintf("%s (%s, %s, %s)", name, r.Phy, r.Device.Port, r.Fingerprint)
+	return r.Device.Driver
 }
 
 // HasBand reports whether the radio has channels in the named band.

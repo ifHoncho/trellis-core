@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"meridian/trellis/internal/config"
@@ -345,7 +347,7 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if width != 0 {
 			w = width
 		}
-		m.checkOneSided(meshIfindex, meshIfname, rp.Band, w, warn)
+		m.checkOneSided(meshIfindex, meshIfname, rp, w, warn)
 	}
 	if sup.Restarts > 3 {
 		warn("warning", "supplicant-restarting", "wpa_supplicant has restarted %d times; see the journal", sup.Restarts)
@@ -393,26 +395,64 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 			}
 			m.d.Kick("mesh removed")
 		case wpa.EvMeshSAEAuthFailure:
-			// Not always a wrong passphrase: a peer that did not answer
-			// (off the channel, restarting, or blocking this node) fails
-			// the same way.
-			m.d.log.Warn("SAE authentication failed: the peer did not answer, or has a different passphrase", "interface", m.ifname(), "peer", ev.KV["addr"])
-			m.d.facts.AddSAEFailure(ev.KV["addr"], "failure", "SAE authentication failed (no answer, or another passphrase)")
+			addr := ev.KV["addr"]
+			// A peer not on this link's channel cannot answer: one heard
+			// while the radio scanned other channels (every link has the
+			// same mesh ID), or one that changed band. Not a fault; its
+			// entry goes (strayPeers).
+			if m.offChannel(addr) {
+				m.d.log.Info("SAE with a peer that is not on this link's channel (heard while scanning, or it changed band); not retried here", "interface", m.ifname(), "peer", addr)
+				break
+			}
+			// Otherwise the peer is on the channel and did not accept this
+			// node: another passphrase, most often, or it is blocking this
+			// node or restarting.
+			m.d.log.Warn("SAE authentication failed: the peer did not answer, or has a different passphrase", "interface", m.ifname(), "peer", addr)
+			m.d.facts.AddSAEFailure(m.ifname(), addr, "failure", "SAE authentication failed (no answer, or another passphrase)")
 			// One cause is a leftover entry of this peer on another link
 			// (peermove.go): look now, not at the next slow pass.
 			m.d.Kick("SAE failure")
 		case wpa.EvMeshSAEAuthBlocked:
 			addr := ev.KV["addr"]
+			if m.offChannel(addr) {
+				// Not lifted early: there is nobody to retry with on
+				// this channel.
+				m.d.log.Info("SAE blocked a peer that is not on this link's channel", "interface", m.ifname(), "peer", addr)
+				break
+			}
 			if delay, ok := m.blocks.blocked(addr, time.Now(), rand.N(saeLiftSpread)); ok {
 				m.d.log.Warn("SAE authentication blocked after repeated failures; meshd lifts the block early", "interface", m.ifname(), "peer", addr, "seconds", ev.KV["duration"], "lift_in", delay.Round(time.Second))
-				m.d.facts.AddSAEFailure(addr, "blocked", "SAE blocked after repeated failures; tried again in "+delay.Round(time.Second).String())
+				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked after repeated failures; tried again in "+delay.Round(time.Second).String())
 				time.AfterFunc(delay+100*time.Millisecond, func() { m.d.Kick("lift SAE block") })
 			} else {
 				m.d.log.Warn("SAE authentication blocked after repeated failures; left blocked, this peer has failed through every early retry", "interface", m.ifname(), "peer", addr, "seconds", ev.KV["duration"])
-				m.d.facts.AddSAEFailure(addr, "blocked", "SAE blocked for "+ev.KV["duration"]+" s after repeated failures")
+				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked for "+ev.KV["duration"]+" s after repeated failures")
 			}
 		}
 	}
+}
+
+// offChannel reports whether a peer this link knows has been silent on it
+// for offChannelMS: then it is not on this link's channel, whatever SAE
+// says. A peer this link has no entry for is not judged.
+func (m *meshLinkReconciler) offChannel(mac string) bool {
+	if m.d.nl == nil {
+		return false
+	}
+	ifc, err := net.InterfaceByName(m.ifname())
+	if err != nil {
+		return false
+	}
+	sts, err := m.d.nl.Stations(ifc.Index)
+	if err != nil {
+		return false
+	}
+	for _, s := range sts {
+		if strings.EqualFold(s.MAC.String(), mac) {
+			return !s.Established() && s.InactiveMS >= offChannelMS
+		}
+	}
+	return false
 }
 
 func (m *meshLinkReconciler) stopEvents() {

@@ -2,7 +2,7 @@
 import { h } from '../dom.js';
 import { state, history, nameOf, nodeByAddr, shortMac } from '../state.js';
 import { panel, table, bars, spark, pill, button } from '../ui.js';
-import { mbps, ago, duration, plural, signal, meshLinks, carried } from '../fmt.js';
+import { mbps, ago, duration, plural, signal, meshLinks, carried, linkName, linkOn } from '../fmt.js';
 import { topology, legend, resetLayout, hasPins } from '../topo.js';
 
 export function mesh() {
@@ -17,15 +17,18 @@ export function mesh() {
   const others = st.nodes || [];
   const silent = topo ? topo.nodes.filter((n) => !n.reported && n.callsign).length : 0;
 
-  const label = (mac, via) => {
+  const label = (mac) => {
     const n = nodeByAddr(mac);
-    return h('div', h('div.primary', n ? n.callsign : shortMac(mac)), h('div.secondary', (n ? `#${n.node_id} · ${n.address}` : mac) + (via ? ` · ${via}` : '')));
+    return h('div', h('div.primary', n ? n.callsign : shortMac(mac)), h('div.secondary', n ? `#${n.node_id} · ${n.address}` : mac));
   };
-  // With more than one mesh link a neighbour can appear once per link: name
-  // the link then.
-  // The links this node has a radio for: it may be the second without the first.
+  // The links this node has a radio for: it may be the second without the
+  // first. Each is named by its band and channel, as on every page.
   const radioLinks = links.filter(carried);
-  const manyLinks = radioLinks.length > 1;
+  const failures = links.flatMap((l) => (l.sae_failures || []).map((e) => ({ ...e, link: linkName(l, st) })))
+    .sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+  // The link a neighbour is heard on: a node on two links with this one
+  // is listed once per link. Wired neighbours are on a port, not a link.
+  const onLink = (n) => { const l = linkOn(st, n.via); return l ? linkName(l, st) : 'wired'; };
   // A route is direct when its next hop is the destination node itself.
   // With several links batman-adv names a node by its first link's address
   // (the originator) but may reach it over another, so compare nodes, not
@@ -47,26 +50,29 @@ export function mesh() {
       topology(topo, {}), legend()),
 
     h('div.grid',
-      panel('Direct links', { class: 'c7', flush: true, meta: radioLinks.length ? radioLinks.filter((l) => l.freq_mhz).map((l) => `${l.interface} · ${l.freq_mhz} MHz`).join('  +  ') || radioLinks[0].interface : st.mesh_link.transport },
+      panel('Direct links', { class: 'c12', flush: true, meta: radioLinks.length ? radioLinks.map((l) => linkName(l, st)).join('  +  ') : st.mesh_link.transport },
         table({ stack: true, key: (n) => n.mac + n.via }, [
-          { title: 'Node', cls: 'wide', wide: true, cell: (n) => label(n.mac, manyLinks ? n.via : '') },
-          { title: 'Signal', cell: (n) => { const p = peers.get(`${n.via}|${n.mac}`); return p ? h('span.nowrap', bars(p.signal_dbm), ' ', h('span.mono.dim', `${p.signal_dbm} dBm`)) : h('span.faint', n.via); } },
+          { title: 'Node', cls: 'wide', wide: true, cell: (n) => label(n.mac) },
+          { title: 'Link', cell: (n) => h('span.mono.nowrap', onLink(n)) },
+          { title: 'Signal', cell: (n) => { const p = peers.get(`${n.via}|${n.mac}`); return p ? h('span.nowrap', bars(p.signal_dbm), ' ', h('span.mono.dim', `${p.signal_dbm} dBm`)) : h('span.faint', '–'); } },
           { title: 'Throughput', cls: 'num', cell: (n) => h('span', h('b', mbps(n.throughput_mbps)), h('span.faint', ' Mbit/s')) },
           { title: 'Last 3 min', cell: (n) => h('div', { style: { width: '110px' } }, spark(history('nbr:' + n.mac))) },
           { title: 'Heard', cls: 'num', cell: (n) => ago(n.last_seen_ms) },
         ], nbrs, radioLinks.some((l) => l.supplicant.joined) || st.mesh_link.transport === 'wired' ? 'No neighbours in range.' : 'The mesh link is not up yet.')),
 
-      panel('Routes', { class: 'c5', flush: true, meta: 'batman-adv, best path to each node' },
+      panel('Routes', { class: 'c12', flush: true, meta: 'batman-adv, best path to each node' },
         table({ stack: true, key: (o) => o.mac }, [
           { title: 'To', cls: 'wide', wide: true, cell: (o) => label(o.mac) },
           { title: 'Next hop', cell: (o) => (isDirect(o) ? pill('direct', 'plain') : h('span.mono', 'via ', nameOf(o.next_hop))) },
           { title: 'Path', cls: 'num', cell: (o) => h('span', h('b', mbps(o.throughput_mbps)), h('span.faint', ' Mbit/s')) },
         ], routes, 'No routes yet.'))),
 
-    (st.mesh_link.sae_failures || []).length ? panel('Failed authentications', { flush: true, meta: 'peers that did not answer (they changed channel or restarted), or that have another mesh secret' },
+    // Each link records its own; newest first, across links.
+    failures.length ? panel('Failed authentications', { flush: true, meta: 'peers on the channel that did not accept this node: most often another mesh secret' },
       table({ stack: true }, [
         { title: 'When', cell: (e) => h('span.mono', new Date(e.time).toLocaleTimeString()) },
-        { title: 'Radio', cell: (e) => h('span.mono', e.mac) },
+        { title: 'Link', cell: (e) => h('span.mono.nowrap', e.link) },
+        { title: 'Peer', cell: (e) => h('span.mono', nameOf(e.mac) !== shortMac(e.mac) ? nameOf(e.mac) : e.mac) },
         { title: 'What', cls: 'wide', wide: true, cell: (e) => e.message || e.kind },
-      ], [...st.mesh_link.sae_failures].reverse().slice(0, 8))) : null);
+      ], failures.slice(0, 8))) : null);
 }

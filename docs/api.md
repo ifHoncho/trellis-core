@@ -108,8 +108,12 @@ four light modules around.
   wan_healthy, reported, report_age_ms, clients, selected_gateway}`. `id` is
   the node's identity MAC.
 - A link: `{a, b, ab_mbps, ba_mbps, a_signal_dbm, b_signal_dbm, medium,
-  a_mac, b_mac}`: throughput as each end estimates it towards the other, and
-  the signal each end receives.
+  a_mac, b_mac, mesh_link}`: throughput as each end estimates it towards the
+  other, the signal each end receives, and the mesh link the two meet on,
+  numbered from 1 in the profile's order as `mesh_link.index` is (absent
+  when wired, or when neither end runs a release that reports it). Two
+  nodes that meet on two bands have two links. The UI names a link by its
+  band and channel ("5 GHz · ch 149").
 - Each node knows only its own links, so the node asked sends every other
   node a small query over the mesh and assembles the answers (architecture
   §12.5). It asks at most every `interval_ms` (5 s, more in a large mesh),

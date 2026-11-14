@@ -510,7 +510,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 			Index: 1, Interface: f.MeshIfname, Transport: firstLinkTransport(f.Transport, f.MeshIfname != ""), Supplicant: f.Supplicant,
 			Band: profile.Radio.Band, Channel: profile.Radio.Channel, WidthMHz: profile.Radio.Width,
 			FreqMHz: linkFreqMHz(profile.Radio, country, f.MeshFreqMHz), RunningWidthMHz: f.MeshWidthMHz, MTU: f.MeshMTU, TXPowerDBm: f.TXPowerDBm,
-			SAEFailures: f.SAEFailures, WiredPorts: node.MeshPorts(), Peers: []status.Peer{},
+			SAEFailures: f.saeFailures(f.MeshIfname, true), WiredPorts: node.MeshPorts(), Peers: []status.Peer{},
 		}
 		st.Batman = status.Batman{
 			Interface: BatIfname, Present: f.BatPresent, ModuleVersion: f.BatModule, ModulePath: f.BatModulePath,
@@ -523,7 +523,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 			ml := status.MeshLink{Index: i + 2, Interface: l.Ifname, Transport: "wifi", Supplicant: l.Supplicant,
 				Band: rp.Band, Channel: rp.Channel, WidthMHz: rp.Width,
 				FreqMHz: linkFreqMHz(rp, country, l.FreqMHz), RunningWidthMHz: l.WidthMHz,
-				MTU: l.MTU, TXPowerDBm: l.TXPowerDBm, Peers: []status.Peer{}}
+				MTU: l.MTU, TXPowerDBm: l.TXPowerDBm, SAEFailures: f.saeFailures(l.Ifname, false), Peers: []status.Peer{}}
 			if l.Ifname == "" {
 				ml.Transport = "none"
 			}

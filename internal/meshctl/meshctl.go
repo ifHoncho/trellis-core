@@ -234,9 +234,9 @@ func PrintStatus(w io.Writer, st *status.Status) {
 		fmt.Fprintln(w, "  (a radio disappeared; roles are held for a few seconds in case it returns)")
 	}
 
-	printMeshLink(w, "Mesh link", st.MeshLink, st, true)
+	printMeshLink(w, linkTitle(st.MeshLink), st.MeshLink, st, true)
 	for _, ml := range st.MoreLinks {
-		printMeshLink(w, fmt.Sprintf("Mesh link %d", ml.Index), ml, st, false)
+		printMeshLink(w, linkTitle(ml), ml, st, false)
 	}
 
 	b := st.Batman
@@ -1194,6 +1194,15 @@ func linkNeighbors(st *status.Status, ml status.MeshLink, first bool) []status.N
 // printMeshLink renders one mesh link: interface, supplicant, channel,
 // power and its peers. first is the profile's radio (mesh0), the link the
 // driver-power hint is about.
+// linkTitle names a mesh link by its band and channel, as the web UI does:
+// "Mesh link 5 GHz · ch 149".
+func linkTitle(ml status.MeshLink) string {
+	if ml.Band == "" {
+		return "Mesh link"
+	}
+	return "Mesh link " + config.RadioPlan{Band: ml.Band, Channel: ml.Channel}.Name()
+}
+
 func printMeshLink(w io.Writer, title string, ml status.MeshLink, st *status.Status, first bool) {
 	fmt.Fprintf(w, "\n%s: transport %s", title, ml.Transport)
 	if ml.Interface != "" {
@@ -1204,9 +1213,8 @@ func printMeshLink(w io.Writer, title string, ml status.MeshLink, st *status.Sta
 		}
 		fmt.Fprintf(w, ", %s", sup)
 		if ml.FreqMHz > 0 {
-			// The second link's band is not in the header line.
-			if !first && ml.Band != "" {
-				fmt.Fprintf(w, ", %s ch %d (%g MHz, %d MHz wide)", ml.Band, ml.Channel, ml.FreqMHz, ml.WidthMHz)
+			if ml.WidthMHz > 0 {
+				fmt.Fprintf(w, ", %g MHz, %d MHz wide", ml.FreqMHz, ml.WidthMHz)
 			} else {
 				fmt.Fprintf(w, ", %g MHz", ml.FreqMHz)
 			}
@@ -1225,7 +1233,7 @@ func printMeshLink(w io.Writer, title string, ml status.MeshLink, st *status.Sta
 	} else if !first || otherLinkUp(st) {
 		// The first link without a radio is only worth this note when the
 		// node meshes over another one; alone, the warnings say why.
-		fmt.Fprintf(w, " (no radio here for this link: %s ch %d; see the plan notices)", ml.Band, ml.Channel)
+		fmt.Fprintf(w, " (no radio here for this link; see the plan notices)")
 	}
 	if len(ml.WiredPorts) > 0 {
 		fmt.Fprintf(w, ", wired %s", strings.Join(ml.WiredPorts, ","))
