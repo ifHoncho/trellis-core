@@ -91,10 +91,17 @@ they don't resolve.
 | Radios | Every radio, what it can do, and which job it has |
 | Multicast | Whether multicast takes the efficient path, and why not |
 | Alerts | Everything the node wants you to know, most serious first |
-| Settings | Node, Wi-Fi, internet, ports, mesh profile, channels, access, system |
+| Settings | Node, Wi-Fi, internet, ports, mesh profile, channels, access, system, appearance |
 
 Every change is checked first: when it would interrupt something (a link,
 the Wi-Fi, your own connection), the page says what before it is applied.
+
+**Themes.** The button at the foot of the menu (at the top on a phone)
+cycles a dark theme, a light theme and a red night theme that keeps night
+vision. Settings → Appearance chooses the dark and the light one: Trellis's
+own Dusk and Day, or editor themes such as Nord, Gruvbox, Dracula, Tokyo
+Night, Catppuccin, One Dark, Solarized, Everforest and Rosé Pine. The
+choice is kept in the browser.
 
 Everything in the UI is also in `meshctl` on the node (`meshctl status`,
 `meshctl radios`, `meshctl doctor`) and in the [HTTP API](api.md).

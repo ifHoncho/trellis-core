@@ -193,6 +193,9 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	if st.GNSS.Receiver {
 		fmt.Fprintf(w, "gnss: %s\n", gnssLine(st.GNSS))
 	}
+	if l := positionsLine(st.Positions, st.GNSS.Receiver); l != "" {
+		fmt.Fprintf(w, "positions: %s\n", l)
+	}
 
 	fmt.Fprintf(w, "\nRadios (%d):\n", len(st.Radios))
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -1580,4 +1583,33 @@ func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io
 		tw.Flush()
 	}
 	return nil
+}
+
+// positionsLine says whether this node is on the ATAK map, and which nodes
+// that left the mesh it keeps at their last known position. Empty for a
+// node with nothing to say (no receiver, sharing on, nothing kept).
+func positionsLine(p status.Positions, receiver bool) string {
+	var parts []string
+	switch {
+	case p.Shared:
+		s := "this node is on the ATAK map"
+		if p.LastSentAgoMS >= 0 {
+			s += fmt.Sprintf(" (last sent %s ago, %d reports)", time.Duration(p.LastSentAgoMS)*time.Millisecond/time.Second*time.Second, p.Sent)
+		}
+		parts = append(parts, s)
+	case p.Off != "" || receiver:
+		parts = append(parts, "not on the ATAK map: "+p.Note)
+	}
+	if n := len(p.LastKnown); n > 0 {
+		var names []string
+		for _, k := range p.LastKnown {
+			names = append(names, fmt.Sprintf("%s (gone %s)", k.Callsign, time.Since(k.Heard).Round(time.Minute)))
+		}
+		s := "last known: " + strings.Join(names, ", ")
+		if p.Announcing {
+			s += "; this node re-announces them"
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, "; ")
 }

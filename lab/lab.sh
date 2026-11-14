@@ -1282,6 +1282,12 @@ if [ "$NODES" -ge 3 ]; then
     done
     [ "$ok" = 1 ] && break; sleep 0.25
   done
+  # The files are written at the switch; wait for every node to run it too
+  # (the next test sends from node 2's).
+  for _ in $(seq 1 20); do
+    run=$(for i in $(seq 1 "$NODES"); do jsonq "$i" "s['profile']['orig_interval_ms']"; done | sort -u | tr '\n' ' ')
+    [ "$run" = "600 " ] && break; sleep 0.5
+  done
   spread=$(printf '%s\n' "${switched[@]}" | sort -n | sed -n '1p;$p' | paste -sd' ' | awk '{print ($2-$1)/1000}')
   if [ "$ok" = 1 ] && [ "${targets:-0}" -ge "$((NODES-1))" ] && [ "$acked" = "$targets" ] && awk "BEGIN{exit !($spread <= 3)}"; then
     pass "P1 node 1 sent revision 1 (orig_interval_ms 600) to every node; all $targets others had it before the switch, and the $NODES nodes switched within ${spread} s of each other"
@@ -1306,6 +1312,97 @@ if [ "$NODES" -ge 3 ]; then
   fi
 else
   skip "P mesh-wide profile changes" "needs 3 nodes or more"
+fi
+
+# ---------------------------------------------------------------- node positions on the ATAK map
+# L: node 3 gets a GNSS fix (a gpsd stand-in in its namespace) and puts
+# itself on the ATAK map; when it leaves, node 1 keeps its last known
+# position there, stale; nothing reaches the internet; the profile's
+# switch stops it all. Runs on the per-node profiles the P tests set up.
+if [ "$NODES" -ge 3 ] && [ -f "$RUN/node1/profile.yaml" ]; then
+  mac3=$(jsonq 3 "s['node']['mac']"); uid3="trellis-node-${mac3//:/}"
+  # Started with ip netns exec, not NS: $! is then the process itself.
+  ip netns exec inet tcpdump -Z root -ni any -U -w "$RUN/wan-sa.pcap" "udp port 6969" >/dev/null 2>"$RUN/wan-sa.err" &
+  wanpid=$!
+  # shellcheck disable=SC2086
+  ip netns exec node3 $EUD gpsd 52.09 5.12 > "$RUN/gpsd3.log" 2>&1 &
+  gpsdpid=$!
+  for _ in $(seq 1 90); do [ "$(jsonq 3 "s['positions']['shared']")" = True ] && break; sleep 1; done
+  got=$(NS eud1 $EUD cotwait eth0 "$uid3" 60)
+  case "$got" in
+    *"type=a-f-G-E-S callsign=lab-node-3 stale=future point=52.0900000,5.1200000"*"3D fix, 9 satellites"*)
+      pass "L1 node 3 with a fix is on the ATAK map: a phone on node 1 received its marker ($uid3, equipment type, its callsign)" ;;
+    *) fail "L1 node 3 on the ATAK map" "phone on node 1 got: $got; node 3: $(jsonq 3 "s['positions']") gnss: $(jsonq 3 "s['gnss']['fix']")" ;;
+  esac
+  pos=$(jsonq 1 "[n.get('position',{}).get('lat') for n in s['nodes'] if n['callsign']=='lab-node-3']")
+  if [ "$pos" = "[52.09]" ]; then pass "L2 node 1 knows node 3's position from gossip"; else fail "L2 position in gossip" "node 1 has $pos"; fi
+
+  # L3: node 3 leaves. After gossip expiry node 1, the lowest-numbered
+  # node, re-announces node 3's last known position, already stale. The
+  # phone on node 2 needs an address, as a real one has: without one its
+  # kernel drops multicast from a sender it has no route back to.
+  if ! NS eud2 ip -4 addr show dev eth0 | grep -q 'inet 10\.73\.'; then
+    ip2=$(NS eud2 $EUD dhcp eth0 2>&1 | sed -n 's/^ip=//p')
+    [ -n "$ip2" ] && NS eud2 ip addr add "$ip2/16" dev eth0
+  fi
+  kill "$(cat "$RUN/node3/pid")"
+  for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+  kept=""
+  for _ in $(seq 1 150); do
+    kept=$(jsonq 1 "[k['callsign'] for k in s['positions'].get('last_known') or []]")
+    [ "$kept" = "['lab-node-3']" ] && break; sleep 1
+  done
+  NS node1 timeout 80 tcpdump -Z root -lni bat0 -c 5 "udp port 6969" > "$RUN/l3-node1-bat0.txt" 2>&1 &
+  NS node2 timeout 80 tcpdump -Z root -lni bat0 -c 5 "udp port 6969" > "$RUN/l3-node2-bat0.txt" 2>&1 &
+  NS node2 timeout 80 tcpdump -Z root -lni eth2 -c 5 "udp port 6969" > "$RUN/l3-node2-eth2.txt" 2>&1 &
+  # Re-announced once a minute: listen a little longer than that.
+  got=$(NS eud2 $EUD cotwait eth0 "$uid3" 75)
+  {
+    for i in 1 2; do echo "node$i: $(jsonq "$i" "s['batman']['multicast']")"; done
+    echo "node1 mcast_flags:"; NS node1 batctl meshif bat0 mcast_flags 2>&1
+    echo "node1 global TT, multicast:"; NS node1 batctl meshif bat0 tg 2>&1 | grep -i '01:00:5e'
+    echo "node2 local TT, multicast:"; NS node2 batctl meshif bat0 tl 2>&1 | grep -i '01:00:5e'
+    echo "node2 mdb:"; NS node2 bridge mdb show 2>&1
+  } > "$RUN/l3-mcast.txt"
+  case "$got" in
+    # Stale when node 3's own last report would have gone stale: in the
+    # past, or just ahead when node 3 left less than 3 minutes ago.
+    "from=10.73.1.1 type=a-f-G-E-S callsign=lab-node-3 stale="*" point=52.0900000,5.1200000 remarks=Trellis mesh node, last known position"*)
+      pass "L3 node 3 stopped: node 1 keeps it ($kept) and re-announces its last known position to a phone on node 2 ($(echo "$got" | grep -o 'stale=[a-z]*'))" ;;
+    *) fail "L3 last known position" "node 1 keeps $kept; phone on node 2 got: $got; node 1 re-announced $(grep -c 're-announced a last known' "$RUN/node1.log") times; on node 1's bat0: $(grep -c ' > 239.2.3.1' "$RUN/l3-node1-bat0.txt"), node 2's bat0: $(grep -c ' > 239.2.3.1' "$RUN/l3-node2-bat0.txt"), at node 2's device port: $(grep -c ' > 239.2.3.1' "$RUN/l3-node2-eth2.txt") (mdb node 2: $(NS node2 bridge mdb show 2>/dev/null | grep -c 239.2.3.1))" ;;
+  esac
+  start_node 3
+  wait_converged 60 >/dev/null
+
+  # L5: the profile turns sharing off on every node (a mesh-wide change).
+  { cat "$RUN/node1/profile.yaml"; echo "positions: {share: false}"; } > "$RUN/push.yaml"
+  out=$(ctl 1 profile push --in 15 --yes "$RUN/push.yaml" 2>&1 | tail -1)
+  for _ in $(seq 1 45); do [ "$(jsonq 3 "s['positions'].get('off','')")" = profile ] && break; sleep 1; done
+  off3=$(jsonq 3 "(s['positions']['shared'], s['positions'].get('off',''))")
+  kept=$(jsonq 1 "len(s['positions'].get('last_known') or [])")
+  got=$(NS eud1 $EUD cotwait eth0 "$uid3" 40)
+  if [ "$off3" = "(False, 'profile')" ] && [ "$kept" = 0 ] && [ "$got" = none ]; then
+    pass "L5 positions.share off in the profile, sent mesh-wide: node 3 stopped reporting, node 1 forgot the last known positions, and a phone heard nothing for 40 s"
+  else
+    fail "L5 switching positions off" "push: $out; node 3 shared/off: $off3; node 1 keeps $kept; phone got: $got"
+  fi
+  kill "$gpsdpid" 2>/dev/null
+
+  # L4: none of it reached the internet (the WAN side of both gateways).
+  # The control: one datagram node 1 sends to port 6969 on the internet on
+  # purpose must be the only one seen there.
+  NS node1 bash -c 'echo control > /dev/udp/203.0.113.10/6969' 2>/dev/null
+  sleep 2; kill "$wanpid" 2>/dev/null; wait "$wanpid" 2>/dev/null
+  wan=$(NS inet tcpdump -Z root -nnr "$RUN/wan-sa.pcap" 2>/dev/null)
+  ctl_seen=$(echo "$wan" | grep -c '> 203.0.113.10.6969')
+  sa_seen=$(echo "$wan" | grep -c '239.2.3.1')
+  if [ "$ctl_seen" = 1 ] && [ "$sa_seen" = 0 ]; then
+    pass "L4 no position report reached the internet side of either gateway (the capture there saw the one control datagram sent to it)"
+  else
+    fail "L4 positions stay in the mesh" "on the WAN side: $sa_seen to the SA group, $ctl_seen control datagrams (want 0 and 1); capture: $(tr '\n' ' ' < "$RUN/wan-sa.err"); node 1's route to the internet: $(NS node1 ip -4 route get 203.0.113.10 2>&1 | head -1)"
+  fi
+else
+  skip "L node positions" "needs 3 nodes and the P tests' per-node profiles"
 fi
 
 # T6: hwsim radio tests need root and mac80211_hwsim.

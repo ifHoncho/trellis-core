@@ -84,6 +84,9 @@ type Profile struct {
 	LegacyRadio2 *RadioPlan `yaml:"radio2,omitempty" json:"radio2,omitempty"`
 	Prefix       string     `yaml:"prefix" json:"prefix"` // IPv4 prefix, default 10.73.0.0/16
 	Batman       BatmanPlan `yaml:"batman" json:"batman"`
+	// Positions: whether nodes with a GNSS fix put themselves on the
+	// team's ATAK map. Off here stops it on every node (emissions control).
+	Positions Positions `yaml:"positions,omitempty" json:"positions"`
 	// Revision counts mesh-wide changes: a profile sent to every node
 	// (meshd meshchange.go) carries a higher one, and a node takes only a
 	// profile whose revision is higher than its own. 0 for a profile that
@@ -199,7 +202,22 @@ type Node struct {
 	// fall back to flooding (architecture §9).
 	AllowOldBatman bool      `yaml:"allow_old_batman,omitempty" json:"allow_old_batman"`
 	Web            WebConfig `yaml:"web,omitempty" json:"web"`
+	// Positions: whether this node, with a GNSS fix, puts itself on the
+	// team's ATAK map. Off here stops it on this node only.
+	Positions Positions `yaml:"positions,omitempty" json:"positions"`
 }
+
+// Positions controls position sharing (in the profile for the whole mesh,
+// in node.yaml for one node). A node shares its position only when both
+// allow it. Positions stay inside the mesh: they go to the mesh's ATAK
+// group (multicast, never routed) and in gossip.
+type Positions struct {
+	// Share: nil means yes.
+	Share *bool `yaml:"share,omitempty" json:"share,omitempty"`
+}
+
+// Shared reports whether p allows sharing.
+func (p Positions) Shared() bool { return p.Share == nil || *p.Share }
 
 // WebConfig controls the web UI and HTTP API that webd serves
 // (architecture §11, §12.2).

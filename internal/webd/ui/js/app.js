@@ -1,4 +1,5 @@
 // The shell: session, routing, live data, and the frame around every view.
+import { SLOTS, SLOT_ICONS, themeName, slotOf, slotTheme, nextTheme } from './themes.js';
 import { h, mount } from './dom.js';
 import { get, post, connectEvents, setSignedOutHandler } from './api.js';
 import { state, setRedraw, redraw, record, alerts, toast, closeDialog } from './state.js';
@@ -25,18 +26,8 @@ const ROUTES = [
   { id: 'alerts', label: 'Alerts', icon: 'alerts', view: alertsView },
   { id: 'settings', label: 'Settings', icon: 'settings', view: settings },
 ];
-const THEMES = ['dusk', 'day', 'night'];
-const THEME_NAMES = { dusk: 'Dusk', day: 'Day', night: 'Night (red)' };
-
-function setTheme(t) {
-  state.theme = t;
-  document.documentElement.setAttribute('data-theme', t);
-  try { localStorage.setItem('trellis.theme', t); } catch (e) { /* private mode */ }
-  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg);
-  redraw();
-}
-const nextTheme = () => setTheme(THEMES[(THEMES.indexOf(state.theme) + 1) % THEMES.length]);
+const themeIcon = () => SLOT_ICONS[slotOf(state.theme)];
+const switchTitle = () => `Change theme: ${SLOTS.map((s) => themeName(slotTheme(s))).join(', ')}. Choose them in Settings → Appearance.`;
 
 function readRoute() {
   const id = (location.hash.replace(/^#\/?/, '').split('/')[0]) || 'overview';
@@ -157,7 +148,7 @@ function rail() {
     h('div.rail-foot',
       liveLine(),
       h('div.rail-actions',
-        h('button.btn.small', { onclick: nextTheme, title: 'Change theme: dusk, day, night' }, icon(state.theme), THEME_NAMES[state.theme]),
+        h('button.btn.small.theme-switch', { onclick: nextTheme, title: switchTitle() }, icon(themeIcon()), h('span', themeName(state.theme))),
         h('button.btn.small.ghost', { onclick: signOut, title: 'Sign out' }, icon('out')))));
 }
 
@@ -167,7 +158,7 @@ function topbar() {
     brandMark(),
     h('div.callsign', st ? st.node.callsign : state.session.callsign || 'Trellis'),
     liveLine(),
-    h('button.btn.icon.ghost', { onclick: nextTheme, title: 'Change theme', 'aria-label': 'Change theme' }, icon(state.theme)));
+    h('button.btn.icon.ghost', { onclick: nextTheme, title: switchTitle(), 'aria-label': 'Change theme' }, icon(themeIcon())));
 }
 
 function tabbar() {
@@ -184,7 +175,7 @@ function more() {
   return h('div.page',
     h('header.page-head', h('div', h('h1', 'More'))),
     h('section.panel', h('div.panel-body.flush', h('nav.nav', ROUTES.filter((r) => !r.tab).map((r) => navLink(r))))),
-    h('div.row', button(THEME_NAMES[state.theme] + ' theme', nextTheme, '', { icon: state.theme }), button('Sign out', signOut, '', { icon: 'out' })));
+    h('div.row', button(themeName(state.theme) + ' theme', nextTheme, '', { icon: themeIcon() }), button('Sign out', signOut, '', { icon: 'out' })));
 }
 
 function banners() {

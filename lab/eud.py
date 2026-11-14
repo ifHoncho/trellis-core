@@ -19,7 +19,13 @@ binary needed) and plain DNS queries. Run inside the EUD's namespace.
                                  one connection, one exchange every 250 ms for
                                  SECONDS (0: just one); prints "via <addr> <time>"
                                  per answer, "error <time> <why>" and exits 1 on failure
+  eud.py cotwait IFACE UID SECONDS
+                                 an ATAK phone: join the SA group and print the first
+                                 CoT event for UID (type, callsign, stale, remarks), or "none"
+  eud.py gpsd LAT LON            a gpsd with a 3D fix at LAT, LON on 127.0.0.1:2947
+                                 (run in a node's namespace)
 """
+import json
 import os
 import random
 import socket
@@ -351,6 +357,74 @@ def cmd_tcpclient(host, port, seconds, interval=0.25):
         return 1
 
 
+def cmd_cotwait(iface, uid, seconds):
+    """A phone running ATAK, waiting for one marker: joins the SA group and
+    prints the first CoT event with this uid (type, callsign, whether it
+    arrived already stale, remarks), or "none"."""
+    import xml.etree.ElementTree as ET
+    from datetime import datetime, timezone
+    group, port = "239.2.3.1", 6969
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((group, port))
+    mreq = struct.pack("4s4si", socket.inet_aton(group), socket.inet_aton("0.0.0.0"), ifindex(iface))
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    end = time.time() + float(seconds)
+    while time.time() < end:
+        s.settimeout(max(0.05, end - time.time()))
+        try:
+            data, src = s.recvfrom(65535)
+        except socket.timeout:
+            break
+        try:
+            ev = ET.fromstring(data[data.find(b"<event"):])
+        except ET.ParseError:
+            continue
+        if ev.get("uid") != uid:
+            continue
+        stale = datetime.strptime(ev.get("stale"), "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+        contact = ev.find("detail/contact")
+        remarks = ev.find("detail/remarks")
+        print(f"from={src[0]} type={ev.get('type')} callsign={contact.get('callsign') if contact is not None else ''} "
+              f"stale={'past' if stale < datetime.now(timezone.utc) else 'future'} "
+              f"point={ev.find('point').get('lat')},{ev.find('point').get('lon')} remarks={remarks.text if remarks is not None else ''}", flush=True)
+        return 0
+    print("none", flush=True)
+    return 1
+
+
+def cmd_gpsd(lat, lon):
+    """A GNSS receiver behind gpsd, for a node's namespace: serves gpsd's
+    JSON on 127.0.0.1:2947 with a 3D fix at lat, lon, once a second."""
+    import threading
+    from datetime import datetime, timezone
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 2947))
+    srv.listen(4)
+
+    def serve(c):
+        try:
+            c.sendall(b'{"class":"VERSION","release":"3.25","rev":"lab","proto_major":3,"proto_minor":15}\n')
+            c.sendall(b'{"class":"DEVICES","devices":[{"class":"DEVICE","path":"/dev/ttyLAB0","driver":"u-blox"}]}\n')
+            while True:
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                tpv = {"class": "TPV", "device": "/dev/ttyLAB0", "mode": 3, "time": now, "lat": float(lat), "lon": float(lon),
+                       "altHAE": 251.0, "eph": 6.0, "epv": 9.0}
+                sky = {"class": "SKY", "device": "/dev/ttyLAB0", "nSat": 12, "uSat": 9}
+                c.sendall((json.dumps(tpv) + "\n" + json.dumps(sky) + "\n").encode())
+                time.sleep(1)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    print("serving", flush=True)
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=serve, args=(c,), daemon=True).start()
+
+
 def main(argv):
     if len(argv) >= 2 and argv[0] == "dhcp":
         rebind = argv[3] if len(argv) >= 4 and argv[2] == "--rebind" else None
@@ -369,6 +443,10 @@ def main(argv):
         return cmd_tcpserve(argv[1], argv[2])
     if len(argv) == 4 and argv[0] == "tcpclient":
         return cmd_tcpclient(argv[1], argv[2], argv[3])
+    if len(argv) == 4 and argv[0] == "cotwait":
+        return cmd_cotwait(*argv[1:])
+    if len(argv) == 3 and argv[0] == "gpsd":
+        return cmd_gpsd(argv[1], argv[2])
     if len(argv) == 3 and argv[0] == "dns":
         return cmd_dns(argv[1], argv[2])
     print(__doc__, file=sys.stderr)

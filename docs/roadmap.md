@@ -37,6 +37,10 @@ runs and is tested, not a layer of half-built parts.
 - **Channel survey.** How busy each link's channel is at every node, and a
   survey that ranks each link's channels across the mesh and moves a link
   to a clearer one in one step.
+- **Nodes on the ATAK map.** A node with a GNSS receiver appears on every
+  phone's map, apart from the people; when it leaves the mesh, the others
+  keep its last known position there, marked stale. One switch stops it on
+  every node.
 
 ## In progress
 
@@ -54,11 +58,9 @@ runs and is tested, not a layer of half-built parts.
 
 ## Later
 
-- **Team awareness with GNSS:** nodes with a GNSS receiver keep the whole
-  mesh on one clock without internet, show on the ATAK map next to their
-  users (with a last known position when one drops out), and record where
-  the mesh reaches, for range figures and a coverage map. Positions stay
-  inside the mesh unless the operator chooses otherwise.
+- **Team awareness with GNSS:** nodes record where the mesh reaches, for
+  range figures and a coverage map, and link their marker to their user's.
+  Positions stay inside the mesh unless the operator chooses otherwise.
 - **A Trellis plugin for ATAK:** the mesh on ATAK's map with live link
   quality, the state of your own node at a glance, and position reporting
   that adapts to how busy the mesh is. ATAK keeps working fully without

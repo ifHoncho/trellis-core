@@ -6,11 +6,13 @@ import { panel, field, toggle, button, kv, table, qr, notice, copyText, download
 import { bandName, since, duration, count, plural, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
 import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
 import { channelsSection } from './channels.js';
+import { appearanceSection } from './appearance.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
   ['node', 'Node'], ['wifi', 'Wi-Fi'], ['internet', 'Internet'], ['ports', 'Ports'],
   ['profile', 'Mesh profile'], ['channels', 'Channels'], ['access', 'Access'], ['system', 'System'],
+  ['appearance', 'Appearance'],
 ];
 const err = (name) => cfg().fields[name];
 const input = (obj, key, attrs = {}) => h('input.input', {
@@ -31,6 +33,11 @@ function nodeSection(d, st) {
       field('Node ID', h('input.input', { type: 'number', min: '0', max: '254', value: d.node_id || '', placeholder: `automatic (now ${st.node.node_id})`,
         oninput: (e) => { d.node_id = e.target.value === '' ? 0 : Number(e.target.value); redraw(); } }),
         { error: err('node_id'), hint: `1 to 254, unique in the mesh; it sets the node’s address (10.73.ID.1). Leave empty to let the node choose and settle conflicts by itself.` }))),
+  panel('Team map', {},
+    h('div.form',
+      toggle('Put this node on the team’s ATAK map', 'When it has a GNSS fix, it appears on every phone’s map as equipment, apart from the people, and stays as its last known position if it leaves the mesh. Its position never leaves the mesh.',
+        d.positions?.share !== false, (v) => { d.positions = v ? {} : { share: false }; redraw(); }),
+      st.profile.positions_shared === false ? notice({ level: 'info', message: 'The mesh profile turns this off for every node.' }) : null)),
   panel('Advanced', {},
     h('div.form',
       h('div.fields',
@@ -217,6 +224,8 @@ function profileSection(d, st) {
         h('div.fields',
           field('Regulatory mode', select(p.regulatory, 'mode', [['country', 'Country: that country’s channels and power'], ['unrestricted', 'Unrestricted: all the hardware allows']]), { error: ui.fields['regulatory.mode'] }),
           field('Country', input(p.regulatory, 'country', { maxlength: '2', autocapitalize: 'characters' }), { error: ui.fields['regulatory.country'], hint: 'Two-letter code, e.g. US.' })),
+        toggle('Nodes put themselves on the team’s ATAK map', 'Each node with a GNSS fix appears on the phones’ maps, and the others keep its last known position. Off stops every node at once and forgets the last known positions (emissions control); the phones’ own positions are set in ATAK.',
+          p.positions?.share !== false, (v) => { p.positions = v ? {} : { share: false }; redraw(); }),
         unrestricted ? notice({ level: 'warning', message: 'Unrestricted mode is for operators with their own frequency authorization. Without one, transmitting outside the local licence-exempt rules is unlawful in most countries: use country mode.' }) : null,
         h('div.row.between', { style: { flexWrap: 'wrap', gap: '12px' } },
           h('div.row', { style: { flexWrap: 'wrap', gap: '12px' } },
@@ -297,6 +306,16 @@ function timePanel(st) {
   if (g.lat != null && g.lon != null) {
     rows.push(['Position', h('span.mono', `${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}` + (g.alt_m != null ? ` · ${Math.round(g.alt_m)} m` : ''))]);
   }
+  const ps = st.positions || {};
+  if (g.receiver || ps.off) {
+    rows.push(['ATAK map', ps.shared
+      ? h('span', h('span.ok', 'this node is on it'), h('span.faint', ps.last_sent_ago_ms >= 0 ? `  ·  last sent ${Math.round(ps.last_sent_ago_ms / 1000)} s ago` : ''))
+      : h('span.faint', ps.note || 'not on it')]);
+  }
+  if ((ps.last_known || []).length) {
+    rows.push(['Last known', h('span', ps.last_known.map((k) => `${k.callsign} (left ${since(k.heard)} ago)`).join(', '),
+      h('span.faint', ps.announcing ? '  ·  this node keeps them on the map' : '  ·  another node keeps them on the map'))]);
+  }
   if (g.receiver) rows.push(['Time pulse', g.pps ? h('span.ok', 'PPS: sub-millisecond time') : h('span.faint', 'no PPS: time from the receiver’s messages, about a tenth of a second')]);
   if (g.receiver && g.note) rows.push(['', h('span.faint', g.note)]);
   return panel('Time and position', { meta: 'chrony and gpsd' }, kv(rows));
@@ -352,6 +371,6 @@ export function settings() {
   if (!c.draft || !state.config) {
     return h('div.page', head, tabs, h('div.empty', c.error ? ['Could not load the configuration: ', c.error, ' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); c.error = null; loadConfig(); } }, 'Try again')] : 'Loading the configuration…'));
   }
-  const body = { node: nodeSection, wifi: wifiSection, internet: internetSection, ports: portsSection, profile: profileSection, channels: (d, st) => channelsSection(st), access: accessSection, system: systemSection }[sec](c.draft, st);
+  const body = { node: nodeSection, wifi: wifiSection, internet: internetSection, ports: portsSection, profile: profileSection, channels: (d, st) => channelsSection(st), access: accessSection, system: systemSection, appearance: () => appearanceSection() }[sec](c.draft, st);
   return h('div.page', head, tabs, h('div', { key: sec, style: { display: 'flex', flexDirection: 'column', gap: 'var(--gap)' } }, body), saveBar());
 }

@@ -533,6 +533,13 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 			add("warning", "web-wan-access", "This page stops answering on the node's uplink network. If that is how you reach it now, you lose it: use the mesh or one of the node's client ports instead.")
 		}
 	}
+	if cur.Positions.Shared() != n.Positions.Shared() {
+		if n.Positions.Shared() {
+			add("info", "positions", "This node puts itself on the team's ATAK map whenever it has a GNSS fix (unless the mesh profile turns that off).")
+		} else {
+			add("info", "positions", "This node stops putting itself on the team's ATAK map, and stops sharing its position with the other nodes. Its marker goes stale on the phones within 3 minutes.")
+		}
+	}
 	if cur.MeshMTU != n.MeshMTU {
 		add("warning", "mesh-mtu", "The mesh link's MTU changes; the link restarts.")
 	}
@@ -865,6 +872,14 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			fmt.Sprint(p.Batman.BLA(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion) {
 			meshChange = true
 			add("info", "batman-settings", "batman-adv settings change; they should be the same on every node.")
+		}
+	}
+	if !setup && cur.Positions.Shared() != p.Positions.Shared() {
+		meshChange = true
+		if p.Positions.Shared() {
+			add("info", "positions", "Nodes with a GNSS fix put themselves on the team's ATAK map, unless turned off on the node.")
+		} else {
+			add("warning", "positions", "No node puts itself on the ATAK map or shares its position, and last known positions are forgotten (emissions control). Markers already on the phones go stale within 3 minutes. The phones' own positions are not affected: that is set in ATAK.")
 		}
 	}
 	if setup || cur.Regulatory != p.Regulatory {

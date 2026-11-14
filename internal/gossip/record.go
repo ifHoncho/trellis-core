@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -79,6 +80,57 @@ type Record struct {
 	// percent, in the profile's order; -1 for a link it has no radio on or
 	// whose driver does not measure it.
 	Load []int `json:"ld,omitempty"`
+	// Pos is the node's GNSS position while it has a fix and shares it.
+	// It rides on the refresh, not on every move: the node's own ATAK
+	// reports carry the live position; this is what the other nodes keep
+	// as its last known one.
+	Pos *Position `json:"ps,omitempty"`
+	// NoPos: the node does not share its position (positions.share off).
+	// The others forget its last known one at once.
+	NoPos bool `json:"np,omitempty"`
+}
+
+// Position is a node's GNSS fix, compact.
+type Position struct {
+	Lat float64 `json:"la"`
+	Lon float64 `json:"lo"`
+	// Alt is the height above the ellipsoid in metres; HasAlt says it is
+	// known.
+	Alt    float64 `json:"al,omitempty"`
+	HasAlt bool    `json:"ha,omitempty"`
+	// Acc is the horizontal error in metres (95%), 0 when unknown.
+	Acc int `json:"ac,omitempty"`
+	// Fix is 2 (2D) or 3 (3D); Time the fix's time, Unix seconds.
+	Fix  int   `json:"f"`
+	Time int64 `json:"t"`
+}
+
+// NewPosition rounds a fix for gossip: about a metre, which is finer than
+// any receiver's error.
+func NewPosition(lat, lon, alt float64, hasAlt bool, acc float64, fix int, t int64) *Position {
+	r := func(v float64, d float64) float64 { return math.Round(v*d) / d }
+	p := &Position{Lat: r(lat, 1e5), Lon: r(lon, 1e5), Acc: int(math.Round(acc)), Fix: fix, Time: t}
+	if hasAlt {
+		p.Alt, p.HasAlt = r(alt, 10), true
+	}
+	return p
+}
+
+func (p *Position) validate() error {
+	finite := func(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+	switch {
+	case !finite(p.Lat) || !finite(p.Lon) || !finite(p.Alt) || p.Lat < -90 || p.Lat > 90 || p.Lon < -180 || p.Lon > 180:
+		return fmt.Errorf("position %v,%v out of range", p.Lat, p.Lon)
+	case p.Alt < -1000 || p.Alt > 100000:
+		return fmt.Errorf("height %v out of range", p.Alt)
+	case p.Acc < 0 || p.Acc > 1000000:
+		return fmt.Errorf("position error %d out of range", p.Acc)
+	case p.Fix != 2 && p.Fix != 3:
+		return fmt.Errorf("fix %d is not 2 or 3", p.Fix)
+	case p.Time < 0:
+		return fmt.Errorf("fix time %d out of range", p.Time)
+	}
+	return nil
 }
 
 // RegulatoryEntry is a profile's regulatory setting as a Regulatory value.
@@ -241,6 +293,11 @@ func (r *Record) validate() error {
 			return fmt.Errorf("channel load %d out of range", l)
 		}
 	}
+	if r.Pos != nil {
+		if err := r.Pos.validate(); err != nil {
+			return err
+		}
+	}
 	if len(r.Links) > MaxLinkEntries {
 		return fmt.Errorf("%d links listed, over the limit of %d", len(r.Links), MaxLinkEntries)
 	}
@@ -279,8 +336,15 @@ func Same(a, b *Record) bool {
 	}
 	x, y := *a, *b
 	x.Seq, y.Seq = 0, 0
-	// Channel load changes with every sample: it rides on the refresh.
+	// Channel load changes with every sample, and a position with every
+	// move: they ride on the refresh. Gaining or losing a fix is a change.
 	x.Load, y.Load = nil, nil
+	if x.Pos != nil {
+		x.Pos = &Position{}
+	}
+	if y.Pos != nil {
+		y.Pos = &Position{}
+	}
 	if x.GW != nil {
 		g := *x.GW
 		g.RTTms, g.LossPct = 0, 0

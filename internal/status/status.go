@@ -27,6 +27,9 @@ type Status struct {
 	// Clock is how this node keeps time, and GNSS its receiver.
 	Clock Clock `json:"clock"`
 	GNSS  GNSS  `json:"gnss"`
+	// Positions: this node on the team's ATAK map, and the last known
+	// positions of nodes that left the mesh.
+	Positions Positions `json:"positions"`
 	// MeshChange is a mesh-wide profile change on its way, or the last one
 	// for a while after it is in force (meshd meshchange.go); nil when none.
 	MeshChange *MeshChange `json:"mesh_change,omitempty"`
@@ -72,6 +75,8 @@ type Profile struct {
 	PinnedBatman   string  `json:"pinned_batman"`
 	MinBatman      string  `json:"min_batman"`
 	OrigIntervalMS int     `json:"orig_interval_ms"`
+	// PositionsShared: the profile lets nodes share their positions.
+	PositionsShared bool `json:"positions_shared"`
 }
 
 // Regulatory shows the requested mode and what is actually in force.
@@ -498,10 +503,14 @@ type MeshNode struct {
 	// ChannelBusy is how busy each mesh link's channel is where that node
 	// is, in percent, in the profile's order; -1 unknown.
 	ChannelBusy []int `json:"channel_busy,omitempty"`
-	Gateway     bool  `json:"gateway"`     // announces a WAN
-	WANHealthy  bool  `json:"wan_healthy"` // and it is healthy
-	HeardAgoMS  int64 `json:"heard_ago_ms"`
-	IDConflict  bool  `json:"id_conflict,omitempty"`
+	// Position is the node's GNSS fix as it last shared it; nil without a
+	// fix, or when it does not share it (PositionOff).
+	Position    *Position `json:"position,omitempty"`
+	PositionOff bool      `json:"position_off,omitempty"`
+	Gateway     bool      `json:"gateway"`     // announces a WAN
+	WANHealthy  bool      `json:"wan_healthy"` // and it is healthy
+	HeardAgoMS  int64     `json:"heard_ago_ms"`
+	IDConflict  bool      `json:"id_conflict,omitempty"`
 }
 
 // GatewayState is this node's gateway role and its choice of gateway
@@ -630,6 +639,45 @@ type GNSS struct {
 	// PPS: pulse-per-second reports arrive (sub-millisecond time).
 	PPS  bool   `json:"pps"`
 	Note string `json:"note,omitempty"`
+}
+
+// Positions is position sharing on this node.
+type Positions struct {
+	// Shared: this node puts itself on the ATAK map now (sharing on and a
+	// fix). Note says why not, or how.
+	Shared bool   `json:"shared"`
+	Note   string `json:"note,omitempty"`
+	// Off: sharing is turned off, by "profile" (the whole mesh) or "node".
+	Off string `json:"off,omitempty"`
+	// Sent counts this node's position reports; LastSentAgoMS is since the
+	// last one (-1 for none).
+	Sent          uint64 `json:"sent"`
+	LastSentAgoMS int64  `json:"last_sent_ago_ms"`
+	// LastKnown are nodes that left the mesh, at their last shared
+	// position. Announcing says this node re-announces them to ATAK (the
+	// lowest-numbered node on the mesh does).
+	LastKnown  []LastKnown `json:"last_known,omitempty"`
+	Announcing bool        `json:"announcing,omitempty"`
+}
+
+// Position is a GNSS fix.
+type Position struct {
+	Lat  float64  `json:"lat"`
+	Lon  float64  `json:"lon"`
+	AltM *float64 `json:"alt_m,omitempty"`
+	// AccM: horizontal error in metres, 0 when unknown.
+	AccM int `json:"acc_m,omitempty"`
+	// Fix: "2d" or "3d"; Time: the fix's time.
+	Fix  string    `json:"fix"`
+	Time time.Time `json:"time"`
+}
+
+// LastKnown is a node no longer on the mesh, where it last was.
+type LastKnown struct {
+	Callsign string    `json:"callsign"`
+	MAC      string    `json:"mac"`
+	Position Position  `json:"position"`
+	Heard    time.Time `json:"heard"` // last record from it
 }
 
 // MeshChange is a profile change for the whole mesh: one node sends it to

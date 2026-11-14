@@ -48,3 +48,7 @@ batman:
   orig_interval_ms: 1000
   min_version: "2024.0"          # meshd refuses to start below this (multicast packet type)
   pinned_version: "2026.3"       # every node should run exactly this; others get a warning
+
+positions:
+  share: true                    # nodes with a GNSS fix put themselves on the team's ATAK map; false stops every
+                                 # node and drops the last known positions (emissions control)

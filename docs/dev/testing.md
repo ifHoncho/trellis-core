@@ -189,6 +189,20 @@ node to switch would write the shared file for all of them).
 | P1 | Node 1 sends revision 1 (`batman.orig_interval_ms` 500 → 600) to switch in 15 s: every other node (node 9 from W5 included, when it is up) has it before the switch, and all switch to revision 1 with 600 within 3 s of each other |
 | P2 | Node 3 is stopped; node 2 sends revision 2 (back to 500). Nodes 1 and 2 switch; node 3, started again on revision 1, asks another node for revision 2 and switches to it |
 
+### Node positions (L1–L5)
+
+A stand-in gpsd (`lab/eud.py gpsd`) in node 3's namespace gives it a 3D
+fix; `lab/eud.py cotwait` is a phone waiting for one marker on ATAK's SA
+group.
+
+| Test | Pass |
+|---|---|
+| L1 | A phone on node 1 receives node 3's CoT event: its UID, type `a-f-G-E-S`, callsign, the fix's position, not stale |
+| L2 | Node 1's status shows node 3's position, from gossip |
+| L3 | Node 3 is stopped. Node 1 (the lowest-numbered node) keeps it as last known and re-announces it to a phone on node 2, already stale, with "last known position" in its remarks |
+| L4 | No packet to port 6969 reaches the internet side of either gateway during L1–L5 |
+| L5 | `positions.share: false` sent mesh-wide: node 3 stops reporting, node 1 forgets its last known positions, and a phone hears nothing for 40 s |
+
 ### Auto port role (T9)
 
 Node 3 has `eth3` with role `auto`, absent at first. The test plugs things

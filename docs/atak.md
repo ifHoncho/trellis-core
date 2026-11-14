@@ -17,6 +17,10 @@ for the quoted name.
   the same gateway and DNS server, `10.73.0.1`, so nothing changes when the
   phone ends up on another node.
 - No TAK Server or VPN is needed for SA and chat between phones on the mesh.
+- **Turn off any VPN on the phone**, or have it exclude local networks. With a
+  VPN on, the phone's own reports still go out, so the others see it, but
+  the multicast from the mesh does not come back in through the tunnel: its
+  map and chat stay empty.
 
 ## 2. Multicast groups
 
@@ -97,3 +101,23 @@ uses its multicast packet type, which it prefers for every packet that fits.
 A packet too large for it goes as separate unicasts to up to 16 listener
 nodes (`batman.multicast_fanout`). Both are acknowledged and use fast rates;
 only beyond that does it flood.
+
+## 7. Nodes on the map
+
+A node with a GNSS receiver puts itself on the map. It appears under its
+callsign, drawn as equipment (`a-f-G-E-S`, a friendly ground-equipment
+frame), not as a person, and its remarks give the fix, the number of
+satellites and the accuracy. It reports once a minute while still, at once
+when it moves, and goes stale on the map 3 minutes after its last report.
+
+When a node leaves the mesh, another node keeps re-announcing its last
+known position, already stale, so ATAK keeps it, marked stale, with the
+remarks "last known position: not on the mesh since HH:MM UTC". It is live
+again within a minute or two of the node's return.
+
+Nothing needs setting on the phones. Positions stay inside the mesh: they
+are never routed to an uplink. To stop all nodes from appearing (emissions
+control), turn off **Nodes put themselves on the team's ATAK map** in
+Settings → Mesh profile and send it to every node; one node is turned off
+in its own Settings → Node. Neither affects the phones' own reports, which
+are set in ATAK.

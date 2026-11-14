@@ -1229,8 +1229,20 @@ Validation-first keeps a bad config from ever reaching a running node.
   agreed switch times (a mesh-wide channel change, a re-key).
 - **GNSS.** gpsd owns the receiver; meshd reads its JSON stream for the fix,
   position, accuracy, satellites and PPS, and shows them in the status.
-  Position published as CoT, and kept inside the mesh unless the operator
-  chooses otherwise, is planned.
+- **Node positions on the ATAK map.** A node with a fix sends its own
+  position as a CoT event (XML, which ATAK accepts on the SA group whatever
+  it sends itself) to `239.2.3.1:6969` on `br-mesh`, with TTL 1: the phones
+  on every node show it, as equipment (`a-f-G-E-S`) rather than a person,
+  under a UID from the node's identity MAC. It reports every 60 s while
+  still, at once on a move of more than 15 m or its fix's error, and every
+  15 s for its first 2 minutes. The record carries the position too,
+  rounded to about a metre, riding on the refresh; when a node leaves the
+  gossip view, the lowest-numbered node on the mesh re-announces its last
+  known position every minute, already stale, for up to 12 hours. Positions
+  stay inside the mesh: the SA group is never routed, and gossip is the
+  mesh's own. `positions.share: false` in the profile stops every node at
+  once and drops the last known positions (emissions control); in
+  `node.yaml` it stops one node.
 - **Voice (later).** Multicast push-to-talk on its own group.
 - **Site linking (later).** WireGuard + VXLAN added to `bat0` as a batman hard
   interface, merging separate meshes into one.

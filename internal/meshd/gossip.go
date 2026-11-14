@@ -151,6 +151,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
 		Load:       d.gossipLoads(len(d.profile.AllLinks())),
 	}
+	r.Pos, r.NoPos = d.gossipPosition(time.Now())
 	if d.time != nil {
 		r.Time = d.time.Role()
 	}
@@ -468,6 +469,11 @@ func (d *Daemon) meshNodes() []status.MeshNode {
 			n.MeshRadios = append(n.MeshRadios, gossip.RadioBands(e))
 		}
 		n.ChannelBusy = r.Load
+		if r.Pos != nil {
+			p := positionStatus(*r.Pos)
+			n.Position = &p
+		}
+		n.PositionOff = r.NoPos
 		out = append(out, n)
 	}
 	return out

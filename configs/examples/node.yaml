@@ -42,3 +42,6 @@ web:
 
 mesh_mtu: 1560                   # underlay MTU requested on mesh0 (1500 + batman-adv headers)
 allow_old_batman: false          # bench only: run with a batman-adv older than the profile minimum
+
+positions:
+  share: true                    # false: this node never puts itself on the ATAK map, nor shares its GNSS position

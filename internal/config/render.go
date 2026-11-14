@@ -208,6 +208,9 @@ type profileWire struct {
 	PinVer  string      `json:"pv"`
 	BLA     *bool       `json:"l,omitempty"`
 	Fanout  *int        `json:"f,omitempty"`
+	// NoPos: positions.share is off. Only written when it is, so codes
+	// for meshes that share positions still read on older releases.
+	NoPos bool `json:"np,omitempty"`
 }
 
 type radioWire struct {
@@ -223,6 +226,7 @@ func (p Profile) Code() (string, error) {
 		Schema: p.Schema, Name: p.Name, MeshID: p.MeshID, Secret: p.SAEPassphrase, Mode: p.Regulatory.Mode, Country: p.Regulatory.Country,
 		Radio: radioWire(p.Radio), Prefix: p.Prefix, Algo: p.Batman.RoutingAlgo, OrigMS: p.Batman.OrigIntervalMS,
 		MinVer: p.Batman.MinVersion, PinVer: p.Batman.PinnedVersion, BLA: p.Batman.BridgeLoopAvoidance, Fanout: p.Batman.MulticastFanout,
+		NoPos: !p.Positions.Shared(),
 	}
 	// One more link travels as "r2", which nodes on older releases read too.
 	switch {
@@ -284,6 +288,10 @@ func DecodeProfileCode(code string) (*Profile, error) {
 		Schema: w.Schema, Name: w.Name, MeshID: w.MeshID, SAEPassphrase: w.Secret, Regulatory: Regulatory{Mode: w.Mode, Country: w.Country},
 		Radio: RadioPlan(w.Radio), Prefix: w.Prefix,
 		Batman: BatmanPlan{RoutingAlgo: w.Algo, OrigIntervalMS: w.OrigMS, MinVersion: w.MinVer, PinnedVersion: w.PinVer, BridgeLoopAvoidance: w.BLA, MulticastFanout: w.Fanout},
+	}
+	if w.NoPos {
+		no := false
+		p.Positions.Share = &no
 	}
 	if w.Radio2 != nil {
 		p.Links = append(p.Links, RadioPlan(*w.Radio2))

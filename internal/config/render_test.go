@@ -139,6 +139,24 @@ func TestProfileCode(t *testing.T) {
 	if back3, err := DecodeProfileCode(code3); err != nil || !reflect.DeepEqual(back3.Links, p3.Links) {
 		t.Errorf("four-link code round trip: %+v %v", back3, err)
 	}
+	// Position sharing turned off travels too, and survives YAML.
+	pn := p
+	no := false
+	pn.Positions.Share = &no
+	codeN, err := pn.Code()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backN, err := DecodeProfileCode(codeN); err != nil || backN.Positions.Shared() {
+		t.Errorf("positions.share off lost in the code: %+v %v", backN, err)
+	}
+	yn, _ := pn.YAML("profile")
+	if fromN, err := ParseProfile(yn); err != nil || fromN.Positions.Shared() || !strings.Contains(string(yn), "share: false") {
+		t.Errorf("positions.share off lost in YAML: %v\n%s", err, yn)
+	}
+	if strings.Contains(string(y), "positions") {
+		t.Errorf("a profile that shares positions writes the default:\n%s", y)
+	}
 	for _, bad := range []string{"", "WIFI:T:WPA;S:x;;", ProfileCodePrefix + "!!!", ProfileCodePrefix + "AAAA", code[:len(code)-9]} {
 		if _, err := DecodeProfileCode(bad); err == nil {
 			t.Errorf("accepted %q", bad)

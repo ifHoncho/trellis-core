@@ -115,8 +115,9 @@ type Daemon struct {
 	time    *timeReconciler
 	gnss    *gnss.Watcher
 
-	meshChanges meshChanges // mesh-wide profile changes (meshchange.go)
-	survey      surveyState // channel load and surveys (survey.go)
+	meshChanges meshChanges    // mesh-wide profile changes (meshchange.go)
+	survey      surveyState    // channel load and surveys (survey.go)
+	positions   positionsState // node positions on the ATAK map (positions.go)
 	peers       *gossip.Table
 }
 
@@ -370,7 +371,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, d.gossip, d.ap, d.dhcp)
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp)
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -505,6 +506,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		Name: profile.Name, MeshID: profile.MeshID, Band: profile.Radio.Band, Channel: profile.Radio.Channel,
 		FreqMHz: config.LinkFrequencyMHz(profile.Radio, country), WidthMHz: profile.Radio.Width, Prefix: profile.Prefix,
 		PinnedBatman: profile.Batman.PinnedVersion, MinBatman: profile.Batman.MinVersion, OrigIntervalMS: profile.Batman.OrigIntervalMS,
+		PositionsShared: profile.Positions.Shared(),
 	}
 	if id := d.identity(); id != nil {
 		st.Node = status.Node{Callsign: node.Callsign, NodeID: id.NodeID, NodeIDSource: id.NodeIDSource, MAC: id.MAC}
@@ -561,6 +563,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		st.Clock = d.time.Clock()
 	}
 	st.GNSS = gnssStatus(d.gnss, time.Now())
+	st.Positions = d.positions.status()
 	st.MeshChange = d.meshChangeStatus()
 	for i := range 1 + len(st.MoreLinks) {
 		ml := &st.MeshLink

@@ -157,7 +157,8 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		Version: "demo", Hostname: "relay-1", Time: now, StartedAt: f.started,
 		Node: status.Node{Callsign: f.node.Callsign, NodeID: self.id, NodeIDSource: "config", MAC: self.mac, Address: "10.73.12.1/16"},
 		Profile: status.Profile{Name: f.profile.Name, MeshID: f.profile.MeshID, Band: f.profile.Radio.Band, Channel: f.profile.Radio.Channel,
-			FreqMHz: config.LinkFrequencyMHz(f.profile.Radio, f.profile.Regulatory.Country), WidthMHz: f.profile.Radio.Width, Prefix: f.profile.Prefix, PinnedBatman: "2026.3", MinBatman: "2024.0", OrigIntervalMS: 1000},
+			FreqMHz: config.LinkFrequencyMHz(f.profile.Radio, f.profile.Regulatory.Country), WidthMHz: f.profile.Radio.Width, Prefix: f.profile.Prefix, PinnedBatman: "2026.3", MinBatman: "2024.0", OrigIntervalMS: 1000,
+			PositionsShared: f.profile.Positions.Shared()},
 		// As on a node where trellis crda answers the kernel: the mode in
 		// force follows the profile.
 		Regulatory: status.Regulatory{RequestedMode: f.profile.Regulatory.Mode, Country: f.profile.Regulatory.Country, ActiveMode: f.profile.Regulatory.Mode,
@@ -278,6 +279,17 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	lat, lon, alt := 52.0907+rand.Float64()*0.0002, 5.1214+rand.Float64()*0.0002, 4.0
 	st.GNSS = status.GNSS{Receiver: true, Device: "/dev/ttyAMA0", Driver: "u-blox", Fix: "3d", Lat: &lat, Lon: &lon, AltM: &alt,
 		HAccM: 3.2, VAccM: 5.1, SatsUsed: 9, SatsSeen: 14, FixAgeMS: int64(rand.IntN(900))}
+	// On the ATAK map, and keeping one node that left at its last known
+	// position.
+	st.Positions = status.Positions{Shared: true, Sent: 42, LastSentAgoMS: int64(rand.IntN(60000)), Announcing: true,
+		Note: "on the ATAK map, re-sent every 1m0s while still and at once on a move",
+		LastKnown: []status.LastKnown{{Callsign: "scout-7", MAC: "a0:b0:c0:00:00:07", Heard: time.Now().Add(-17 * time.Minute),
+			Position: status.Position{Lat: 52.0961, Lon: 5.1302, AccM: 6, Fix: "3d", Time: time.Now().Add(-17 * time.Minute)}}}}
+	if !f.profile.Positions.Shared() {
+		st.Positions = status.Positions{Off: "profile", LastSentAgoMS: -1, Note: "turned off for the whole mesh (positions.share in the profile)"}
+	} else if !f.node.Positions.Shared() {
+		st.Positions.Shared, st.Positions.Off, st.Positions.Note = false, "node", "turned off for this node (positions.share in node.yaml)"
+	}
 	st.Clock = status.Clock{Service: "chrony", Synced: true, Source: "GNSS receiver", SourceKind: "gnss", Stratum: 1,
 		OffsetMS: math.Round((rand.Float64()-0.5)*40) / 10, Serving: true}
 	// Channel load per link, here and at the other nodes.
@@ -614,15 +626,21 @@ func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryR
 	}
 	at := time.Now().Add(delay).Truncate(time.Second)
 	var effects []status.Warning
+	linksChange := false
 	for _, e := range res.Effects {
 		switch e.Code {
-		case "this-node-only", "leaves-mesh", "links-drop", "link-restarts":
+		case "link-restarts", "links-drop":
+			linksChange = true
+		case "this-node-only", "leaves-mesh":
 		default:
 			effects = append(effects, e)
 		}
 	}
-	effects = append(effects, status.Warning{Level: "warning", Code: "mesh-change-restart",
-		Message: "At the switch, every node restarts the 5 GHz · ch 149 link: a few seconds without it, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile."})
+	// As meshd: only links whose settings change restart.
+	if linksChange {
+		effects = append(effects, status.Warning{Level: "warning", Code: "mesh-change-restart",
+			Message: "At the switch, every node restarts the 5 GHz · ch 149 link: a few seconds without it, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile."})
+	}
 	res.Effects = append(effects, status.Warning{Level: "info", Code: "mesh-change",
 		Message: fmt.Sprintf("Every node switches at %s (in %s): this one and ridge-2, truck-3, alpha-4, bravo-5 and ops-6.", at.Format("15:04:05"), delay)},
 		status.Warning{Level: "warning", Code: "mesh-change-old", Message: "scout-7 runs a version that cannot follow a mesh-wide change: install the profile there by hand, or it will keep the old one."})

@@ -143,17 +143,21 @@ func TestOpenRejectsInvalidFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*Record){
-		"newline in callsign": func(r *Record) { r.Callsign = "node-1\n10.0.0.66 example.com" },
-		"space in callsign":   func(r *Record) { r.Callsign = "node 1" },
-		"upper-case callsign": func(r *Record) { r.Callsign = "Node-1" },
-		"address not an IP":   func(r *Record) { r.Addr = "10.73.1.1\nserver=1.1.1.1" },
-		"IPv6 address":        func(r *Record) { r.Addr = "fe80::1" },
-		"node id over 254":    func(r *Record) { r.ID = 300 },
-		"negative node id":    func(r *Record) { r.ID = -1 },
-		"bad mac":             func(r *Record) { r.MAC = "not-a-mac" },
-		"bad originator":      func(r *Record) { r.Orig = []string{"zz"} },
-		"escape in version":   func(r *Record) { r.Version = "1.0\x1b[2J" },
-		"overlong id source":  func(r *Record) { r.IDSource = "derived-and-then-some-more" },
+		"newline in callsign":  func(r *Record) { r.Callsign = "node-1\n10.0.0.66 example.com" },
+		"space in callsign":    func(r *Record) { r.Callsign = "node 1" },
+		"upper-case callsign":  func(r *Record) { r.Callsign = "Node-1" },
+		"address not an IP":    func(r *Record) { r.Addr = "10.73.1.1\nserver=1.1.1.1" },
+		"IPv6 address":         func(r *Record) { r.Addr = "fe80::1" },
+		"node id over 254":     func(r *Record) { r.ID = 300 },
+		"negative node id":     func(r *Record) { r.ID = -1 },
+		"bad mac":              func(r *Record) { r.MAC = "not-a-mac" },
+		"bad originator":       func(r *Record) { r.Orig = []string{"zz"} },
+		"escape in version":    func(r *Record) { r.Version = "1.0\x1b[2J" },
+		"overlong id source":   func(r *Record) { r.IDSource = "derived-and-then-some-more" },
+		"latitude over 90":     func(r *Record) { r.Pos = &Position{Lat: 91, Fix: 3} },
+		"longitude under -180": func(r *Record) { r.Pos = &Position{Lon: -180.5, Fix: 3} },
+		"no fix":               func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 1} },
+		"negative accuracy":    func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 2, Acc: -3} },
 	} {
 		r := rec("ea:67:61:6f:bc:8b", 7, 1)
 		mutate(r)
@@ -300,5 +304,40 @@ func TestSameIgnoresLoad(t *testing.T) {
 	a.Load, b.Load = []int{31, 2}, []int{12, 4}
 	if !Same(a, b) {
 		t.Error("records that differ only in channel load compare as different")
+	}
+}
+
+func TestPosition(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	r := rec("ea:67:61:6f:bc:8b", 7, 1)
+	r.Pos = NewPosition(52.0907049, 5.1214149, 251.27, true, 22.6, 3, 1794651635)
+	if r.Pos.Lat != 52.0907 || r.Pos.Lon != 5.12141 || r.Pos.Alt != 251.3 || r.Pos.Acc != 23 {
+		t.Errorf("rounding: %+v", *r.Pos)
+	}
+	pkt, err := Seal(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Open(k, pkt)
+	if err != nil || back.Pos == nil || *back.Pos != *r.Pos {
+		t.Fatalf("round trip: %v %+v", err, back)
+	}
+	// A move rides on the refresh; gaining or losing the fix is a change.
+	moved := *r
+	p := *r.Pos
+	p.Lat += 0.001
+	moved.Pos = &p
+	if !Same(r, &moved) {
+		t.Error("a move alone compares as a change")
+	}
+	lost := *r
+	lost.Pos = nil
+	if Same(r, &lost) {
+		t.Error("losing the fix compares as no change")
+	}
+	off := lost
+	off.NoPos = true
+	if Same(&lost, &off) {
+		t.Error("turning sharing off compares as no change")
 	}
 }
