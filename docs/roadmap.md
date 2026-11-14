@@ -39,7 +39,7 @@ runs and is tested, not a layer of half-built parts.
   to a clearer one in one step.
 - **Nodes on the ATAK map.** A node with a GNSS receiver appears on every
   phone's map, apart from the people; when it leaves the mesh, the others
-  keep its last known position there, marked stale. One switch stops it on
+  keep its last known position there, labelled as such. One switch stops it on
   every node.
 
 ## In progress

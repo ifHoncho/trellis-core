@@ -45,7 +45,7 @@ func TestLastKnownEvent(t *testing.T) {
 	now := heard.Add(20 * time.Minute)
 	ev := lastKnownEvent("a0:b0:c0:00:00:02", k, now)
 	// The same marker as the node's own, already stale.
-	if ev.UID != "trellis-node-a0b0c0000002" || ev.Callsign != "ridge-2" || !ev.Time.Equal(now) || !ev.Start.Equal(heard) || !ev.Stale.Before(now) {
+	if ev.UID != "trellis-node-a0b0c0000002" || ev.Callsign != "ridge-2 (last known)" || !ev.Time.Equal(now) || !ev.Start.Equal(heard) || !ev.Stale.Before(now) {
 		t.Errorf("event: %+v", ev)
 	}
 	if !strings.Contains(ev.Remarks, "since 15:04 UTC") || ev.CE != 12 || ev.HAE != cot.Unknown {

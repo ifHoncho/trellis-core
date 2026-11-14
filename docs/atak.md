@@ -111,9 +111,10 @@ satellites and the accuracy. It reports once a minute while still, at once
 when it moves, and goes stale on the map 3 minutes after its last report.
 
 When a node leaves the mesh, another node keeps re-announcing its last
-known position, already stale, so ATAK keeps it, marked stale, with the
-remarks "last known position: not on the mesh since HH:MM UTC". It is live
-again within a minute or two of the node's return.
+known position, so the marker stays on the map, labelled with the node's
+callsign and "(last known)", and with the remarks "last known position: not
+on the mesh since HH:MM UTC". When the node returns, its own reports put
+the plain callsign back within a minute or two.
 
 Nothing needs setting on the phones. Positions stay inside the mesh: they
 are never routed to an uplink. To stop all nodes from appearing (emissions

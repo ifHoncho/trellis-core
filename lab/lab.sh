@@ -1367,7 +1367,7 @@ if [ "$NODES" -ge 3 ] && [ -f "$RUN/node1/profile.yaml" ]; then
   case "$got" in
     # Stale when node 3's own last report would have gone stale: in the
     # past, or just ahead when node 3 left less than 3 minutes ago.
-    "from=10.73.1.1 type=a-f-G-E-S callsign=lab-node-3 stale="*" point=52.0900000,5.1200000 remarks=Trellis mesh node, last known position"*)
+    "from=10.73.1.1 type=a-f-G-E-S callsign=lab-node-3 (last known) stale="*" point=52.0900000,5.1200000 remarks=Trellis mesh node, last known position"*)
       pass "L3 node 3 stopped: node 1 keeps it ($kept) and re-announces its last known position to a phone on node 2 ($(echo "$got" | grep -o 'stale=[a-z]*'))" ;;
     *) fail "L3 last known position" "node 1 keeps $kept; phone on node 2 got: $got; node 1 re-announced $(grep -c 're-announced a last known' "$RUN/node1.log") times; on node 1's bat0: $(grep -c ' > 239.2.3.1' "$RUN/l3-node1-bat0.txt"), node 2's bat0: $(grep -c ' > 239.2.3.1' "$RUN/l3-node2-bat0.txt"), at node 2's device port: $(grep -c ' > 239.2.3.1' "$RUN/l3-node2-eth2.txt") (mdb node 2: $(NS node2 bridge mdb show 2>/dev/null | grep -c 239.2.3.1))" ;;
   esac

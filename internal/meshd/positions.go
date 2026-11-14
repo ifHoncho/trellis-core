@@ -273,8 +273,11 @@ func nodeEvent(mac, callsign string, fix gnss.State, now time.Time) cot.Event {
 	}
 }
 
-// lastKnownEvent re-announces a node that left the mesh: its own UID and
-// callsign at its last shared position, stale since it was last heard.
+// lastKnownEvent re-announces a node that left the mesh: its own UID at
+// its last shared position, stale since it was last heard. The label says
+// "(last known)" too: ATAK does not always draw a stale marker differently,
+// and a node that is gone must not pass for one that is there. Its own
+// next report puts the plain callsign back.
 func lastKnownEvent(mac string, k *lastKnownPos, now time.Time) cot.Event {
 	hae := cot.Unknown
 	if k.pos.HasAlt {
@@ -287,7 +290,7 @@ func lastKnownEvent(mac string, k *lastKnownPos, now time.Time) cot.Event {
 	start := k.heard
 	return cot.Event{
 		UID: nodeUID(mac), Type: cot.NodeType, Time: now, Start: start, Stale: start.Add(posStaleAfter),
-		Lat: k.pos.Lat, Lon: k.pos.Lon, HAE: hae, CE: ce, LE: cot.Unknown, Callsign: k.callsign, GPS: true,
+		Lat: k.pos.Lat, Lon: k.pos.Lon, HAE: hae, CE: ce, LE: cot.Unknown, Callsign: k.callsign + " (last known)", GPS: true,
 		Remarks: fmt.Sprintf("Trellis mesh node, last known position: not on the mesh since %s UTC.", k.heard.UTC().Format("15:04")),
 	}
 }

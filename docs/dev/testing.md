@@ -199,7 +199,7 @@ group.
 |---|---|
 | L1 | A phone on node 1 receives node 3's CoT event: its UID, type `a-f-G-E-S`, callsign, the fix's position, not stale |
 | L2 | Node 1's status shows node 3's position, from gossip |
-| L3 | Node 3 is stopped. Node 1 (the lowest-numbered node) keeps it as last known and re-announces it to a phone on node 2, already stale, with "last known position" in its remarks |
+| L3 | Node 3 is stopped. Node 1 (the lowest-numbered node) keeps it as last known and re-announces it to a phone on node 2, labelled "(last known)" and with "last known position" in its remarks |
 | L4 | No packet to port 6969 reaches the internet side of either gateway during L1–L5 |
 | L5 | `positions.share: false` sent mesh-wide: node 3 stops reporting, node 1 forgets its last known positions, and a phone hears nothing for 40 s |
 

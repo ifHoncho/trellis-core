@@ -1238,7 +1238,8 @@ Validation-first keeps a bad config from ever reaching a running node.
   15 s for its first 2 minutes. The record carries the position too,
   rounded to about a metre, riding on the refresh; when a node leaves the
   gossip view, the lowest-numbered node on the mesh re-announces its last
-  known position every minute, already stale, for up to 12 hours. Positions
+  known position every minute, stale and labelled "(last known)" (ATAK
+  does not always draw a stale marker differently), for up to 12 hours. Positions
   stay inside the mesh: the SA group is never routed, and gossip is the
   mesh's own. `positions.share: false` in the profile stops every node at
   once and drops the last known positions (emissions control); in
