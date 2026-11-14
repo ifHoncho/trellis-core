@@ -1,6 +1,7 @@
 // Command trellis is the single Trellis binary. It runs as meshd, meshctl,
-// webd or cotd depending on the first argument or the name it is invoked
-// by (symlinks), as architecture §12.2 describes.
+// webd or crda depending on the first argument, or as meshd, meshctl or
+// webd by the name it is invoked by (symlinks), as architecture §12.2
+// describes.
 package main
 
 import (
@@ -34,7 +35,7 @@ func run(argv []string) int {
 	args := argv[1:]
 	var sub string
 	switch prog {
-	case "meshd", "meshctl", "webd", "cotd":
+	case "meshd", "meshctl", "webd":
 		sub = prog
 	default:
 		if len(args) == 0 {
@@ -52,9 +53,6 @@ func run(argv []string) int {
 		return runWebd(args)
 	case "crda":
 		return runCRDA(args)
-	case "cotd":
-		fmt.Fprintln(os.Stderr, "cotd (ATAK CoT and Meshtastic bridge) is not built yet")
-		return 1
 	case "version", "--version", "-v":
 		fmt.Println("trellis", version)
 		return 0
@@ -76,7 +74,6 @@ Usage: trellis <subcommand> [flags]
   meshctl   operator CLI: status, radios, doctor, config validate, profile new, web
   webd      the web UI and network API (unprivileged, under systemd)
   crda      answer the kernel's regulatory request (run by udev; --print to show the answer)
-  cotd      ATAK / Meshtastic bridge (planned)
   version
 
 The binary may also be installed as symlinks named meshd, meshctl and webd.

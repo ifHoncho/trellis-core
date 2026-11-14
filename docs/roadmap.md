@@ -48,8 +48,18 @@ runs and is tested, not a layer of half-built parts.
 
 ## Later
 
-- Meshtastic / LoRa side-channel, so ATAK keeps working in a reduced form
-  where the IP mesh can't reach.
+- **Team awareness with GNSS:** nodes with a GNSS receiver keep the whole
+  mesh on one clock without internet, show on the ATAK map next to their
+  users (with a last known position when one drops out), and record where
+  the mesh reaches, for range figures and a coverage map. Positions stay
+  inside the mesh unless the operator chooses otherwise.
+- **A Trellis plugin for ATAK:** the mesh on ATAK's map with live link
+  quality, the state of your own node at a glance, and position reporting
+  that adapts to how busy the mesh is. ATAK keeps working fully without
+  it.
+- **Channel management:** a survey of how busy each channel is at every
+  node, and mesh links that move to a clearer channel together when
+  theirs stays congested.
 - Push-to-talk voice.
 - Linking sites over the internet.
 - IPv6 for clients.

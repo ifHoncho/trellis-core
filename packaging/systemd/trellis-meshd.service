@@ -18,8 +18,7 @@ RestartSec=3
 KillMode=mixed
 TimeoutStopSec=30
 # meshd runs as root in this milestone; capability and sandbox hardening is
-# roadmap M8. The web UI runs unprivileged (trellis-webd.service); cotd will
-# too (M6).
+# planned. The web UI runs unprivileged (trellis-webd.service).
 ProtectSystem=full
 # /etc/trellis: configuration changes made through the API (web UI,
 # meshctl) are written to node.yaml and profile.yaml there.

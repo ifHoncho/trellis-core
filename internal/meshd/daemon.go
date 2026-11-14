@@ -281,9 +281,18 @@ func (d *Daemon) applyPending() bool {
 }
 
 // Config returns the active configuration with secrets removed.
+// Config is the configuration as written: the one a reload has accepted,
+// even before the next pass swaps it in. A client that saves and reads back
+// at once gets what it saved, not the configuration it replaced.
 func (d *Daemon) Config() api.ConfigResult {
 	node, profile := d.conf()
-	return api.ConfigResult{Node: node.Redacted(), Profile: profile.Redacted(), Setup: d.setupState()}
+	setup := d.setupState()
+	d.pendingMu.Lock()
+	if p := d.pending; p != nil {
+		node, profile, setup = p.node, p.profile, p.setup
+	}
+	d.pendingMu.Unlock()
+	return api.ConfigResult{Node: node.Redacted(), Profile: profile.Redacted(), Setup: setup}
 }
 
 // stopping reports whether meshd is shutting down: its context, which is

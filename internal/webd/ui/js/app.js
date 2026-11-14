@@ -13,6 +13,7 @@ import { multicast } from './views/multicast.js';
 import { alertsView } from './views/alerts.js';
 import { settings } from './views/settings.js';
 import { gate } from './views/gate.js';
+import { refreshConfig } from './config.js';
 
 const ROUTES = [
   { id: 'overview', label: 'Overview', icon: 'overview', view: overview, tab: true },
@@ -250,6 +251,7 @@ setSignedOutHandler(signedOut);
 setRedraw(mount(document.getElementById('app'), app));
 window.addEventListener('hashchange', () => {
   readRoute();
+  refreshConfig();
   window.scrollTo(0, 0);
   pollTopology();
   redraw();

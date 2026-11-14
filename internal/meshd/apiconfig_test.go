@@ -645,3 +645,29 @@ func TestProfileEffectsLinks(t *testing.T) {
 		t.Errorf("rename: %+v", es)
 	}
 }
+
+// A change read back at once is the change, not the configuration it
+// replaced: the reload is accepted when the files are written, and swapped
+// in on the next pass, which may not have run yet.
+func TestConfigReadBackBeforeNextPass(t *testing.T) {
+	d, _ := testDaemon(t, map[string]string{
+		"node.yaml":    "schema: 0\ncallsign: node-1\n",
+		"profile.yaml": testProfile,
+	})
+	n := d.Config().Node
+	n.Callsign = "relay-7"
+	raw, _ := json.Marshal(n)
+	if res, err := d.SetNode(context.Background(), raw, false); err != nil || !res.Applied {
+		t.Fatalf("save: %+v %v", res, err)
+	}
+	if got, _ := d.conf(); got.Callsign != "node-1" {
+		t.Fatalf("the running configuration changed before a pass: %s", got.Callsign)
+	}
+	if got := d.Config().Node.Callsign; got != "relay-7" {
+		t.Errorf("read back right after saving: callsign %q, want relay-7", got)
+	}
+	d.applyPending()
+	if got := d.Config().Node.Callsign; got != "relay-7" {
+		t.Errorf("after the pass: callsign %q, want relay-7", got)
+	}
+}

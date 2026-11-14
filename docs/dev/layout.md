@@ -1,7 +1,7 @@
 # Code layout
 
 One Go module (`meridian/trellis`), one binary (`cmd/trellis`) with
-subcommands `meshd`, `meshctl`, `webd`, `crda` and `cotd` (planned). Everything else is
+subcommands `meshd`, `meshctl`, `webd` and `crda`. Everything else is
 under `internal/`, except `tools/fakemeshd`, a development stand-in for
 `meshd` that serves the API from made-up data (`make ui-dev`).
 

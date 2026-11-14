@@ -37,6 +37,14 @@ export function ensureConfig() {
   return c;
 }
 
+// refreshConfig reloads the configuration when a page opens, unless there
+// are edits not saved yet: what is shown is then what the node has, also
+// after a change made elsewhere (meshctl, another browser).
+export function refreshConfig() {
+  const c = cfg();
+  if (c.draft && !c.loading && !c.busy && !dirty()) loadConfig();
+}
+
 // canon is a draft reduced to what a change means, for telling whether
 // anything was edited. The node sends null for a list it has no entries
 // in, and leaves out the roles that are automatic; an edit that is undone

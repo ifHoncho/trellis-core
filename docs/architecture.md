@@ -13,7 +13,8 @@ is named so it can be re-checked.
 
 An open-source tactical mesh radio system: a body-worn node, in the class of
 an MPU5, that gives a team a self-forming encrypted IP network with first-class
-ATAK support, opportunistic internet sharing, and a LoRa side-channel.
+ATAK support and opportunistic internet sharing, over Wi-Fi and Wi-Fi HaLow
+for range.
 
 It ships two ways from one codebase:
 
@@ -30,10 +31,9 @@ It ships two ways from one codebase:
 | R4 | When a gateway fails and another exists, new connections move to it within **5 s**, invisibly to EUDs. |
 | R5 | Mesh links are authenticated and encrypted. |
 | R6 | Supports standard Wi-Fi mesh radios and Wi-Fi HaLow (802.11ah). |
-| R7 | *Optional*: integrates Meshtastic LoRa radios over serial (and TCP for HAT radios). |
-| R8 | Web UI and API for management and status. |
-| R9 | Optimised for 1–50 nodes, typically one body-worn node per person with their phone attached. |
-| R10 | Delivered as a self-installable package and as prebuilt images. |
+| R7 | Web UI and API for management and status. |
+| R8 | Optimised for 1–50 nodes, typically one body-worn node per person with their phone attached. |
+| R9 | Delivered as a self-installable package and as prebuilt images. |
 
 **Non-goals (v1):** IPv6 for clients; keeping open TCP connections alive across
 a gateway failover; meshes of hundreds of nodes; interoperability with
@@ -63,7 +63,6 @@ flowchart TB
         BAT["bat0<br/>batman-adv BATMAN_V"]
         RADIO["Mesh radio<br/>802.11s + SAE<br/>(Wi-Fi or HaLow)"]
         WAN["WAN (optional)<br/>Ethernet / LTE / Starlink"]
-        LORA["Meshtastic radio<br/>(serial)"]
         AP --- BR
         USB --- BR
         AC --- BR
@@ -72,7 +71,6 @@ flowchart TB
         BR -. "routed + NAT<br/>when gateway" .- WAN
     end
     RADIO <-->|"other nodes"| MESH(("Mesh"))
-    LORA <-.->|"cotd bridge"| BR
 ```
 
 A node is a bridge. `bat0` (the mesh) and the client ports are members of one
@@ -461,7 +459,7 @@ type only works when every node supports it (§9). Identical code everywhere
 also means identical behaviour, so test results transfer to the field.
 
 **Why DKMS rather than requiring a new kernel:** self-install is a
-requirement (R10), and real fleets run whatever kernel the board vendor
+requirement (R9), and real fleets run whatever kernel the board vendor
 ships. Upgrading the kernel is often the hardest part
 on such boards.
 
@@ -1019,7 +1017,7 @@ One binary, several subcommands, each run as its own process.
 |---|---|---|
 | `meshd` | `CAP_NET_ADMIN`, `CAP_NET_RAW` | Sole owner of network state: radios, batman, bridge, addressing, gateways, firewall, dnsmasq and hostapd config, gossip. Local API on a unix socket. |
 | `webd` | none | Web UI and HTTP/JSON API with live updates; talks to `meshd` over its socket. |
-| `cotd` | unprivileged | ATAK CoT bridging, the Meshtastic link, node position as CoT. |
+| `crda` | root, run by udev | Answers the kernel's regulatory requests with the mesh profile's rules (§5.1). Runs for a moment and exits. |
 | `meshctl` | operator | CLI, including `meshctl doctor`. |
 
 **Why:** a bug in the web UI is not a root bug. One binary keeps packaging
@@ -1182,12 +1180,6 @@ Validation-first keeps a bad config from ever reaching a running node.
 
 ## 13. Integrations
 
-- **Meshtastic / LoRa (`cotd`)**, optional and not built yet. Serial (USB) or TCP (`meshtasticd` for HAT radios).
-  - Bridges only CoT that originated locally, rate-capped, and de-duplicates
-    LoRa→IP by UID and time.
-  - Uses Meshtastic's ATAK packet format where possible, so phones running the
-    official plugin interoperate.
-  - Mode switch between bridge and phone-BLE, plus recovery for hung radios.
 - **TAK Server on a node.** Published as `tak.mesh` through gossip.
 - **Time.** chrony on every node: GNSS-disciplined where a receiver exists,
   internet NTP through a gateway when available, served to the mesh. Nodes
@@ -1217,7 +1209,6 @@ Validation-first keeps a bad config from ever reaching a running node.
 | Compute | Single-board computers and small PCs meeting §6.1 (arm64, armv7, x86-64) |
 | Wi-Fi mesh radios | USB and PCIe adapters with `mesh point` in `iw list`; dual-band-concurrent cards carry two links |
 | HaLow | Modules built on Morse Micro's MM6108 / MM8108, with Morse Micro's Linux driver |
-| LoRa (optional) | Meshtastic radios over USB or as a HAT |
 
 ## 15. Risks and open questions
 
