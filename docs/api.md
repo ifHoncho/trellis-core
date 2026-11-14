@@ -89,7 +89,7 @@ These endpoints exist on `webd` only.
 | Request | Answer |
 |---|---|
 | `GET /health` | `{ok, time, api}` |
-| `GET /status` | The node's whole state: identity, profile in force, regulatory mode, radios and plan, mesh links and peers, batman-adv tables and multicast path, bridge, client AP and its stations, DHCP leases, gateway state and candidates, ports, the other nodes (from gossip), warnings, the control loop. The types are in `internal/status/status.go`; that file is the reference for every field. |
+| `GET /status` | The node's whole state: identity, profile in force, regulatory mode, radios and plan, mesh links and peers, batman-adv tables and multicast path, bridge, client AP and its stations, DHCP leases, gateway state and candidates, how the node keeps time (`clock`) and its GNSS receiver (`gnss`: fix, position, accuracy, satellites, PPS), ports, the other nodes (from gossip), warnings, the control loop. The types are in `internal/status/status.go`; that file is the reference for every field. |
 | `GET /radios` | `{radios, plan}`: the radio part of the status |
 | `GET /config` | `{node, profile, setup}`: the configuration in force, secrets redacted. `node` is the document `PUT /config/node` takes. |
 | `GET /channels` | What a mesh link may ask for, the same on every node: `{widths, max_channel, s1g}`. `widths` per band in MHz (`"5g": [20, 40, 80, 160]`); Wi-Fi channel numbers run from 1 to `max_channel[band]`; `s1g` holds the HaLow channels per country and width (`{"US": {"2": [2, 6, …]}, …}`). A radio may still lack a channel, and the regulatory domain forbid one: the node reports that in its warnings, and a link's `running_width_mhz` in `GET /status` is the width it actually runs. |

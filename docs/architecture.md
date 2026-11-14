@@ -1181,11 +1181,21 @@ Validation-first keeps a bad config from ever reaching a running node.
 ## 13. Integrations
 
 - **TAK Server on a node.** Published as `tak.mesh` through gossip.
-- **Time.** chrony on every node: GNSS-disciplined where a receiver exists,
-  internet NTP through a gateway when available, served to the mesh. Nodes
-  without a real-time clock otherwise boot with the wrong time, which breaks
-  TLS and log ordering.
-- **GNSS.** Node position published as CoT and in gossip.
+- **Time.** chrony on every node (`packaging/chrony/trellis.conf`). A node
+  with a GNSS receiver takes its time from gpsd (the receiver's messages, or
+  its pulse per second where the board wires it) and serves it to the mesh.
+  Each node says in gossip whether it serves time, and whether from GNSS;
+  meshd gives chrony the nodes to follow: those on GNSS, or with none, every
+  node that serves time, lowest node IDs first so that all pick the same.
+  Internet servers through a gateway stay in chrony's own configuration.
+  With no GNSS and no internet the nodes still agree among themselves
+  (orphan mode). Nodes without a real-time clock otherwise boot with the
+  wrong time, which breaks TLS and log ordering, and planned features need
+  agreed switch times (a mesh-wide channel change, a re-key).
+- **GNSS.** gpsd owns the receiver; meshd reads its JSON stream for the fix,
+  position, accuracy, satellites and PPS, and shows them in the status.
+  Position published as CoT, and kept inside the mesh unless the operator
+  chooses otherwise, is planned.
 - **Voice (later).** Multicast push-to-talk on its own group.
 - **Site linking (later).** WireGuard + VXLAN added to `bat0` as a batman hard
   interface, merging separate meshes into one.

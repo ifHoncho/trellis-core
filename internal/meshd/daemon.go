@@ -23,6 +23,7 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/batadv"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/gnss"
 	"meridian/trellis/internal/gossip"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/nft"
@@ -111,6 +112,8 @@ type Daemon struct {
 	dhcp    *dhcpReconciler
 	gateway *gatewayReconciler
 	gossip  *gossipReconciler
+	time    *timeReconciler
+	gnss    *gnss.Watcher
 	peers   *gossip.Table
 }
 
@@ -360,9 +363,11 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.dhcp = newDHCPReconciler(d)
 	d.gateway = newGatewayReconciler(d)
 	d.gossip = newGossipReconciler(d)
+	d.time = newTimeReconciler(d)
+	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.gossip, d.ap, d.dhcp)
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, d.gossip, d.ap, d.dhcp)
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -371,6 +376,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.ctx = ctx
 	go d.watchEvents(ctx)
 	go d.handleSignals(ctx, cancel)
+	go d.gnss.Run(ctx)
 
 	serveErr := make(chan error, 1)
 	if serve != nil {
@@ -546,6 +552,11 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		st.Ports = append([]status.Port{}, f.Ports...)
 		st.Gateway = f.Gateway
 	})
+	st.Clock = status.Clock{Service: "none", Note: "not started"}
+	if d.time != nil {
+		st.Clock = d.time.Clock()
+	}
+	st.GNSS = gnssStatus(d.gnss, time.Now())
 	if st.Gateway.Candidates == nil {
 		st.Gateway.Candidates = []status.GatewayCandidate{}
 	}

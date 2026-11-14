@@ -15,6 +15,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
+	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/gossip"
 	"meridian/trellis/internal/reconcile"
 	"meridian/trellis/internal/status"
@@ -146,6 +147,10 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	r := &gossip.Record{
 		V: 1, MAC: me.MAC, ID: me.NodeID, IDSource: me.NodeIDSource, Callsign: d.cfg.Callsign,
 		Addr: addr, Version: d.opts.Version, Boot: g.boot, GW: gw, Orig: orig, Radios: d.meshRadioEntries(),
+		Links: profileLinkEntries(d.profile),
+	}
+	if d.time != nil {
+		r.Time = d.time.Role()
 	}
 	g.mu.Lock()
 	changed := !gossip.Same(g.record, r)
@@ -156,6 +161,17 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			res.RequeueAfter = 5 * time.Second
 		} else {
 			res.Changed = true
+		}
+	}
+
+	// Nodes that run the mesh's links differently: same secret, different
+	// profile. A link whose ends differ in width can run at a fraction of
+	// its speed (an MT7916 sent at its lowest rate to a 40 MHz peer of its
+	// 80 MHz link); one on another channel does not form at all.
+	for _, p := range d.peers.Peers() {
+		if diffs := linkDifferences(r.Links, p.Record.Links); len(diffs) > 0 {
+			warn("warning", "profile-differs", "%s's mesh profile differs from this node's: %s. A link only runs well when every node has it the same; install the same profile on every node",
+				p.Record.Callsign, strings.Join(diffs, "; "))
 		}
 	}
 
@@ -448,6 +464,81 @@ func (d *Daemon) meshRadioEntries() []string {
 	slices.Sort(out)
 	if len(out) > gossip.MaxRadios {
 		out = out[:gossip.MaxRadios]
+	}
+	return out
+}
+
+// profileLinkEntries lists a profile's links for this node's gossip record.
+func profileLinkEntries(p *config.Profile) []string {
+	var out []string
+	for _, l := range p.AllLinks() {
+		out = append(out, gossip.LinkEntry(l.Band, l.Channel, l.Width))
+	}
+	if len(out) > gossip.MaxLinkEntries {
+		out = out[:gossip.MaxLinkEntries]
+	}
+	return out
+}
+
+// linkDifferences says how another node's links (from its gossip record)
+// differ from this node's, link by link: a different width or channel on a
+// band both use, or a link one profile has and the other lacks. Empty when
+// they agree, or when the other node does not say (an older version). The
+// order of the links is not compared.
+func linkDifferences(mine, theirs []string) []string {
+	if len(theirs) == 0 {
+		return nil
+	}
+	type link struct {
+		band         string
+		channel, mhz int
+	}
+	parse := func(es []string) []link {
+		var out []link
+		for _, e := range es {
+			if b, c, w, ok := gossip.ParseLinkEntry(e); ok {
+				out = append(out, link{b, c, w})
+			}
+		}
+		return out
+	}
+	a, b := parse(mine), parse(theirs)
+	name := func(l link) string { return config.RadioPlan{Band: l.band, Channel: l.channel}.Name() }
+	var out []string
+	matched := map[int]bool{}
+	for _, m := range a {
+		found := -1
+		for j, t := range b {
+			if t.band == m.band && t.channel == m.channel {
+				found = j
+				break
+			}
+		}
+		if found >= 0 {
+			matched[found] = true
+			if t := b[found]; t.mhz != m.mhz {
+				out = append(out, fmt.Sprintf("it runs the %s link at %d MHz, this node at %d MHz", name(m), t.mhz, m.mhz))
+			}
+			continue
+		}
+		other := -1
+		for j, t := range b {
+			if t.band == m.band && !matched[j] {
+				other = j
+				break
+			}
+		}
+		if other >= 0 {
+			matched[other] = true
+			out = append(out, fmt.Sprintf("it has its %s link on channel %d, this node on channel %d", config.BandName(m.band), b[other].channel, m.channel))
+			continue
+		}
+		out = append(out, fmt.Sprintf("its profile has no %s link", name(m)))
+	}
+	for j, t := range b {
+		if !matched[j] {
+			out = append(out, fmt.Sprintf("its profile has a %s link this node's lacks", name(t)))
+		}
 	}
 	return out
 }

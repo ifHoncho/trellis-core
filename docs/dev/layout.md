@@ -15,6 +15,8 @@ under `internal/`, except `tools/fakemeshd`, a development stand-in for
 | `rtnl` | Link helpers and batman-adv link creation with `IFLA_BATADV_ALGO_NAME` | rtnetlink |
 | `sysfs` | Bus, port, USB/PCI ids, serial, USB speed, rfkill for a wiphy | sysfs |
 | `hwdb` | Embedded hardware database (`hwdb.yaml`) | — |
+| `gnss` | Follows a GNSS receiver through gpsd's JSON stream: fix, position, accuracy, satellites, PPS | TCP to gpsd |
+| `chrony` | Reads chronyd's state through `chronyc` and writes the mesh's time servers for it | exec `chronyc` |
 | `regdb` | Reads wireless-regdb's `regulatory.db`; the permissive rule set; what `trellis crda` answers the kernel (architecture §5.1) | — |
 | `radio` | Inventory with stable fingerprints; role planner (architecture §5.2) | — (pure logic) |
 | `wpa` | wpa_supplicant mesh config rendering; control-socket client and events | unix sockets |
@@ -27,7 +29,7 @@ under `internal/`, except `tools/fakemeshd`, a development stand-in for
 | `probe` | WAN health: ICMP rounds out of one interface, healthy/unhealthy hysteresis | raw ICMP socket |
 | `dhcpc` | DHCPv4 client over a link-layer socket: probing auto ports, holding an auto WAN's lease (renew, rebind, expiry) | AF_PACKET socket |
 | `reconcile` | The loop: ordered reconcilers, kicks, timer, teardown in reverse | — |
-| `meshd` | The daemon: facts, reconcilers (`host`, `radios` with the regulatory domain, `meshlink` and `meshlinks` (one per mesh link, with the moved-peer and one-sided-link checks), `batman`, `ports`, `bridge`, `filters`, `anycast`, `gateway`, `gossip`, `ap`, `dhcp`), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`) | all of the above |
+| `meshd` | The daemon: facts, reconcilers (`host`, `time` (mesh time through chrony), `radios` with the regulatory domain, `meshlink` and `meshlinks` (one per mesh link, with the moved-peer and one-sided-link checks), `batman`, `ports`, `bridge`, `filters`, `anycast`, `gateway`, `gossip`, `ap`, `dhcp`), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`) | all of the above |
 | `api` | API v1 (docs/api.md): the server meshd runs on its unix socket, the request and answer types, and the client meshctl and webd use | — |
 | `status` | The status JSON types (the contract between meshd, meshctl and webd) | — |
 | `qr` | QR code encoder (byte mode, versions 1–40) for the Wi-Fi join code and the profile code; draws as SVG, as rows for the UI, or in a terminal | — |

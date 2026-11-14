@@ -154,3 +154,20 @@ export const capitalize = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 export function plural(n, one, many) {
   return `${n} ${n === 1 ? one : (many || one + 's')}`;
 }
+
+// clockShort is how the node keeps time, in a few words for the overview:
+// "GNSS", "mesh · relay-1", "internet", "not synchronised".
+export function clockShort(c) {
+  if (!c || c.service !== 'chrony') return 'not kept';
+  if (!c.synced) return 'not synchronised';
+  if (c.source_kind === 'mesh') return 'mesh · ' + (c.source || '').replace(/ \(.*\)$/, '');
+  return { gnss: 'GNSS', internet: 'internet' }[c.source_kind] || c.source || 'synchronised';
+}
+
+// gnssShort is the receiver in a few words: "3D fix · 9 satellites",
+// "no fix".
+export function gnssShort(g) {
+  if (!g || !g.receiver) return 'no receiver';
+  if (g.fix === 'none') return 'no fix' + (g.sats_seen ? ` · ${g.sats_seen} satellites seen` : '');
+  return `${g.fix.toUpperCase()} fix · ${plural(g.sats_used, 'satellite')}` + (g.h_acc_m ? ` · ±${Math.round(g.h_acc_m)} m` : '');
+}

@@ -2,7 +2,7 @@
 import { h } from '../dom.js';
 import { state, history, alerts, nameOf } from '../state.js';
 import { panel, stat, dot, pill, spark, notice, bars } from '../ui.js';
-import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried } from '../fmt.js';
+import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried, clockShort, gnssShort } from '../fmt.js';
 import { topology } from '../topo.js';
 
 // headline is one sentence on the node's state, most serious first.
@@ -54,6 +54,8 @@ export function overview() {
           links.map((l) => h('div', `${linkName(l, st)} · ${linkWidth(l, st)} MHz`,
             l.running_width_mhz && l.running_width_mhz !== linkWidth(l, st) ? h('span.warn', ` (running ${l.running_width_mhz})`) : null,
             links.length > 1 && !carried(l) ? h('span.faint', ' · not on this node') : null))),
+        h('div', h('span', 'Time'), h('a', { href: '#/settings/system' }, clockShort(st.clock))),
+        st.gnss && st.gnss.receiver ? h('div', h('span', 'GNSS'), h('a', { href: '#/settings/system' }, gnssShort(st.gnss))) : null,
         h('div', h('span', 'Version'), st.version))),
 
     h('div.grid',

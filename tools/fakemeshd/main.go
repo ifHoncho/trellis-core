@@ -268,6 +268,13 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 
 	st.Bridge = status.Bridge{Name: "br-mesh", Present: true, Ports: []string{"ap0", "bat0", "eth1"}, Address: "10.73.12.1/16", MTU: 1500}
 	apJoin := f.apJoin()
+	// A node with GNSS: its clock follows the receiver and it serves the
+	// mesh. The position is made up.
+	lat, lon, alt := 52.0907+rand.Float64()*0.0002, 5.1214+rand.Float64()*0.0002, 4.0
+	st.GNSS = status.GNSS{Receiver: true, Device: "/dev/ttyAMA0", Driver: "u-blox", Fix: "3d", Lat: &lat, Lon: &lon, AltM: &alt,
+		HAccM: 3.2, VAccM: 5.1, SatsUsed: 9, SatsSeen: 14, FixAgeMS: int64(rand.IntN(900))}
+	st.Clock = status.Clock{Service: "chrony", Synced: true, Source: "GNSS receiver", SourceKind: "gnss", Stratum: 1,
+		OffsetMS: math.Round((rand.Float64()-0.5)*40) / 10, Serving: true}
 	apRadio := st.Radios[len(st.Radios)-1].Fingerprint
 	if len(st.Radios) > 1 {
 		apRadio = st.Radios[1].Fingerprint

@@ -34,6 +34,14 @@ if command -v apt-get >/dev/null 2>&1; then
     # system-wide DNS server on port 53 that blocks Trellis's own.
     apt-get install -y --no-install-recommends wpasupplicant iw batctl hostapd dnsmasq-base nftables >/dev/null
   fi
+  # Mesh time (roadmap G1): chrony takes GNSS time from gpsd where a node
+  # has a receiver and serves it to the mesh. It replaces systemd-timesyncd,
+  # which can neither serve time nor use GNSS.
+  if ! PATH="$PATH:/usr/sbin:/sbin" command -v chronyd >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    echo "-- installing chrony (mesh time; replaces systemd-timesyncd)"
+    apt-get install -y --no-install-recommends chrony >/dev/null
+  fi
   # Debian starts hostapd.service masked; a running one would fight meshd's.
   systemctl mask hostapd.service >/dev/null 2>&1 || true
   if systemctl is-active --quiet dnsmasq.service 2>/dev/null; then
@@ -56,6 +64,18 @@ install -D -m 0644 "$HERE/../packaging/systemd/trellis-meshd.service" /etc/syste
 install -D -m 0644 "$HERE/../packaging/systemd/trellis-webd.service" /etc/systemd/system/trellis-webd.service
 install -D -m 0644 "$HERE/../packaging/systemd/trellis-webd.socket" /etc/systemd/system/trellis-webd.socket
 install -D -m 0644 "$HERE/../packaging/udev/70-trellis-names.rules" /etc/udev/rules.d/70-trellis-names.rules
+install -D -m 0644 "$HERE/../packaging/tmpfiles/trellis.conf" /etc/tmpfiles.d/trellis.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/trellis.conf 2>/dev/null || true
+if [ -d /etc/chrony ]; then
+  if ! cmp -s "$HERE/../packaging/chrony/trellis.conf" /etc/chrony/conf.d/trellis.conf; then
+    install -D -m 0644 "$HERE/../packaging/chrony/trellis.conf" /etc/chrony/conf.d/trellis.conf
+    # Older chrony.conf files have no confdir line, and would ignore it.
+    grep -q '^confdir /etc/chrony/conf.d' /etc/chrony/chrony.conf 2>/dev/null ||
+      echo "-- WARNING: /etc/chrony/chrony.conf has no 'confdir /etc/chrony/conf.d'; add it for mesh time"
+    systemctl restart chrony 2>/dev/null || systemctl restart chronyd 2>/dev/null || true
+    echo "-- installed /etc/chrony/conf.d/trellis.conf (mesh time)"
+  fi
+fi
 udevadm control --reload 2>/dev/null || true
 systemctl daemon-reload
 # A running meshd keeps the old binary until restarted.

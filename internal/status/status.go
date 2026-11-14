@@ -24,13 +24,16 @@ type Status struct {
 	AP        AP           `json:"ap"`
 	ClientNet ClientNet    `json:"client_network"`
 	Gateway   GatewayState `json:"gateway"`
-	Ports     []Port       `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
-	Nodes     []MeshNode   `json:"nodes"` // other nodes, from gossip
-	Gossip    Gossip       `json:"gossip"`
-	Reconcile Reconcile    `json:"reconcile"`
-	Process   Process      `json:"process"`
-	Warnings  []Warning    `json:"warnings"`
-	Setup     Setup        `json:"setup"`
+	// Clock is how this node keeps time, and GNSS its receiver (roadmap G1).
+	Clock     Clock      `json:"clock"`
+	GNSS      GNSS       `json:"gnss"`
+	Ports     []Port     `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
+	Nodes     []MeshNode `json:"nodes"` // other nodes, from gossip
+	Gossip    Gossip     `json:"gossip"`
+	Reconcile Reconcile  `json:"reconcile"`
+	Process   Process    `json:"process"`
+	Warnings  []Warning  `json:"warnings"`
+	Setup     Setup      `json:"setup"`
 }
 
 // Setup says whether the node still waits to be provisioned. A node with
@@ -568,4 +571,49 @@ type Gossip struct {
 	AuthFailed      uint64 `json:"auth_failed"`
 	Ignored         uint64 `json:"ignored"`
 	LastError       string `json:"last_error,omitempty"`
+}
+
+// Clock is how the node keeps time: chrony, following GNSS, the mesh's time
+// servers, the internet, or only itself.
+type Clock struct {
+	// Service: "chrony", or "none" (chrony not installed: the node neither
+	// serves nor follows mesh time).
+	Service string `json:"service"`
+	Synced  bool   `json:"synced"`
+	// Source in words: "GNSS receiver", "relay-1 (10.73.12.1)", "internet
+	// (203.0.113.5)", "this node's own clock".
+	Source string `json:"source,omitempty"`
+	// SourceKind: gnss, mesh, internet, local.
+	SourceKind string  `json:"source_kind,omitempty"`
+	Stratum    int     `json:"stratum,omitempty"`
+	OffsetMS   float64 `json:"offset_ms"`
+	// Serving: this node serves time to the mesh. MeshServers are the
+	// nodes it follows, by callsign.
+	Serving     bool     `json:"serving"`
+	MeshServers []string `json:"mesh_servers,omitempty"`
+	Note        string   `json:"note,omitempty"`
+}
+
+// GNSS is the node's GNSS receiver, through gpsd.
+type GNSS struct {
+	// Receiver: gpsd runs and lists a receiver.
+	Receiver bool   `json:"receiver"`
+	Device   string `json:"device,omitempty"`
+	Driver   string `json:"driver,omitempty"`
+	// Fix: "none", "2d" or "3d".
+	Fix string `json:"fix"`
+	// Position, only with a fix.
+	Lat  *float64 `json:"lat,omitempty"`
+	Lon  *float64 `json:"lon,omitempty"`
+	AltM *float64 `json:"alt_m,omitempty"`
+	// Estimated errors in metres; 0 when unknown.
+	HAccM    float64 `json:"h_acc_m,omitempty"`
+	VAccM    float64 `json:"v_acc_m,omitempty"`
+	SatsUsed int     `json:"sats_used"`
+	SatsSeen int     `json:"sats_seen"`
+	// FixAgeMS: since the receiver's last report.
+	FixAgeMS int64 `json:"fix_age_ms,omitempty"`
+	// PPS: pulse-per-second reports arrive (sub-millisecond time).
+	PPS  bool   `json:"pps"`
+	Note string `json:"note,omitempty"`
 }

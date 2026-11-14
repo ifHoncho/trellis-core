@@ -24,6 +24,12 @@ anything missing. A board that fails a check needs a different kernel.
 **At least one radio that supports 802.11s mesh point** (`iw list` lists
 "mesh point" under supported interface modes). That radio carries the mesh.
 
+**Optionally, a GNSS receiver** supported by gpsd (on a serial port, USB or
+I²C). The node then keeps the whole mesh on GNSS time without internet; a
+receiver whose pulse per second (PPS) reaches a GPIO gives sub-millisecond
+time, one without it about a tenth of a second. Keep a receiver off the
+serial port the kernel uses as its console: `meshctl doctor` checks.
+
 **Optionally, more radios.** A second Wi-Fi radio serves the client Wi-Fi
 on its own channel, so the phone's traffic doesn't share the mesh's
 airtime; otherwise the client Wi-Fi shares a mesh radio. Further radios

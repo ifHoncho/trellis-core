@@ -179,6 +179,10 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	default:
 		fmt.Fprintf(w, "regulatory: country %s, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
 	}
+	fmt.Fprintf(w, "time: %s\n", clockLine(st.Clock))
+	if st.GNSS.Receiver {
+		fmt.Fprintf(w, "gnss: %s\n", gnssLine(st.GNSS))
+	}
 
 	fmt.Fprintf(w, "\nRadios (%d):\n", len(st.Radios))
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -1374,4 +1378,47 @@ func mcastSummary(m status.Multicast) string {
 	c := m.Counters
 	parts = append(parts, fmt.Sprintf("packet type tx %d rx %d fwd %d", c.TX, c.RX, c.Fwd))
 	return strings.Join(parts, "; ")
+}
+
+// clockLine says how the node keeps time: "synchronised to GNSS receiver
+// (stratum 1, offset 0.4 ms), serving the mesh".
+func clockLine(c status.Clock) string {
+	if c.Service != "chrony" {
+		return "not kept by Trellis: " + c.Note
+	}
+	if !c.Synced {
+		return "chrony, NOT synchronised: " + c.Note
+	}
+	line := fmt.Sprintf("synchronised to %s (stratum %d, offset %.1f ms)", c.Source, c.Stratum, c.OffsetMS)
+	if c.Serving {
+		line += ", serving the mesh"
+	}
+	if len(c.MeshServers) > 0 {
+		line += "; mesh time servers " + strings.Join(c.MeshServers, ", ")
+	}
+	return line
+}
+
+// gnssLine describes the receiver: "u-blox on /dev/ttyAMA0, 3D fix, 9 of
+// 14 satellites, ±4 m, 30.12346 -97.65432, PPS".
+func gnssLine(g status.GNSS) string {
+	parts := []string{strings.TrimSpace(g.Driver + " on " + g.Device)}
+	if g.Fix == "none" {
+		parts = append(parts, "no fix")
+	} else {
+		parts = append(parts, strings.ToUpper(g.Fix)+" fix")
+	}
+	if g.SatsSeen > 0 {
+		parts = append(parts, fmt.Sprintf("%d of %d satellites", g.SatsUsed, g.SatsSeen))
+	}
+	if g.Lat != nil && g.Lon != nil {
+		if g.HAccM > 0 {
+			parts = append(parts, fmt.Sprintf("±%.0f m", g.HAccM))
+		}
+		parts = append(parts, fmt.Sprintf("%.5f %.5f", *g.Lat, *g.Lon))
+	}
+	if g.PPS {
+		parts = append(parts, "PPS")
+	}
+	return strings.Join(parts, ", ")
 }

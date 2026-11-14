@@ -263,3 +263,33 @@ func TestRecordRadios(t *testing.T) {
 		}
 	}
 }
+
+// A record carries the profile's links compactly; bad entries are refused.
+func TestRecordLinks(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	r := rec("ea:67:61:6f:bc:8b", 7, 1)
+	r.Links = []string{LinkEntry("2g", 6, 20), LinkEntry("5g", 149, 80), LinkEntry("s1g", 26, 2)}
+	pkt, err := Seal(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(k, pkt)
+	if err != nil || len(got.Links) != 3 {
+		t.Fatalf("open: %+v %v", got, err)
+	}
+	if b, c, w, ok := ParseLinkEntry(got.Links[1]); !ok || b != "5g" || c != 149 || w != 80 {
+		t.Errorf("second link = %q", got.Links[1])
+	}
+	plain, _ := Seal(k, rec("ea:67:61:6f:bc:8b", 7, 1))
+	if extra := len(pkt) - len(plain); extra > 50 {
+		t.Errorf("three links add %d bytes to a record", extra)
+	}
+	for _, bad := range [][]string{{"5g/149"}, {"5g/x/80"}, {"/1/20"}, {"a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1", "a/1/1"}} {
+		r := rec("ea:67:61:6f:bc:8b", 7, 3)
+		r.Links = bad
+		pkt, _ := Seal(k, r)
+		if _, err := Open(k, pkt); !errors.Is(err, ErrInvalid) {
+			t.Errorf("links %q accepted: %v", bad, err)
+		}
+	}
+}

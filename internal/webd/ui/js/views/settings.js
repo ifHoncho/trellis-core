@@ -3,7 +3,7 @@ import { h } from '../dom.js';
 import { get, put, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill } from '../ui.js';
-import { bandName, since, duration, count, meshLinks, meshRadios, carried, fewerRadios } from '../fmt.js';
+import { bandName, since, duration, count, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
 import { ensureConfig, cfg, saveBar, saveProfile, loadConfig } from '../config.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
@@ -246,6 +246,30 @@ function accessSection(d, st) {
   ];
 }
 
+// timePanel: how the node keeps time, and its GNSS receiver (roadmap G1).
+function timePanel(st) {
+  const c = st.clock || {}, g = st.gnss || {};
+  const clock = c.service !== 'chrony'
+    ? h('span.warn', c.note || 'not kept by Trellis')
+    : c.synced
+      ? h('span', h('span.ok', 'synchronised'), ` to ${c.source} · stratum ${c.stratum} · offset ${c.offset_ms.toFixed(1)} ms`)
+      : h('span', h('span.warn', 'not synchronised'), c.note ? ` · ${c.note}` : '');
+  const rows = [
+    ['Clock', clock],
+    ['Serves', c.serving ? 'time to the mesh' : h('span.faint', 'no time')],
+  ];
+  if ((c.mesh_servers || []).length) rows.push(['Follows', c.mesh_servers.join(', ')]);
+  rows.push(['GNSS', g.receiver
+    ? h('span', h('span', { class: g.fix === 'none' ? 'warn' : 'ok' }, gnssShort(g)), h('span.faint', `  ·  ${[g.driver, g.device].filter(Boolean).join(' on ')}`))
+    : h('span.faint', g.note || 'no receiver')]);
+  if (g.lat != null && g.lon != null) {
+    rows.push(['Position', h('span.mono', `${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}` + (g.alt_m != null ? ` · ${Math.round(g.alt_m)} m` : ''))]);
+  }
+  if (g.receiver) rows.push(['Time pulse', g.pps ? h('span.ok', 'PPS: sub-millisecond time') : h('span.faint', 'no PPS: time from the receiver’s messages, about a tenth of a second')]);
+  if (g.receiver && g.note) rows.push(['', h('span.faint', g.note)]);
+  return panel('Time and position', { meta: 'chrony and gpsd' }, kv(rows));
+}
+
 function systemSection(d, st) {
   const ui = (state.ui.system ||= { report: null, busy: false });
   const doctor = async () => {
@@ -266,6 +290,7 @@ function systemSection(d, st) {
         ['Gossip', `${count(st.gossip.sent)} sent · ${count(st.gossip.received)} received · ${st.gossip.auth_failed} refused`],
         ['meshd', `pid ${st.process.pid} · ${st.process.open_files} files · ${st.process.goroutines} goroutines`],
       ])),
+    timePanel(st),
     panel('Control loop', { flush: true, meta: st.reconcile.converged ? `settled · pass ${count(st.reconcile.passes)} took ${st.reconcile.last_duration}` : 'still applying changes',
       },
       table({ stack: true, key: (r) => r.name }, [

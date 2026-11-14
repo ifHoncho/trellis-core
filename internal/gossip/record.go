@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -55,10 +56,48 @@ type Record struct {
 	// of the mesh which links this node could follow a profile change to; a
 	// node that sends none (an older version) is simply not known.
 	Radios []string `json:"mr,omitempty"`
+	// Links are the mesh profile's links as this node runs them, in the
+	// profile's order: "band/channel/width" ("5g/149/80"). Nodes compare
+	// them with their own: two nodes whose profiles differ on a link meet
+	// badly or not at all on it. Absent from older versions.
+	Links []string `json:"lk,omitempty"`
+	// Time says whether the node serves time to the mesh (roadmap G1):
+	// TimeGNSS when its clock follows its own GNSS receiver, TimeServer
+	// when it serves time from another source; empty when it does not
+	// serve (no chrony, or an older version).
+	Time string `json:"tm,omitempty"`
 }
+
+// Time values.
+const (
+	TimeGNSS   = "gnss"
+	TimeServer = "ntp"
+)
 
 // MaxRadios bounds the radios one record lists.
 const MaxRadios = 8
+
+// MaxLinkEntries bounds the links one record lists.
+const MaxLinkEntries = 10
+
+// LinkEntry is one Links entry.
+func LinkEntry(band string, channel, widthMHz int) string {
+	return fmt.Sprintf("%s/%d/%d", band, channel, widthMHz)
+}
+
+// ParseLinkEntry is the inverse of LinkEntry.
+func ParseLinkEntry(e string) (band string, channel, widthMHz int, ok bool) {
+	parts := strings.Split(e, "/")
+	if len(parts) != 3 {
+		return "", 0, 0, false
+	}
+	c, err1 := strconv.Atoi(parts[1])
+	w, err2 := strconv.Atoi(parts[2])
+	if parts[0] == "" || err1 != nil || err2 != nil {
+		return "", 0, 0, false
+	}
+	return parts[0], c, w, true
+}
 
 // RadioEntry is a radio's bands as one Radios entry.
 func RadioEntry(bands []string) string { return strings.Join(bands, "+") }
@@ -165,6 +204,17 @@ func (r *Record) validate() error {
 	for _, e := range r.Radios {
 		if e == "" || !printable(e, 24) {
 			return fmt.Errorf("radio bands %q not short printable text", e)
+		}
+	}
+	if r.Time != "" && r.Time != TimeGNSS && r.Time != TimeServer {
+		return fmt.Errorf("time %q is not %s or %s", r.Time, TimeGNSS, TimeServer)
+	}
+	if len(r.Links) > MaxLinkEntries {
+		return fmt.Errorf("%d links listed, over the limit of %d", len(r.Links), MaxLinkEntries)
+	}
+	for _, e := range r.Links {
+		if _, _, _, ok := ParseLinkEntry(e); !ok || !printable(e, 24) {
+			return fmt.Errorf("link %q is not band/channel/width", e)
 		}
 	}
 	if !printable(r.Version, 64) || !printable(r.IDSource, 16) {

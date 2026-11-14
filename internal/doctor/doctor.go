@@ -112,6 +112,7 @@ func Run(opts Options) *Report {
 	checkListeners(r)
 	checkRadios(r, opts)
 	checkRegulatory(r)
+	checkTime(r)
 	checkNetworkManagers(r)
 	checkConfigs(r, opts)
 	checkMeshd(r, opts)
