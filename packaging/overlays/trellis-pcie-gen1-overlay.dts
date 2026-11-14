@@ -1,0 +1,27 @@
+// Raspberry Pi 4 / CM4 (BCM2711): train the PCIe link at Gen1 (2.5 GT/s,
+// 2 Gb/s) instead of Gen2 (5 GT/s).
+//
+// Why: an MT7915/MT7916 card fitted through an M.2 adapter can make the
+// kernel panic within a second of mt7915e loading at Gen2 ("Asynchronous
+// SError Interrupt" in mt76_mmio_rr: an MMIO read the card never
+// completed). At Gen1 it runs. 2 Gb/s is more than the card moves in
+// practice.
+//
+// scripts/install-mt7915e-dkms.sh compiles and enables it on a BCM2711 board
+// with an MT7915/MT7916 card (--pcie-gen2 disables it again):
+//   dtc -@ -I dts -O dtb -o /boot/firmware/overlays/trellis-pcie-gen1.dtbo \
+//       trellis-pcie-gen1-overlay.dts
+//   config.txt: dtoverlay=trellis-pcie-gen1
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711";
+
+	fragment@0 {
+		target = <&pcie0>;
+		__overlay__ {
+			max-link-speed = <1>;
+		};
+	};
+};

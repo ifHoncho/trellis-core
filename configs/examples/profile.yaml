@@ -1,0 +1,50 @@
+# Trellis mesh profile (schema v0). One per mesh; identical on every node.
+# Holds the mesh secret: keep it private. Generate a fresh one with
+#   meshctl profile new --name alpha > /etc/trellis/profile.yaml
+schema: 0
+name: alpha                      # human name
+mesh_id: trellis-alpha           # 802.11s mesh ID on the air (max 32 bytes); defaults to name
+sae_passphrase: change-me-to-a-long-random-passphrase
+
+regulatory:
+  mode: country                  # country | unrestricted
+                                 # unrestricted: no channel, width or power limits from regulation
+                                 # (architecture §5.1); trellis crda answers the kernel, installed by
+                                 # scripts/install-regulatory.sh (make deploy does it; one reboot).
+                                 # Lawful only with frequency authorization.
+  country: US                    # ISO 3166-1 alpha-2: the node's regulatory domain (mesh and client AP)
+
+radio:
+  band: 5g                       # 2g | 5g | 6g | s1g (Wi-Fi HaLow, below 1 GHz)
+  channel: 149                   # any channel the radios have; meshd reports one the regulatory
+                                 # domain forbids. Radar (DFS) channels work only where the driver
+                                 # and wpa_supplicant support radar detection on a mesh point.
+  width: 20                      # 20 | 40 | 80 | 160 MHz (2.4 GHz: 20 | 40); a radio that cannot
+                                 # run it narrows the link, and status shows what runs
+# More mesh links, each on its own radio (mesh1, mesh2, ...), usually one per
+# band: batman-adv uses every link and picks the fastest path to each node
+# (architecture §5.2). A node runs the links it has radios
+# for; on the others it meshes without them. Two links must not share a
+# channel.
+# links:
+#   - {band: 2g, channel: 6}
+#   - {band: s1g, channel: 26, width: 2}
+#
+# A HaLow link has band s1g. Its channel numbers depend on the width and on
+# regulatory.country: every country Morse Micro's software has a plan for
+# (the Americas, Europe, India, Japan, Korea, Singapore, Australia, New
+# Zealand and others; GET /v1/channels lists them). A node needs a HaLow
+# radio, its driver loaded for the same country, and Morse Micro's
+# wpa_supplicant_s1g (scripts/install-halow-tools.sh). Widths: 1, 2
+# (default), 4 or 8 MHz. In the US: at 1 MHz odd 1 to 51; at 2 MHz 2, 6 ...
+# 50; at 4 MHz 8, 16 ... 48; at 8 MHz 12, 28, 44; centre 902 MHz + channel / 2.
+# (Older profiles name one more link "radio2"; that is
+# still read.)
+
+prefix: 10.73.0.0/16             # the mesh's flat IPv4 network (nodes are 10.73.N.1)
+
+batman:
+  routing_algo: BATMAN_V
+  orig_interval_ms: 1000
+  min_version: "2024.0"          # meshd refuses to start below this (multicast packet type)
+  pinned_version: "2026.3"       # every node should run exactly this; others get a warning

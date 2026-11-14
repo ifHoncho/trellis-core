@@ -1,0 +1,108 @@
+// Seeed Wio-WM6108 (Quectel FGH100M-H, Morse Micro MM6108 Wi-Fi HaLow) in a
+// Seeed WM1302 Pi HAT, on a Raspberry Pi with a BCM283x/BCM2711 SoC and the
+// 40-pin header (Pi 3, Pi 4, CM4 on a carrier that has the header). Not for
+// the Pi 5, whose header pins belong to a different GPIO controller (RP1).
+//
+// An SPI device can't be discovered: this tells the kernel that the chip is
+// on SPI0, chip select 0, and which header pins carry its other signals.
+// The HAT's wiring (Seeed's schematics, as listed in Morse Micro's forum
+// thread "Build Thread: HaLow for Raspberry Pi OS"):
+//
+//   signal      GPIO  header pin  mini-PCIe pin
+//   SPI clock    11      23          45
+//   SPI MOSI     10      19          49
+//   SPI MISO      9      21          47
+//   SPI CS        8      24          51     (CE0)
+//   interrupt     5      29          10     active low
+//   reset        17      11          22     active low
+//   wake         23      16          33     host to chip
+//   busy         24      18          31     chip to host
+//
+// Pulls: the driver pulses reset and then leaves it floating, relying on the
+// module's own pull-up, so the SoC's default pull-down on GPIO17 is turned
+// off. The interrupt is active low and gets a pull-up; busy a pull-down.
+//
+// SPI clock: 20 MHz. Measured with the firmware download as the test: 15, 20, 25 and 31.25 MHz work, 41.7 and 50 MHz fail (the
+// chip's limit is 50 MHz; the HAT and its socket don't carry it). 10 MHz
+// and below fail for a different reason: the driver turns a 40 us gap
+// between data blocks into clock bytes, and the chip needs a number of
+// bytes whatever the clock (50 were too few, 75 enough). At 10 MHz and
+// 4 MHz it works once the driver is loaded with
+// spi_inter_block_delay_bytes=100 (install-wm6108-halow.sh --spi-hz sets
+// that below 20 MHz).
+// The "speed" parameter changes the clock here; the driver's
+// spi_clock_speed module parameter overrides it without a reboot:
+//   dtoverlay=trellis-wm6108-spi,speed=25000000
+//
+// scripts/install-wm6108-halow.sh compiles and enables it:
+//   dtc -@ -I dts -O dtb -o /boot/firmware/overlays/trellis-wm6108-spi.dtbo \
+//       trellis-wm6108-spi-overlay.dts
+//   config.txt: dtoverlay=trellis-wm6108-spi
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	// SPI0 with one chip select (GPIO8); GPIO7, the usual second one, is
+	// left alone.
+	fragment@0 {
+		target = <&spi0_cs_pins>;
+		__overlay__ {
+			brcm,pins = <8>;
+		};
+	};
+
+	fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			cs-gpios = <&gpio 8 1>;
+			status = "okay";
+
+			wm6108: mm6108@0 {
+				compatible = "morse,mm610x-spi";
+				reg = <0>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&wm6108_pins>;
+				// The driver reads these as plain GPIO numbers.
+				reset-gpios = <&gpio 17 0>;
+				power-gpios = <&gpio 23 0>, <&gpio 24 0>;   // wake, busy
+				spi-irq-gpios = <&gpio 5 0>;
+				spi-max-frequency = <20000000>;
+				status = "okay";
+			};
+		};
+	};
+
+	// The generic userspace SPI devices would claim the chip selects.
+	fragment@2 {
+		target = <&spidev0>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@3 {
+		target = <&spidev1>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	fragment@4 {
+		target = <&gpio>;
+		__overlay__ {
+			wm6108_pins: wm6108_pins {
+				brcm,pins = <5 17 23 24>;      // irq, reset, wake, busy
+				brcm,function = <0 0 0 0>;     // inputs; the driver sets directions
+				brcm,pull = <2 0 0 1>;         // up, none, none, down
+			};
+		};
+	};
+
+	__overrides__ {
+		speed = <&wm6108>,"spi-max-frequency:0";
+	};
+};

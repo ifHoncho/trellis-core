@@ -1,0 +1,44 @@
+# Trellis node configuration (schema v0). One per node.
+# Generate a skeleton with:  meshctl node new --callsign node-1 > /etc/trellis/node.yaml
+# The web UI and the API rewrite this file when a setting is changed there: only settings
+# that differ from the defaults are then listed, and comments are not kept.
+schema: 0
+callsign: node-1                 # DNS label: lowercase letters, digits, hyphens
+node_id: 0                       # 1-254 to pin; 0 = automatic (derived from the node MAC; collisions are resolved over gossip)
+profile: /etc/trellis/profile.yaml
+
+radios:
+  roles:
+    mesh: auto                   # auto | disabled | {radio: "mac:00:c0:ca:..."} | {port: "usb:1-1.2"}
+    ap: auto                     # same forms
+    mesh2: auto                  # the profile's second mesh link (links, first entry); same forms.
+                                 # mesh3, mesh4, ... for the links after it
+  devices: []
+  # devices:
+  #   - match: {port: "usb:1-1.2"}         # or {fingerprint: "mac:..."}
+  #     label: "Alfa AWUS036ACM"
+  #     max_power_dbm: 23                  # override the database value used for ranking
+  #     ignore: false
+
+ports: []
+# ports:
+#   - {name: eth0, role: auto}   # auto | wan | client | mesh
+#   - {name: eth1, role: mesh}   # wired backhaul: eth1 becomes a batman-adv hard interface
+
+ap:
+  enabled: true
+  band: 5g
+  # ssid defaults to the callsign; passphrase is generated on first start
+
+gateway:
+  mode: auto                     # auto: share a healthy uplink with the mesh | off: only use other nodes' gateways
+  # wan: eth0                    # default: a port with role wan, else the system's default route
+  # probe_targets: [1.1.1.1, 8.8.8.8, 9.9.9.9]
+  # down_mbit: 20                # announced uplink capacity
+  # up_mbit: 5
+
+web:
+  wan_access: false              # true: also serve the web UI on the node's uplink network (a bench); see docs/api.md
+
+mesh_mtu: 1560                   # underlay MTU requested on mesh0 (1500 + batman-adv headers)
+allow_old_batman: false          # bench only: run with a batman-adv older than the profile minimum

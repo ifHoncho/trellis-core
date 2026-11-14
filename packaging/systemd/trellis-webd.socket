@@ -1,0 +1,16 @@
+[Unit]
+Description=Trellis web UI and API sockets (HTTPS 443, HTTP 80)
+
+# systemd binds the ports and hands them to webd, so webd itself needs no
+# privilege to listen on them and can run with no network access of its
+# own (see trellis-webd.service). webd refuses connections from outside
+# the mesh prefix unless node.yaml sets web.wan_access.
+[Socket]
+ListenStream=443
+ListenStream=80
+BindIPv6Only=both
+NoDelay=true
+Service=trellis-webd.service
+
+[Install]
+WantedBy=sockets.target

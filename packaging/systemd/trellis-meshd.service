@@ -1,0 +1,33 @@
+[Unit]
+Description=Trellis mesh daemon (meshd)
+After=network-pre.target systemd-modules-load.service
+# Start after the system's network managers, so that the auto-port check
+# (r_ports.go) sees which Ethernet ports they configure instead of claiming
+# one they are about to set up. Ordering only: neither is required.
+After=NetworkManager.service systemd-networkd.service
+Wants=network-pre.target
+# meshd owns its interfaces; nothing else should configure them.
+Before=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/trellis meshd --node /etc/trellis/node.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=30
+# meshd runs as root in this milestone; capability and sandbox hardening is
+# roadmap M8. The web UI runs unprivileged (trellis-webd.service); cotd will
+# too (M6).
+ProtectSystem=full
+# /etc/trellis: configuration changes made through the API (web UI,
+# meshctl) are written to node.yaml and profile.yaml there.
+ReadWritePaths=/var/lib/trellis /run/trellis /etc/trellis -/etc/NetworkManager/conf.d -/etc/systemd/network
+RuntimeDirectory=trellis
+RuntimeDirectoryMode=0755
+StateDirectory=trellis
+Environment=GOTRACEBACK=single
+
+[Install]
+WantedBy=multi-user.target

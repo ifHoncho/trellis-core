@@ -1,0 +1,13 @@
+diff --git a/Makefile b/Makefile
+index fef139b..b8c2175 100644
+--- a/Makefile
++++ b/Makefile
+@@ -13,7 +13,7 @@ override MORSE_VERSION = "0-rel_mm6108_2_2_2_2026_Sep_23"
+ USING_CLANG := $(shell $(CC) -v 2>&1 | grep -c "clang version")
+ 
+ ccflags-$(CONFIG_MORSE_USER_ACCESS) += "-DCONFIG_MORSE_USER_ACCESS"
+-ccflags-y += $(DEBFLAGS) -Wall -Werror
++ccflags-y += $(DEBFLAGS) -Wall
+ ccflags-y += -Wno-address-of-packed-member
+ ifeq ($(USING_CLANG), 0)
+ ccflags-y += -Wno-stringop-truncation -Wmaybe-uninitialized -Wno-missing-attributes

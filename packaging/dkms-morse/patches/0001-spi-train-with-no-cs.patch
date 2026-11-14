@@ -1,0 +1,47 @@
+diff --git a/spi.c b/spi.c
+index 3e2bec0..5d54322 100644
+--- a/spi.c
++++ b/spi.c
+@@ -299,18 +299,30 @@ static int morse_spi_xfer(struct morse_spi *mspi, unsigned int len)
+ static void morse_spi_initsequence(struct morse_spi *mspi)
+ {
+ 	struct spi_device *spi = mspi->spi;
++#ifdef SPI_CONTROLLER_ENABLE_CS_GPIOD
++	const u32 cs_mode = SPI_CS_HIGH;
++#else
++	/*
++	 * Trellis: a kernel without Morse Micro's SPI core patch ("spi: support control of SPI
++	 * CS pin on initialisation") drives a GPIO chip select by its logical state only, so
++	 * SPI_CS_HIGH changes nothing there and the training burst would go out with the chip
++	 * selected. SPI_NO_CS makes the core leave the line alone, which keeps it at its idle
++	 * (deselected, high) level for the burst: the same result, with no kernel patch.
++	 */
++	const u32 cs_mode = SPI_NO_CS;
++#endif
+ 
+-	spi->mode |= SPI_CS_HIGH;
++	spi->mode |= cs_mode;
+ 	if (spi_setup(spi) != 0) {
+ 		/* Just warn; most cards work without it. */
+ 		dev_warn(&spi->dev, "can't change chip-select polarity\n");
+-		spi->mode &= ~SPI_CS_HIGH;
++		spi->mode &= ~cs_mode;
+ 	} else {
+ 		/* We will send only 0xFF for training */
+ 		memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
+ 		morse_spi_xfer(mspi, 18);
+ 
+-		spi->mode &= ~SPI_CS_HIGH;
++		spi->mode &= ~cs_mode;
+ 		if (spi_setup(spi) != 0) {
+ 			/* Wot, we can't get the same setup we had before? */
+ 			dev_err(&spi->dev, "can't restore chip-select polarity\n");
+@@ -1576,8 +1588,6 @@ static int morse_spi_probe(struct spi_device *spi)
+ 	 */
+ #ifdef SPI_CONTROLLER_ENABLE_CS_GPIOD
+ 	spi->controller->flags |= SPI_CONTROLLER_ENABLE_CS_GPIOD;
+-#else
+-#warning "SPI_CONTROLLER_ENABLE_CS_GPIOD macro not defined"
+ #endif
+ #endif
+ 	morse_spi_xfer_init(mspi);
