@@ -235,9 +235,15 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body []byte
+	// A release package is the one large request (megabytes, slow over a
+	// mesh): it may be bigger, and take longer.
+	limit, wait := int64(maxRequest), 25*time.Second
+	if r.Method == http.MethodPost && path == "/upgrade" {
+		limit, wait = api.MaxPackage, 2*time.Minute
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		var err error
-		if body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequest)); err != nil {
+		if body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, limit)); err != nil {
 			writeError(w, http.StatusRequestEntityTooLarge, "the request is too large")
 			return
 		}
@@ -245,7 +251,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 			body = []byte{}
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
 	code, ctype, data, err := s.meshd.Raw(ctx, r.Method, path, r.URL.RawQuery, body)
 	if err != nil {

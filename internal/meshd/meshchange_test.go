@@ -2,6 +2,7 @@ package meshd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -116,24 +117,81 @@ func TestMeshChangeOffer(t *testing.T) {
 	}
 }
 
-// A change accepted before a restart is still due after it.
+// A change accepted before a restart is still due after it, at its moment
+// when the clock can be believed; at once when it cannot: when it is not
+// synchronised (a node without an RTC starts from a stale time and would
+// otherwise wait on the old settings, cut off from the mesh that would set
+// its clock), or when the switch seems further away than it was when the
+// change arrived (the clock went back).
 func TestMeshChangeSurvivesRestart(t *testing.T) {
-	d, dir, key := meshChangeDaemon(t)
-	from := &net.UDPAddr{IP: net.ParseIP("10.73.2.1")}
-	at := time.Now().Add(10 * time.Minute)
-	_ = d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 4, ApplyAtMS: at.UnixMilli(), Profile: profileAt(t, 40, 4, nil)}), from)
-	d.meshChanges.timer.Stop()
+	synced := clockSynced
+	t.Cleanup(func() { clockSynced = synced })
+	for _, c := range []struct {
+		name   string
+		sync   bool
+		edit   func(m map[string]any, at time.Time) // the kept file, as a restart finds it
+		atOnce bool
+	}{
+		{"synchronised clock", true, nil, false},
+		{"clock not synchronised", false, nil, true},
+		{"clock a day behind, though synchronised", true, func(m map[string]any, at time.Time) {
+			m["apply_at"] = at.Add(24 * time.Hour).Format(time.RFC3339Nano)
+		}, true},
+		{"clock a little behind", true, func(m map[string]any, at time.Time) {
+			m["apply_at"] = at.Add(20 * time.Second).Format(time.RFC3339Nano)
+		}, false},
+		{"kept by an older version, further than any delay", true, func(m map[string]any, at time.Time) {
+			delete(m, "wait_ms")
+			m["apply_at"] = time.Now().Add(meshChangeMax + 5*time.Minute).Format(time.RFC3339Nano)
+		}, true},
+		{"kept by an older version, within the longest delay", true, func(m map[string]any, at time.Time) {
+			delete(m, "wait_ms")
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clockSynced = func() bool { return c.sync }
+			d, dir, key := meshChangeDaemon(t)
+			from := &net.UDPAddr{IP: net.ParseIP("10.73.2.1")}
+			at := time.Now().Add(10 * time.Minute)
+			_ = d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 4, ApplyAtMS: at.UnixMilli(), Profile: profileAt(t, 40, 4, nil)}), from)
+			d.meshChanges.timer.Stop()
+			kept := filepath.Join(dir, "state", meshChangeFile)
+			if c.edit != nil {
+				var m map[string]any
+				b, err := os.ReadFile(kept)
+				if err != nil || json.Unmarshal(b, &m) != nil {
+					t.Fatalf("kept change: %s %v", b, err)
+				}
+				if w, _ := m["wait_ms"].(float64); w < float64((9 * time.Minute).Milliseconds()) {
+					t.Fatalf("the wait was not kept: %v", m["wait_ms"])
+				}
+				c.edit(m, at)
+				b, _ = json.Marshal(m)
+				if err := os.WriteFile(kept, b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	d2, err := New(Options{NodePath: filepath.Join(dir, "node.yaml"), ProfilePath: filepath.Join(dir, "profile.yaml"),
-		StateDir: filepath.Join(dir, "state"), RunDir: filepath.Join(dir, "run"), SysRoot: filepath.Join(dir, "sys"), Log: d.log, Version: "test"})
-	if err != nil {
-		t.Fatal(err)
+			d2, err := New(Options{NodePath: filepath.Join(dir, "node.yaml"), ProfilePath: filepath.Join(dir, "profile.yaml"),
+				StateDir: filepath.Join(dir, "state"), RunDir: filepath.Join(dir, "run"), SysRoot: filepath.Join(dir, "sys"), Log: d.log, Version: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			d2.loadMeshChange()
+			if !c.atOnce {
+				if m := d2.meshChangeState(); m == nil || m.Rev != 4 || m.State != "pending" || time.Until(m.ApplyAt) < 5*time.Minute {
+					t.Fatalf("after a restart: %+v", m)
+				}
+				d2.meshChanges.timer.Stop()
+				return
+			}
+			waitFor(t, "the switch at once", func() bool { m := d2.meshChangeState(); return m != nil && m.State == "applied" })
+			p, err := config.LoadProfile(filepath.Join(dir, "profile.yaml"))
+			if err != nil || p.Revision != 4 || p.Radio.Width != 40 {
+				t.Fatalf("installed profile: %+v %v", p, err)
+			}
+		})
 	}
-	d2.loadMeshChange()
-	if c := d2.meshChangeState(); c == nil || c.Rev != 4 || c.State != "pending" || c.ApplyAt.Unix() != at.Unix() {
-		t.Fatalf("after a restart: %+v", c)
-	}
-	d2.meshChanges.timer.Stop()
 }
 
 // The sending side: what a dry run says, and what is refused.

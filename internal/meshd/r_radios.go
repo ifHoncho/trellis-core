@@ -116,7 +116,7 @@ func (r *radioReconciler) meshLinkSetup(rd *radio.Radio, ifname string, rp confi
 		if have, err := os.ReadFile(filepath.Join(d.opts.SysRoot, "module", "morse", "parameters", "country")); err == nil {
 			if got := strings.TrimSpace(string(have)); got != "" && !strings.EqualFold(got, want) {
 				warn("error", "halow-country", "the HaLow driver on %s is loaded for country %s, but the mesh profile says %s: its channels will not match the mesh's. "+
-					"Rerun scripts/install-wm6108-halow.sh --country %s on this node and reboot it", rd.Phy, got, want, want)
+					"Rerun sudo /usr/share/trellis/scripts/install-wm6108-halow.sh --country %s on this node and reboot it", rd.Phy, got, want, want)
 			}
 		}
 	} else if rd.Wiphy != nil {

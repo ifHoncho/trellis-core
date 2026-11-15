@@ -18,6 +18,13 @@ func TestRender(t *testing.T) {
 			t.Errorf("missing %q in\n%s", want, out)
 		}
 	}
+	// The warm-up broadcasts are dropped as they come in from the mesh, and
+	// only there.
+	from := out[strings.Index(out, "chain from_mesh"):]
+	from = from[:strings.Index(from, "}")]
+	if !strings.Contains(from, `ether type 0x88b5 counter drop comment "broadcast-warm-up"`) || strings.Count(out, "0x88b5") != 1 {
+		t.Errorf("warm-up drop not (only) in from_mesh:\n%s", out)
+	}
 	if strings.Contains(out, "allowed-broadcast") {
 		t.Error("no broadcast allow-list expected")
 	}
@@ -62,5 +69,31 @@ func TestGossipFilterAndRouting(t *testing.T) {
 	r = Routing{AnycastIf: "anycast0"}.Render()
 	if strings.Contains(r, "ct mark set") || strings.Contains(r, "masquerade") {
 		t.Errorf("client-only routing table wrong:\n%s", r)
+	}
+}
+
+func TestRenderFirewall(t *testing.T) {
+	if strings.Contains(Routing{AnycastIf: "anycast0", Prefix: "10.73.0.0/16"}.Render(), "hook input") {
+		t.Fatal("the routing table has an input chain")
+	}
+	out := Input{Inside: []string{"lo", "br-mesh", "anycast0"}, TCP: []int{22, 443}, UDP: []int{51820}}.Render()
+	for _, want := range []string{
+		"table inet " + FirewallTable + "\ndelete table inet " + FirewallTable + "\n",
+		"type filter hook input priority filter; policy accept;",
+		`iifname { "lo", "br-mesh", "anycast0" } accept`,
+		"ct state established,related accept",
+		"meta l4proto { icmp, ipv6-icmp } accept",
+		"udp dport { 68, 546 } accept",
+		"tcp dport { 22, 443 } accept",
+		"udp dport { 51820 } accept",
+		`counter drop comment "` + RuleWANClosed + `"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	// The mesh side is accepted before anything is dropped.
+	if strings.Index(out, `iifname { "lo"`) > strings.Index(out, "counter drop") {
+		t.Error("the mesh side is not accepted first")
 	}
 }

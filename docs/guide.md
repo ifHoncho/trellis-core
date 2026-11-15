@@ -5,24 +5,28 @@ How to put a Trellis node together, set it up from a phone, and run a mesh.
 ## 1. Install Trellis on a node
 
 You need a board and radios that meet [hardware.md](hardware.md), running
-Debian, Ubuntu or Raspberry Pi OS. As root, from a copy of this repository
-and the binary for the board (`make cross` builds them into `dist/`):
+Debian, Ubuntu or Raspberry Pi OS. Trellis comes as two packages: `trellis`
+for the board's architecture (`arm64` for most current boards on a 64-bit
+OS, `armhf` for 32-bit ones, `amd64` for PCs) and `trellis-batman-adv-dkms`,
+the batman-adv release every node runs. Take them from a release, or build
+them from this repository with `make deb` (into `dist/deb/`). On the node:
 
 ```sh
-sudo scripts/install-batman-adv-dkms.sh               # the batman-adv release Trellis pins
-sudo scripts/install-node.sh dist/trellis-linux-arm64  # binary, services, udev rules
-sudo scripts/install-regulatory.sh                     # Trellis answers the kernel's regulatory requests
-meshctl doctor                                         # checks the kernel, radios and helpers
+sudo apt install ./trellis_*_arm64.deb ./trellis-batman-adv-dkms_*_all.deb
+sudo meshctl doctor      # checks the kernel, batman-adv, radios and helpers
+sudo reboot
 ```
 
-Reboot once (the kernel picks up the regulatory change at boot), then start
-the node:
+`apt` brings in what Trellis needs (wpa_supplicant, hostapd, dnsmasq,
+nftables, chrony). The batman-adv package builds its module for the node's
+kernel, and again after every kernel update; that needs the kernel's
+headers, and `meshctl doctor` says so when they are missing. After the
+reboot the node runs, and the kernel takes its regulatory rules from
+Trellis.
 
-```sh
-sudo systemctl enable --now trellis-meshd
-```
-
-Installing never overwrites an existing configuration.
+Installing, upgrading and removing never touch a node's configuration,
+mesh profile or identity (`/etc/trellis`, `/var/lib/trellis`); only
+`apt purge trellis` deletes them.
 
 ## 2. Set the node up from a phone
 
@@ -57,9 +61,17 @@ on any node (Settings → Mesh profile) and choose **Every node**. The node
 sends the change to all the others, shows who has it, and every node
 switches at the same moment, a minute later by default. A node that was
 out of reach takes the change when it next hears one that has it, as long
-as they still share a link. The review before sending names any node that
-cannot follow and any node whose regulatory mode would change.
+as they still share a link; nodes left on a channel the mesh has left go
+looking for it (§6). The review before sending names any node that cannot
+follow, any node whose regulatory mode would change, and the nodes that
+are off or out of reach and will miss it.
 **This node only** is there for experiments on one node.
+
+To keep the mesh together, send changes when every node is on and in
+reach, and from one place at a time. If two groups each change the mesh
+while apart, they reconcile when they meet: the later change is kept
+everywhere, and the node that found the conflict keeps the other in a
+file and says so under Alerts, so you can send it again.
 
 ## 4. Connect phones and other devices
 
@@ -127,7 +139,12 @@ channel is at every node right now, and after a survey, how busy every
 channel of the band was at the busiest node. **Survey channels** has every
 node listen across its links' bands for a few seconds. When a channel is
 clearly better, one button moves the link there on every node, as a
-mesh-wide change.
+mesh-wide change. A node, or a group of nodes, that was off during the
+move comes back on the old channel and hears few of the nodes it knew.
+After a minute it looks for the rest on the other channels and bands, pays
+a short visit where it hears its mesh, and takes the new profile there
+(Alerts shows the visit). A HaLow link cannot be looked for this way: a
+node whose only link is HaLow needs the profile again by hand.
 
 Higher bands are faster but reach less far, and a link only works if both
 ends hear each other well enough. When a link is established but cannot
@@ -135,7 +152,20 @@ carry traffic (one end hears the other too weakly), the node says so under
 Alerts: move the nodes closer, use a narrower width, or let them meet on a
 band that reaches further.
 
-## 7. Regulatory modes
+## 7. From outside the mesh
+
+A node set up by Trellis is closed to everything outside the mesh: from
+the network its uplink is plugged into, it answers only SSH (port 22),
+ping, and the web UI if you let the UI answer there (Settings → Access →
+"Also on the node's uplink network"). Settings → Access → **From outside
+the mesh** turns SSH off, opens further ports (`tcp/5201`), or opens the
+node altogether. The mesh, the node's Wi-Fi and device ports, and the
+internet it shares are never affected.
+
+A node upgraded from a release without this firewall stays open until you
+close it there; the Alerts page reminds you.
+
+## 8. Regulatory modes
 
 Each mesh profile sets how the radios are limited:
 
@@ -145,11 +175,55 @@ Each mesh profile sets how the radios are limited:
   without one is unlawful in most countries.
 
 The mode in force is always shown (Overview, Settings → System,
-`meshctl status`), with a notice while unrestricted mode is on.
+`meshctl status`), with a banner while unrestricted mode is on.
+**Dismiss** shrinks the banner, in that browser, to a triangle marked U in
+the corner, which shows the warning when you point at it or tap it; it
+comes back in full the next time the mesh enters unrestricted mode.
 
-## 8. When something is wrong
+## 9. Upgrading
 
-- **Alerts** names the problem and what to do about it.
+One file upgrades a node: the `trellis` package of the new release, for
+the node's architecture. In the web UI: Settings → System → Software,
+**Choose a release file**; the node says what it would do before you
+confirm. Or on the node:
+
+```sh
+sudo meshctl upgrade trellis_0.4.0_arm64.deb
+```
+
+- The package must be signed with a release key the node trusts: the keys
+  built into the version it runs, and any you put in
+  `/etc/trellis/release-keys/NAME.pub`. `--check` only checks the file.
+- Before installing, the node notes how healthy it is and keeps the
+  version it runs, its configuration, mesh profile and identity.
+- After installing, it checks itself for up to three minutes: `meshd` on
+  the new version, nothing failing that worked before, a mesh peer back if
+  it had one, the web page answering. If that does not hold, it puts the
+  old version and its configuration back, and says why.
+- The upgrade does not depend on your connection to the node: it carries
+  on if the session drops, and a node that loses power in the middle
+  finishes, or goes back, when it next starts. If one is ever left
+  unfinished (`meshctl upgrade --status`, or `meshctl doctor`, says so),
+  `sudo systemctl start trellis-upgrade-resume` finishes it with the
+  version it started from, even when the new one does not run.
+- The Software panel, and `meshctl upgrade --status`, show how the last
+  upgrade ended; **Go back** there, or `meshctl upgrade --rollback`,
+  returns to the version before it and keeps the configuration as it is
+  now (`--restore-config` also puts back the configuration from before
+  the upgrade).
+
+Upgrade every node of a mesh to the same release. Nodes say so under
+Alerts while they differ: a notice when the versions are close, a warning
+when one is a release series apart (the first number, or the first two
+below 1.0), because such nodes may not follow each other's mesh-wide
+changes.
+
+## 10. When something is wrong
+
+- **Alerts** names the problem and what to do about it. **Ignore** on an
+  alert leaves it out of the overview and the alert count in that browser;
+  it stays listed on the Alerts page, and shows everywhere again if it
+  turns more serious or comes back after being gone for an hour.
 - `sudo meshctl doctor` checks the kernel, batman-adv, radios, helpers and
   configuration, and gives a report you can paste into an issue.
 - `meshctl status` shows the whole node in text.

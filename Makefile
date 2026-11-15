@@ -2,9 +2,13 @@
 #
 #   make            build bin/trellis for this machine (plus meshd/meshctl links)
 #   make cross      build dist/ binaries for arm64, armv7 and amd64
+#   make deb        build dist/deb/ packages: trellis (arm64, armhf, amd64) and trellis-batman-adv-dkms
+#   make deb-test   install, upgrade, remove and purge the packages in Debian and Ubuntu containers
+#   make release    dist/release/<version>/: signed packages and checksums (scripts/release.sh)
 #   make test       unit tests (no root)
 #   make lab        lab tests in network namespaces (root, or a user namespace)
 #   make check      gofmt, vet and tests
+#   make fuzz       run every fuzzer for FUZZTIME (default 30s) each; "make test" runs their seeds
 #   make gen        regenerate netlink constants from the kernel headers
 #   make deploy     check, build and update every node in deploy.hosts
 #   make lab-scale  scale lab: 50 nodes, ID convergence and gossip volume (~6 min)
@@ -15,14 +19,15 @@
 #   make web-wan WAN=on|off      serve the web UI on each node's uplink network too (bench), or not
 #   make ui-dev     the web UI on http://127.0.0.1:8480 against made-up data (no mesh needed)
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Releases are tags named vX.Y.Z; the version drops the "v".
+VERSION ?= $(shell (git describe --tags --always --dirty 2>/dev/null || echo dev) | sed 's/^v//')
 GO      ?= go
 LDFLAGS  = -s -w -X main.version=$(VERSION)
 GOFLAGS  = -trimpath
 PKG      = ./cmd/trellis
 ARCHES   = arm64 arm armv6 amd64
 
-.PHONY: all build cross test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: all build cross deb deb-test release fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -44,8 +49,50 @@ cross:
 	done
 	@ls -la dist/
 
+# Packages. Every file in them is stamped with the last commit's time, so
+# the same commit gives the same packages. TRELLIS_RELEASE_KEY=<secret key
+# file> signs them (tools/mkdeb keygen makes a key).
+BATADV_VERSION := $(shell sed -n 's/^BATADV_VERSION=//p' packaging/dkms/source)
+BATADV_URL     := $(shell sed -n 's/^BATADV_URL=//p' packaging/dkms/source)
+BATADV_TARBALL  = dist/cache/batman-adv-$(BATADV_VERSION).tar.gz
+EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null)
+DEB_OUT ?= dist/deb
+
+$(BATADV_TARBALL):
+	@mkdir -p dist/cache
+	curl -fsSL -o $@.part $(BATADV_URL)
+	@mv $@.part $@
+
+deb: cross $(BATADV_TARBALL)
+	@rm -rf $(DEB_OUT)
+	@for pair in arm64:arm64 armhf:armv6 amd64:amd64; do \
+	  $(GO) run ./tools/mkdeb trellis --version '$(VERSION)' --arch $${pair%%:*} \
+	    --binary dist/trellis-linux-$${pair##*:} --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
+	done
+	@$(GO) run ./tools/mkdeb batman-adv --source $(BATADV_TARBALL) --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS)
+
+deb-test:
+	scripts/deb-test.sh
+
+release:
+	scripts/release.sh
+
 test:
 	$(GO) test ./...
+
+# The parsers of untrusted input: gossip from the air, packages and
+# configuration from browsers and files, profile codes from QR codes.
+FUZZTIME ?= 30s
+FUZZERS = gossip:FuzzOpenRecord gossip:FuzzOpenRaw gossip:FuzzOpenMessages gossip:FuzzParseLinkEntry \
+	deb:FuzzRead deb:FuzzParseKeys config:FuzzParseProfile config:FuzzDecodeProfileCode config:FuzzParseNode \
+	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal
+fuzz:
+	@for f in $(FUZZERS); do \
+	  echo "== $${f#*:} ($${f%%:*}, $(FUZZTIME))"; \
+	  out=$$($(GO) test ./internal/$${f%%:*} -run '^$$' -fuzz "^$${f#*:}$$" -fuzztime $(FUZZTIME) 2>&1); rc=$$?; \
+	  printf '%s\n' "$$out" | grep -v '^fuzz: elapsed'; \
+	  [ $$rc -eq 0 ] || exit 1; \
+	done
 
 lab: build
 	./lab/lab.sh
@@ -113,6 +160,6 @@ ui-dev: build
 	$(GO) build -o bin/fakemeshd ./tools/fakemeshd
 	@mkdir -p $(UI_DEV_DIR)
 	@echo "== http://127.0.0.1:8480  (password: trellis-demo; Ctrl-C stops both)"
-	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) & fake=$$!; \
+	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) & fake=$$!; \
 	  trap "kill $$fake 2>/dev/null" EXIT INT TERM; sleep 0.5; \
 	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --listen 127.0.0.1:8480 --plain-http

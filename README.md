@@ -64,6 +64,7 @@ make test       # unit tests
 make ui-dev     # the web UI on http://127.0.0.1:8480 against demo data
 make lab        # a 3-node mesh in network namespaces (needs batman-adv loaded)
 make cross      # dist/ binaries for arm64, armv7 and amd64
+make deb        # dist/deb/ packages for Debian, Ubuntu and Raspberry Pi OS
 ```
 
 ## Documentation
@@ -74,16 +75,21 @@ make cross      # dist/ binaries for arm64, armv7 and amd64
 | [docs/hardware.md](docs/hardware.md) | What a node needs; supported radios |
 | [docs/architecture.md](docs/architecture.md) | Requirements, design, and the reasoning behind each decision |
 | [docs/api.md](docs/api.md) | The HTTP/JSON API behind the web UI and `meshctl` |
+| [docs/security.md](docs/security.md) | What Trellis protects, from whom, and what it does not protect yet |
 | [docs/atak.md](docs/atak.md) | ATAK on the mesh |
 | [docs/roadmap.md](docs/roadmap.md) | What's done and what's next |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
 | [docs/dev/](docs/dev/layout.md) | Code layout, building, testing |
 
 ## Status
 
 Working on real hardware and in a 50-node lab: the mesh, the client
 network, gateways and failover, multicast, the web UI, multiple links per
-node and both regulatory modes. Wi-Fi HaLow and field testing are in
-progress; packages and images come next. See the
+node, both regulatory modes, and packages with upgrades that go back by
+themselves when a node is not healthy afterwards. Wi-Fi HaLow and field
+testing are in progress, with upgrading a whole mesh from one node;
+images come next. The current release is **0.1.0, the first alpha**
+([changes](CHANGELOG.md)). See the
 [roadmap](docs/roadmap.md).
 
 ## Licence

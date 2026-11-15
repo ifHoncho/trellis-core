@@ -141,8 +141,12 @@ func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 		if err != nil {
 			continue
 		}
+		m := d.linkReconciler(l.i)
 		for _, s := range sts {
 			peers = append(peers, linkPeer{link: l.i, mac: s.MAC.String(), inactiveMS: s.InactiveMS, established: s.Established()})
+			if m != nil && s.Established() {
+				m.peers.established(s.MAC.String(), time.Now())
+			}
 		}
 	}
 	var stale []linkPeer
@@ -155,6 +159,11 @@ func (d *Daemon) dropMovedPeers(ctx context.Context) (changed, again bool) {
 		moved[meshIfname(p.link)+" "+p.mac] = true
 	}
 	for _, p := range strayPeers(peers) {
+		// A peer established on this link lately is restarting, not
+		// stray: removing its entry now would race its new peering.
+		if m := d.linkReconciler(p.link); m != nil && m.peers.known(p.mac, time.Now()) {
+			continue
+		}
 		if !moved[meshIfname(p.link)+" "+p.mac] {
 			stale = append(stale, p)
 		}

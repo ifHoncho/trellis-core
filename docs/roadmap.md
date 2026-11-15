@@ -31,7 +31,8 @@ runs and is tested, not a layer of half-built parts.
   kernels.
 - **Mesh-wide changes from one node.** Change the mesh's links, channels or
   regulatory mode once; every node switches at the same moment, and a node
-  that was away catches up when it returns.
+  that was away catches up when it returns, even one left on a channel the
+  mesh has since left: it looks for its mesh and follows it.
 - **Mesh time.** Nodes keep one clock without internet, from a node's GNSS
   receiver where there is one.
 - **Channel survey.** How busy each link's channel is at every node, and a
@@ -41,20 +42,34 @@ runs and is tested, not a layer of half-built parts.
   phone's map, apart from the people; when it leaves the mesh, the others
   keep its last known position there, labelled as such. One switch stops it on
   every node.
+- **Packages, signed releases and upgrades** (first alpha release:
+  0.1.0). Debian packages for Debian, Ubuntu and
+  Raspberry Pi OS that never overwrite a node's configuration. An upgrade
+  is one signed file, from the web UI or the command line: the node checks
+  itself afterwards and goes back to the version and configuration it had
+  if it is not healthy, even when it loses power in the middle. Nodes warn
+  when a mesh runs mixed releases.
+- **Security model.** A threat model checked against the code
+  ([security.md](security.md)); the node daemon confined to the
+  privileges networking needs; a firewall that closes a node to
+  everything outside the mesh; the parsers of untrusted input fuzz-tested
+  on every test run.
 
 ## In progress
 
 - **Wi-Fi HaLow** links for long range, alongside Wi-Fi.
 - **Field testing** with phones running ATAK: a walking test over three or
   more hops, gateways pulled mid-test.
+- **Upgrading a whole mesh from one node:** each node in turn, each
+  checking itself, the first one that goes back stopping the rest.
 
 ## Next
 
-- **Packages and images:** a `.deb` that never overwrites configuration,
-  prebuilt images that boot into a working node, signed releases, and
-  upgrades that keep a node's identity and roll back on failure.
-- **Security hardening:** a threat model, re-keying a whole mesh without
-  touching each node, fuzz testing of everything that parses input.
+- **Images:** prebuilt images that boot into a working node, set up from a
+  phone with no keyboard or SSH.
+- **Re-keying a whole mesh from one node,** with keys of each node's own,
+  so that a lost or captured node can be shut out without visiting every
+  other one.
 
 ## Later
 
@@ -67,6 +82,9 @@ runs and is tested, not a layer of half-built parts.
   it.
 - **Automatic channel selection:** mesh links that move to a clearer
   channel together on their own when theirs stays congested.
+- **HaLow-only meshes finding a node that missed a change:** today a
+  node whose only link is HaLow, off while the mesh moved, needs the
+  profile again by hand.
 - Push-to-talk voice.
 - Linking sites over the internet.
 - IPv6 for clients.

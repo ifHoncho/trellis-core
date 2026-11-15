@@ -1,0 +1,21 @@
+#!/bin/sh
+# trellis package: after removal. "remove" keeps the node's configuration,
+# mesh profile and identity; "purge" deletes them.
+set -e
+case "$1" in
+  remove)
+    rm -f /etc/modprobe.d/trellis.conf
+    [ -d /run/systemd/system ] && systemctl daemon-reload || true
+    ;;
+  purge)
+    rm -f /etc/modprobe.d/trellis.conf
+    rm -rf /etc/trellis /var/lib/trellis /var/lib/private/trellis-web /var/lib/trellis-web
+    rm -f /usr/share/trellis/regulatory.db.none /usr/share/trellis/regulatory.db.p7s.none
+    rmdir /usr/share/trellis 2>/dev/null || true
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+      deb-systemd-helper purge trellis-meshd.service trellis-webd.socket >/dev/null 2>&1 || true
+    fi
+    if getent group trellis >/dev/null 2>&1; then groupdel trellis 2>/dev/null || true; fi
+    ;;
+esac
+exit 0

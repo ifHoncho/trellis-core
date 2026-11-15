@@ -69,7 +69,52 @@ export function nameOf(mac, st = state.status) {
   return names(st).get(mac) || shortMac(mac);
 }
 
-// warnings worth a badge: everything but "info".
+// Alerts the operator chose to ignore, in this browser, for this node (the
+// storage is per origin, and every node is its own origin). They still
+// show on the Alerts page; everywhere else they are left out. An alert is
+// known by its level, source and code, so the same alert with a changing
+// figure in its message stays ignored, and one that turns more serious
+// shows again. One that has been gone for an hour is forgotten: when it
+// comes back, it shows.
+const IGNORED_KEY = 'trellis-ignored-alerts';
+const IGNORED_FORGET = 3600e3;
+let ignoredAlerts = (() => {
+  try { return JSON.parse(localStorage.getItem(IGNORED_KEY) || '{}') || {}; } catch (e) { return {}; }
+})();
+function saveIgnored() {
+  try { localStorage.setItem(IGNORED_KEY, JSON.stringify(ignoredAlerts)); } catch (e) { /* private mode */ }
+}
+export const alertKey = (w) => [w.level, w.source || '', w.code || w.message].join('|');
+export const isIgnored = (w) => Object.prototype.hasOwnProperty.call(ignoredAlerts, alertKey(w));
+export function ignoreAlert(w, on) {
+  if (on) ignoredAlerts[alertKey(w)] = Date.now();
+  else delete ignoredAlerts[alertKey(w)];
+  saveIgnored();
+  redraw();
+}
+// noteAlerts keeps ignored alerts that are still there, and forgets those
+// gone for an hour. Called with every status.
+export function noteAlerts(warnings) {
+  const now = Date.now();
+  const present = new Set((warnings || []).map(alertKey));
+  let changed = false;
+  for (const k of Object.keys(ignoredAlerts)) {
+    if (present.has(k)) {
+      if (now - ignoredAlerts[k] > 60e3) { ignoredAlerts[k] = now; changed = true; }
+    } else if (now - ignoredAlerts[k] > IGNORED_FORGET) {
+      delete ignoredAlerts[k]; changed = true;
+    }
+  }
+  if (changed) saveIgnored();
+}
+
+// shownWarnings are the status's warnings less the ignored ones: what every
+// page but Alerts goes by.
+export function shownWarnings(st = state.status) {
+  return (st && st.warnings || []).filter((w) => !isIgnored(w));
+}
+
+// warnings worth a badge: everything but "info", and not ignored.
 export function alerts(st = state.status) {
-  return (st && st.warnings || []).filter((w) => w.level !== 'info');
+  return shownWarnings(st).filter((w) => w.level !== 'info');
 }

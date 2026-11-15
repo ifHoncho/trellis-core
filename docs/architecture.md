@@ -410,11 +410,25 @@ values.
 | Version | **batman-adv ≥ 2024.0** on every node | Multicast packet type (§9). One older node makes the whole mesh fall back to flooding. |
 | `routing_algo` | `BATMAN_V` | Throughput-based metric; much better than IV on mixed-rate radio links. |
 | `distributed_arp_table` | **off** | It would answer ARP from a mesh-wide cache instead of flooding, but it only learns a client when that client's ARP crosses `bat0`. With the gateway answered locally on every node (§7.4) a client's ARP never does, so the rest of the mesh could not resolve it unless its node happened to be a DHT candidate for that address. Plain ARP flooding is cheap at the volumes a client network produces. |
-| `bridge_loop_avoidance` | on | Required once nodes bridge client ports: two nodes plugged into the same switch would otherwise loop. |
+| `bridge_loop_avoidance` | on where the node bridges wired client ports | Two nodes plugged into the same switch would otherwise loop. Wi-Fi clients cannot join two nodes' bridges, so elsewhere it protects nothing, and it costs a start-up wait: each time `bat0` is created, batman-adv holds back every broadcast and multicast frame, both ways, for up to 30 s. The profile can force it on or off everywhere. |
 | `fragmentation` | on | Survives underlays that can't carry the full overhead. |
 | `multicast_mode` | 1 (optimisations on) | Required for the multicast packet type and listener-only delivery (§9). |
 | `gw_mode` | `server` on healthy gateways, `client` elsewhere | Gateway announcement and withdrawal ride on batman's own routing messages (§8). |
 | `orig_interval` | 1000 ms (tunable) | Sets detection latency; balanced against airtime. |
+
+**Restarts.** batman-adv numbers each node's broadcasts, and the other
+nodes drop a number they have already seen within a window of 64. A new
+`bat0` starts again at 1: a node restarted soon after an earlier start
+(whose `bat0` had sent fewer than 65 broadcasts) is deaf to ARP and every
+other broadcast until it has sent as many again, which on a quiet node
+takes minutes. A number 64 or more behind resets the window instead (at
+most every 30 s). So `meshd` sends 64 small broadcasts of its own on every
+new `bat0`, once a hard interface is active: afterwards its numbers are past
+any shorter run, and since every `bat0` has then sent at least 64, the next
+restart always takes the reset. The frames carry the local experimental
+ethertype 0x88B5, and every node's bridge drops them as they come in from
+the mesh. They are spread over 3 s, or 16 s where the node carries a HaLow
+link, where a broadcast costs far more airtime.
 
 **Why batman-adv at all:** it makes the mesh one layer-2 domain with dynamic
 multi-hop routing, which is what ATAK multicast, mDNS and moving EUDs want
@@ -707,6 +721,7 @@ All rules use the nftables bridge family, rendered and applied atomically.
 | Drop known chatter: SSDP and WS-Discovery (`239.255.255.250`), LLMNR (`224.0.0.252`), NetBIOS broadcast | out | Phones and laptops send these constantly; they cost airtime and serve no mission. |
 | Rate-limit mDNS (`224.0.0.251`) and other link-local multicast | out | Link-local multicast always floods on bridged nodes (§9). |
 | Drop IPv4 broadcast except ARP and allow-listed ports | out | Broadcast is the most expensive frame on a radio mesh. |
+| Drop ethertype 0x88B5 | in | The broadcasts a node sends on a new `bat0` to move batman-adv's numbering on (§6, "Restarts"); they are for batman-adv, not for devices. |
 
 On **client ports**, the node also drops DHCP-server replies and router
 advertisements arriving *from* EUDs.
@@ -993,7 +1008,8 @@ same on any node anyway.
   - **In practice:**
     - `webd` serves a connection only when both its ends are inside the
       mesh prefix (or both on the loopback). Checking the far end matters
-      while there is no firewall: a host on the uplink network can
+      where the firewall is open (no `firewall` setting,
+      as on nodes set up by older releases): a host on the uplink network can
       address a node's mesh address, but cannot have one itself.
       `web.wan_access` in the node config lifts the restriction.
     - `meshd` keeps the admin password, as a salted PBKDF2-SHA256 hash
@@ -1009,7 +1025,11 @@ same on any node anyway.
     - The certificate is kept for ten years and never replaced on its own,
       so that the exception a browser remembers stays valid. No HSTS: with
       a self-signed certificate it would lock browsers out.
-- **Host:** IPv6 forwarding off; default-deny input from WAN; SSH configurable.
+- **Host:** IPv6 forwarding off; input from outside the mesh closed by
+  default on nodes Trellis sets up (`firewall.wan`: replies, ICMP, DHCP,
+  SSH, listed ports); SSH configurable.
+- **The threat model,** and the review of the implementation against it,
+  are in [security.md](security.md).
 
 **Why:** this closes the biggest gap of an open mesh (open IBSS, "assume
 everyone can see everything") without needing a PKI on day one.
@@ -1032,7 +1052,7 @@ One binary, several subcommands, each run as its own process.
 
 | Process | Privilege | Role |
 |---|---|---|
-| `meshd` | `CAP_NET_ADMIN`, `CAP_NET_RAW` | Sole owner of network state: radios, batman, bridge, addressing, gateways, firewall, dnsmasq and hostapd config, gossip. Local API on a unix socket. |
+| `meshd` | root, bounded to networking's capabilities and sandboxed ([security.md](security.md)) | Sole owner of network state: radios, batman, bridge, addressing, gateways, firewall, dnsmasq and hostapd config, gossip. Local API on a unix socket. |
 | `webd` | none | Web UI and HTTP/JSON API with live updates; talks to `meshd` over its socket. |
 | `crda` | root, run by udev | Answers the kernel's regulatory requests with the mesh profile's rules (§5.1). Runs for a moment and exits. |
 | `meshctl` | operator | CLI, including `meshctl doctor`. |
@@ -1181,18 +1201,58 @@ Validation-first keeps a bad config from ever reaching a running node.
   the reload refuses is rolled back. A file written this way lists only
   the settings that differ from the defaults, and keeps no comments.
 - **Mesh-wide changes.** A profile changed on one node can go to every
-  node (`POST /profile/mesh`). The node gives it the next revision and
-  sends it to every node it knows, unicast on the gossip port and
-  authenticated under the gossip key, so only a node that holds the mesh
-  secret can make one; each node keeps it (on disk, so a restart does not
-  lose it), answers, and switches at one moment a minute or so ahead, by
-  its own clock (the nodes keep one time, §13). Gossip carries every node's
-  revision: a node that missed a change asks one that has it, and switches
-  at once. The mesh ID and secret cannot change this way, since nodes that
+  node (`POST /profile/mesh`). The node gives it the next revision and a
+  change record (an ID, the moment it takes effect, the node it was made
+  on, and the IDs of the changes before it), and sends it to every node it
+  knows, unicast on the gossip port and authenticated under the gossip key,
+  so only a node that holds the mesh secret can make one. Each node keeps
+  it (on disk, so a restart does not lose it), answers, and switches at one
+  moment a minute or so ahead. The offer gives that moment both as a time
+  of day and as a delay from sending; a node goes by the delay, so a node
+  whose clock is wrong still switches with the rest. The dry run speaks for
+  the whole mesh: the links that restart at the switch, the nodes that
+  cannot follow, every node whose regulatory mode the change would alter,
+  and the nodes heard in the last day that are not in reach now and will
+  miss it. The mesh ID and secret cannot change this way, since nodes that
   switched and nodes that did not could no longer hear each other; that is
-  a re-key, with its own procedure (roadmap). The dry run speaks for the
-  whole mesh: the links that restart at the switch, the nodes that cannot
-  follow, and every node whose regulatory mode the change would alter.
+  a re-key, with its own procedure (roadmap).
+  - **Catching up.** Gossip carries every node's revision and change ID. A
+    node that hears of a change it does not know asks a node that runs it,
+    a few seconds after first hearing of it (more for a higher node ID).
+    The answer says to switch 15 s later, a moment shared by every node
+    that asks around then, so a group that was left behind moves together
+    rather than one by one, each leaving the rest behind.
+  - **Restarts.** A node that restarts with a change still due makes it
+    at once, not when its clock reaches the moment, when that clock cannot
+    be believed: it is not synchronised yet (no RTC: it starts from a stale
+    saved time), or it puts the switch further away than it was when the
+    change arrived (the clock went back).
+  - **Finding the mesh again.** Nodes that missed a change and woke on
+    settings the rest has left hear nobody, or only each other. Each node
+    remembers the other nodes it heard in the last day (on disk, by age,
+    never by time of day). One that now hears half of them or fewer is in
+    the smaller part of its mesh and looks for the rest: after a minute,
+    then 1, 2, 4, 8 and 16 minutes later, then every 30 minutes. The
+    larger part never looks, so a node switched off makes no one scan, and
+    a mesh of one node never scans. A look is a passive scan of every band
+    each Wi-Fi link's radio has. Where it hears its mesh ID on another
+    channel, one link visits there for a few seconds to minutes, at the
+    width the beacons give, without changing the profile, and gossip
+    settles it: nodes there ahead give this node their profile; nodes
+    behind take its own; the same, and the link goes back and leaves that
+    channel alone for half an hour. HaLow links are not scanned: their
+    beacons come too seldom to catch passing by.
+  - **Changed apart.** Two parts of a mesh that each changed the profile
+    while apart find out when they meet: neither profile counts the
+    other's change among its earlier ones. The change that took effect
+    later is kept (the higher ID on a tie), as a new revision above both
+    that counts both as earlier changes. Every node makes the same result
+    from the two profiles, so the parts agree without a round of
+    messages; the node that found the conflict sends it to every node in
+    reach, to switch 15 s later. The dropped profile is kept on that node,
+    and an alert names it and says how to send it again. A change made on
+    one node only keeps the record of the change it came from, so it is
+    never taken for a branch.
 - **Dry runs.** Every change can be tried first. The answer lists what it
   would do to the running node (the mesh link moves, the node leaves the
   mesh, devices must rejoin the Wi-Fi), worked out from the radios present,
@@ -1262,11 +1322,37 @@ Validation-first keeps a bad config from ever reaching a running node.
   newer that meet the §6.1 requirements, plus the `trellis-batman-adv-dkms`
   package and `wpa_supplicant` with mesh support. An installer that never
   overwrites config.
+  - *As built:* the `trellis` package holds the binary, its units and the
+    scripts for the radios it supports; nothing under `/etc/trellis` is
+    ever in it. Both packages are written by a tool of the project's own,
+    so a release builds on any machine and the same source gives the same
+    bytes.
+  - **Signed releases.** A package carries an Ed25519 signature inside
+    itself, in an archive member `dpkg` skips: one file that `apt` installs
+    and that a node can check with no other tool. A node trusts the keys
+    built into the version it runs, plus any its operator adds.
+  - **Upgrades that go back.** `meshctl upgrade` checks the signature,
+    notes the node's health, rebuilds the package of the running version
+    from what is installed (going back never depends on a kept file),
+    copies configuration and identity aside, installs, and then compares
+    the node with how it was: `meshd` on the new version, no new failure,
+    a mesh peer back if there was one. If not, the old package and the
+    copied configuration go back in. The work runs apart from the
+    operator's session. Until it ends, a copy of the old binary and a boot
+    unit outside any package stand ready, so a node that loses power in
+    the middle finishes or goes back at its next start without relying on
+    anything the new version brought.
+
+    **Why:** a body-worn node is upgraded in the field, by someone with a
+    phone, often over the very mesh the upgrade restarts. An upgrade that
+    can strand a node needs a visit; one that undoes itself does not.
 - **Images:** built per hardware target with batman-adv pinned.
   - **Base OS** (Debian-based or OpenWrt) is open. Morse Micro's reference
     stack is OpenWrt; owning the kernel interface (§12.4) keeps both open.
-- **Upgrade policy:** all nodes in a mesh run the same major release. `meshd`
-  advertises its version in gossip and warns on mismatch.
+- **Upgrade policy:** all nodes in a mesh run the same release series (the
+  major number; major and minor below 1.0). `meshd` advertises its version
+  in gossip and every node warns while the mesh is mixed: a notice for
+  another version of the same series, a warning for another series.
 
 **Hardware** (details in [hardware.md](hardware.md)):
 

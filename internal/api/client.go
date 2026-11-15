@@ -31,8 +31,10 @@ func NewClient(socket string) *Client {
 	}
 	return &Client{
 		Socket: socket,
+		// No fixed timeout: the caller's context sets it (defaultTimeout
+		// when it has none), so that a long request such as a package
+		// upload can be given longer.
 		http: &http.Client{
-			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
@@ -42,6 +44,17 @@ func NewClient(socket string) *Client {
 			},
 		},
 	}
+}
+
+// defaultTimeout bounds a request whose context has no deadline.
+const defaultTimeout = 30 * time.Second
+
+// bounded gives ctx the default deadline when it has none.
+func bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultTimeout)
 }
 
 // ErrNotRunning means the socket is absent or refuses connections.
@@ -54,6 +67,8 @@ var ErrPermission = errors.New("permission denied")
 // code, the content type and the body. path starts after the version, for
 // example "/status". Transport failures are errors; API errors are not.
 func (c *Client) Raw(ctx context.Context, method, path, query string, body []byte) (int, string, []byte, error) {
+	ctx, cancel := bounded(ctx)
+	defer cancel()
 	u := "http://meshd/" + Version + path
 	if query != "" {
 		u += "?" + query

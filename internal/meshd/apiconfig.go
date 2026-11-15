@@ -13,6 +13,7 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/doctor"
+	"meridian/trellis/internal/nft"
 	"meridian/trellis/internal/nodestate"
 	"meridian/trellis/internal/qr"
 	"meridian/trellis/internal/radio"
@@ -225,6 +226,12 @@ func (d *Daemon) SetProfile(ctx context.Context, in api.ProfileInput, dryRun boo
 	if err != nil {
 		return nil, err
 	}
+	// A change on this node only is still based on the mesh-wide change it
+	// came from: it keeps that record (a profile given without one, as a
+	// pasted file of the same revision often is).
+	if p.Change == nil && !setup.Needed && p.Revision == curProfile.Revision {
+		p.Change = curProfile.Change
+	}
 	res := &api.ApplyResult{Changed: setup.Needed || !sameYAML(*curProfile, *p), Effects: profileEffects(curProfile, p, setup.Needed, d.profileView(cur, curProfile, p))}
 	if setup.Needed {
 		res.AP = d.apJoinFor(cur, false)
@@ -386,6 +393,24 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 		} else if id := d.identity(); id == nil || id.NodeID != n.NodeID {
 			add("warning", "node-id", "The node ID changes to %d: the node gets a new address, and devices on it are sent for new addresses (a short interruption for them).", n.NodeID)
 		}
+	}
+
+	// The firewall towards everything outside the mesh.
+	was, will := inputPolicy(cur), inputPolicy(n)
+	openList := func(in *nft.Input) string {
+		ps := in.Ports()
+		if len(ps) == 0 {
+			return "nothing but replies to its own traffic, ICMP and DHCP"
+		}
+		return strings.Join(ps, " ") + ", besides replies to its own traffic, ICMP and DHCP"
+	}
+	switch {
+	case was == nil && will != nil:
+		add("warning", "firewall-closes", "The node closes to everything outside the mesh: from its uplink network it takes %s. Anything there that used this node's other services loses them; the mesh, its Wi-Fi and device ports, and the internet it shares are not affected.", openList(will))
+	case was != nil && will == nil:
+		add("info", "firewall-opens", "The node opens to everything outside the mesh: every service its system runs answers on its uplink network.")
+	case was != nil && will != nil && openList(was) != openList(will):
+		add("info", "firewall-ports", "From outside the mesh the node will take %s.", openList(will))
 	}
 
 	// Radios: compare the plan in force with the one this configuration gives.
@@ -868,8 +893,8 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 		if cur.Name != p.Name {
 			add("info", "mesh-name", "The mesh is renamed from %q to %q (a label only).", cur.Name, p.Name)
 		}
-		if cur.Batman != p.Batman && fmt.Sprint(cur.Batman.BLA(), deref(cur.Batman.MulticastFanout), cur.Batman.OrigIntervalMS, cur.Batman.MinVersion, cur.Batman.PinnedVersion, cur.Batman.MulticastFlood) !=
-			fmt.Sprint(p.Batman.BLA(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion, p.Batman.MulticastFlood) {
+		if cur.Batman != p.Batman && fmt.Sprint(cur.Batman.BLAMode(), deref(cur.Batman.MulticastFanout), cur.Batman.OrigIntervalMS, cur.Batman.MinVersion, cur.Batman.PinnedVersion, cur.Batman.MulticastFlood) !=
+			fmt.Sprint(p.Batman.BLAMode(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion, p.Batman.MulticastFlood) {
 			meshChange = true
 			add("info", "batman-settings", "batman-adv settings change; they should be the same on every node.")
 		}

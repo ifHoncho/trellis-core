@@ -1,14 +1,15 @@
 // Overview: is this node all right, and what is it part of?
 import { h } from '../dom.js';
-import { state, history, alerts, nameOf } from '../state.js';
+import { state, history, alerts, nameOf, shownWarnings } from '../state.js';
 import { panel, stat, dot, pill, spark, notice, bars } from '../ui.js';
 import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried, clockShort, gnssShort } from '../fmt.js';
 import { topology } from '../topo.js';
 
 // headline is one sentence on the node's state, most serious first.
 export function headline(st) {
-  const errs = st.warnings.filter((w) => w.level === 'error').length;
-  const warns = st.warnings.filter((w) => w.level === 'warning').length;
+  const shown = shownWarnings(st);
+  const errs = shown.filter((w) => w.level === 'error').length;
+  const warns = shown.filter((w) => w.level === 'warning').length;
   const peers = (st.batman.neighbors || []).length;
   if (errs) return { tone: 'bad', lead: plural(errs, 'fault'), rest: 'needs attention' };
   if (!st.batman.present) return { tone: 'bad', lead: 'Mesh down', rest: 'batman-adv is not up on this node' };
@@ -40,7 +41,7 @@ export function overview() {
   const mch = st.mesh_change && st.mesh_change.state === 'pending' ? st.mesh_change : null;
   const change = mch ? [{ level: 'warning', source: 'mesh', code: 'profile change',
     message: `Revision ${mch.revision} of the mesh profile from ${mch.sender ? 'this node' : mch.from}${mch.summary ? ` (${mch.summary})` : ''}: every node switches at ${new Date(mch.apply_at).toLocaleTimeString()}.` }] : [];
-  const notes = [...change, ...alerts(st), ...st.warnings.filter((w) => w.level === 'info')].slice(0, 4);
+  const notes = [...change, ...alerts(st), ...shownWarnings(st).filter((w) => w.level === 'info')].slice(0, 4);
   const links = meshLinks(st);
 
   return h('div.page',

@@ -2,7 +2,7 @@
 import { SLOTS, SLOT_ICONS, themeName, slotOf, slotTheme, nextTheme } from './themes.js';
 import { h, mount } from './dom.js';
 import { get, post, connectEvents, setSignedOutHandler } from './api.js';
-import { state, setRedraw, redraw, record, alerts, toast, closeDialog } from './state.js';
+import { state, setRedraw, redraw, record, alerts, toast, closeDialog, noteAlerts } from './state.js';
 import { icon, brandMark, dot, button } from './ui.js';
 import { duration } from './fmt.js';
 import { overview } from './views/overview.js';
@@ -43,6 +43,8 @@ let topoTimer = null;
 
 function onStatus(st) {
   state.status = st;
+  noteAlerts(st.warnings);
+  if (st.regulatory.active_mode !== 'unrestricted' && regDismissed(st)) setRegDismissed(st, false);
   state.statusAt = Date.now();
   state.problem = null;
   state.live = 'on';
@@ -158,6 +160,7 @@ function topbar() {
     brandMark(),
     h('div.callsign', st ? st.node.callsign : state.session.callsign || 'Trellis'),
     liveLine(),
+    regMini(),
     h('button.btn.icon.ghost', { onclick: nextTheme, title: switchTitle(), 'aria-label': 'Change theme' }, icon(themeIcon())));
 }
 
@@ -178,14 +181,52 @@ function more() {
     h('div.row', button(themeName(state.theme) + ' theme', nextTheme, '', { icon: themeIcon() }), button('Sign out', signOut, '', { icon: 'out' })));
 }
 
+// The unrestricted-mode banner can be dismissed, in this browser, for this
+// mesh: it shrinks to a triangle marked U in the corner, which shows the
+// warning on hover or a tap. It comes back when the node leaves
+// unrestricted mode and later enters it again.
+const REG_KEY = 'trellis-unrestricted-dismissed';
+const REG_TEXT = 'Radios use every channel and width they have, at their own full power, beyond licence-exempt limits; that needs frequency authorization. ';
+function regDismissed(st) {
+  try { return localStorage.getItem(REG_KEY) === st.profile.name; } catch (e) { return false; }
+}
+function setRegDismissed(st, on) {
+  try {
+    if (on) localStorage.setItem(REG_KEY, st.profile.name);
+    else localStorage.removeItem(REG_KEY);
+  } catch (e) { /* private mode: it shows */ }
+  state.ui.regPop = false;
+  redraw();
+}
+
+// regMini is the dismissed banner: the marked triangle, and the warning
+// beside it while the pointer is on it, it has focus, or it was tapped.
+function regMini() {
+  const st = state.status;
+  if (!st || st.regulatory.active_mode !== 'unrestricted' || !regDismissed(st)) return null;
+  const open = !!state.ui.regPop;
+  return h('div.reg-mini', { class: open ? 'open' : '' },
+    h('button.reg-tri', {
+      type: 'button', 'aria-expanded': String(open), 'aria-label': 'Unrestricted regulatory mode: show the warning',
+      onclick: () => { state.ui.regPop = !open; redraw(); },
+    }, h('span.tri', h('span', 'U'))),
+    h('div.reg-pop', { role: 'note' },
+      h('b', 'Unrestricted regulatory mode. '), REG_TEXT,
+      h('div.reg-pop-foot',
+        h('a', { href: '#/settings/profile' }, 'Switch to country mode'),
+        button('Show the banner', () => setRegDismissed(st, false), 'small ghost'))));
+}
+
 function banners() {
   const st = state.status;
   const out = [];
   if (state.problem) out.push(h('div.banner.bad', dot('bad'), h('span', h('b', 'No status: '), state.problem, '.')));
   if (st && st.regulatory.active_mode === 'unrestricted') {
-    out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted regulatory mode. '),
-      'Radios use every channel and width they have, at their own full power, beyond licence-exempt limits; that needs frequency authorization. ',
-      h('a', { href: '#/settings/profile' }, 'Switch to country mode'))));
+    if (!regDismissed(st)) {
+      out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted regulatory mode. '), REG_TEXT,
+        h('a', { href: '#/settings/profile' }, 'Switch to country mode')),
+      h('button.btn.small.ghost.dismiss', { type: 'button', onclick: () => setRegDismissed(st, true), title: 'Shrink it to a marked triangle in the corner, in this browser' }, 'Dismiss')));
+    }
   } else if (st && st.regulatory.requested_mode === 'unrestricted') {
     out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted mode is not in force. '),
       `The radios keep ${st.regulatory.country}’s limits: ${st.regulatory.note || 'see Alerts'}. `,
@@ -227,7 +268,7 @@ function app() {
     const needsStatus = state.route !== 'more';
     body = h('div.shell',
       rail(),
-      h('div', topbar(), banners(),
+      h('div', topbar(), banners(), h('div.reg-corner', regMini()),
         h('main.main', { key: state.route }, needsStatus && !state.status ? waiting() : state.route === 'more' ? more() : r.view()),
         tabbar()));
   }
@@ -240,7 +281,13 @@ state.theme = document.documentElement.getAttribute('data-theme') || 'dusk';
 readRoute();
 setSignedOutHandler(signedOut);
 setRedraw(mount(document.getElementById('app'), app));
+// The unrestricted-mode warning opened by a tap closes on a tap anywhere
+// else, and on going to another page.
+document.addEventListener('pointerdown', (e) => {
+  if (state.ui.regPop && !(e.target.closest && e.target.closest('.reg-mini'))) { state.ui.regPop = false; redraw(); }
+});
 window.addEventListener('hashchange', () => {
+  state.ui.regPop = false;
   readRoute();
   refreshConfig();
   window.scrollTo(0, 0);

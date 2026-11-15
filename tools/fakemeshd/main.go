@@ -103,6 +103,9 @@ type fake struct {
 	// oneRadio is a node with one dual-band USB adapter in a two-link
 	// profile: it meshes on one link, the other has no radio here.
 	oneRadio bool
+	// upg is a made-up upgrade (upgrade.go).
+	upg  *fakeUpgrade
+	kept []byte // the package of the last dry run
 }
 
 func newFake(setup bool, password string, links int, bare bool) *fake {
@@ -353,6 +356,20 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		st.Gateway.Selected = &status.SelectedGateway{Callsign: "truck-3", NodeID: 41, Address: "10.73.41.1", ThroughputMbps: direct[2], Since: now.Add(-2 * time.Minute)}
 		st.Gateway.DNS = []string{"10.73.41.1"}
 	}
+	// The firewall as the made-up node's configuration says.
+	st.Gateway.Firewall = config.FirewallOpen
+	if fw := f.node.Firewall; fw.Closed() {
+		st.Gateway.Firewall = config.FirewallClosed
+		if fw.SSHOpen() {
+			st.Gateway.FirewallOpen = append(st.Gateway.FirewallOpen, "tcp/22")
+		}
+		if f.node.Web.WANAccess {
+			st.Gateway.FirewallOpen = append(st.Gateway.FirewallOpen, "tcp/80", "tcp/443")
+		}
+		st.Gateway.FirewallOpen = append(st.Gateway.FirewallOpen, fw.Allow...)
+		st.Gateway.FirewallDrop = 1342
+	}
+
 	st.Batman.Gateways = []status.Gateway{
 		{MAC: nodes[2].orig, Router: nodes[2].orig, DownMbps: 20, UpMbps: 5, ThroughputMbps: direct[2]},
 		{MAC: nodes[5].orig, Router: nodes[2].orig, DownMbps: 100, UpMbps: 20, ThroughputMbps: 24},
@@ -462,8 +479,12 @@ func (f *fake) SetNode(ctx context.Context, raw []byte, dryRun bool) (*api.Apply
 	if cur.APEnabled() != n.APEnabled() || cur.AP.SSID != n.AP.SSID || cur.AP.Passphrase != n.AP.Passphrase || cur.Callsign != n.Callsign {
 		res.Effects = append(res.Effects, eff("warning", "ap-credentials", "The client Wi-Fi's name or passphrase changes. Devices must join again with the new ones, and so must you if you are on it."))
 	}
+	if !cur.Firewall.Closed() && n.Firewall.Closed() {
+		res.Effects = append(res.Effects, eff("warning", "firewall-closes", "The node closes to everything outside the mesh: from its uplink network it takes tcp/22, besides replies to its own traffic, ICMP and DHCP. Anything there that used this node's other services loses them; the mesh, its Wi-Fi and device ports, and the internet it shares are not affected."))
+	}
+
 	if cur.Web.WANAccess != n.Web.WANAccess {
-		res.Effects = append(res.Effects, eff("warning", "web-wan-access", "This page also becomes reachable from the node's uplink network, not only from the mesh. The admin password is then all that protects it there."))
+		res.Effects = append(res.Effects, eff("warning", "web-wan-access", "This page also becomes reachable from the node's uplink network, not only from the mesh, where the admin password protects it."))
 	}
 	if cur.Gateway.Mode != n.Gateway.Mode && n.Gateway.Mode == config.GatewayOff {
 		res.Effects = append(res.Effects, eff("warning", "gateway-off", "This node stops sharing its internet uplink with the mesh. Its own devices use another node's gateway, if there is one."))
@@ -847,6 +868,7 @@ func main() {
 	password := flag.String("password", "trellis-demo", "the admin password (ignored with --setup)")
 	bare := flag.Bool("bare", false, "a node with no per-radio rules, as freshly installed")
 	oneRadio := flag.Bool("one-radio", false, "a node with one dual-band adapter in a 2.4 + 5 GHz profile")
+	unrestricted := flag.Bool("unrestricted", false, "a mesh profile in unrestricted regulatory mode")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
 	flag.Parse()
 	if *socket == "" {
@@ -859,6 +881,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	f := newFake(*setup, *password, *links, *bare)
+	if *unrestricted && !*setup {
+		f.profile.Regulatory.Mode = config.RegModeUnrestricted
+	}
 	if *oneRadio {
 		f.oneRadioNode()
 	}

@@ -134,6 +134,12 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	if l, ok := profile.Link(sharedLink); ok {
 		sharedRadio = l
 	}
+	// A mesh link visiting another channel to look for the rest of its
+	// mesh (findmesh.go) takes the radio with it: the AP goes along, or the
+	// mesh cannot join there (EBUSY).
+	if v, ok := d.visitPlan(sharedLink, profile); ok {
+		sharedRadio = v
+	}
 	base := status.AP{Enabled: apWanted(cfg), Clients: []status.Client{}}
 
 	if apIfname == "" || !bridgePresent || plan == nil || plan.AP == nil {

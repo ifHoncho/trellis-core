@@ -37,6 +37,26 @@ export async function api(method, path, body) {
   return data;
 }
 
+// upload sends a file as the request body, as it is (a release package).
+export async function upload(path, file) {
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', body: file,
+      headers: { 'X-Trellis-Request': '1', 'Content-Type': 'application/vnd.debian.binary-package' },
+    });
+  } catch (e) {
+    throw new ApiError(0, { error: 'The node did not answer. Check that you are still connected to it.' });
+  }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) {
+    if (res.status === 401) onSignedOut();
+    throw new ApiError(res.status, data);
+  }
+  return data;
+}
+
 export const get = (path) => api('GET', path);
 export const put = (path, body) => api('PUT', path, body);
 export const post = (path, body) => api('POST', path, body ?? {});

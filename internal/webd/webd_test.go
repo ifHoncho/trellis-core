@@ -34,7 +34,19 @@ type node struct {
 	setup    bool
 	wan      bool
 	changes  int
+	pkgLen   int
 }
+
+func (n *node) UpgradeState(ctx context.Context) (*api.UpgradeState, error) {
+	return &api.UpgradeState{Version: "test"}, nil
+}
+func (n *node) Upgrade(ctx context.Context, in api.UpgradeRequest) (*api.UpgradeCheck, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.pkgLen = len(in.Package)
+	return &api.UpgradeCheck{From: "0.3.0", To: "0.3.1"}, nil
+}
+func (n *node) UpgradeRollback(ctx context.Context) error { return nil }
 
 func (n *node) Status(ctx context.Context) (*status.Status, error) {
 	return &status.Status{Version: "test", Node: status.Node{Callsign: "n1", NodeID: 7}}, nil
@@ -221,6 +233,14 @@ func TestLoginAndProxy(t *testing.T) {
 		if res, _ := call(t, ts, "POST", p, `{"password":"x"}`, c.Value); res.StatusCode != 404 {
 			t.Errorf("%s through the proxy: %d", p, res.StatusCode)
 		}
+	}
+	// A release package passes the proxy whole; nothing else may be large.
+	big := strings.Repeat("x", 3<<20)
+	if res, body := call(t, ts, "POST", "/api/v1/upgrade?dry_run=1", big, c.Value); res.StatusCode != 200 || n.pkgLen != len(big) {
+		t.Errorf("package upload: %d %s, %d bytes reached meshd", res.StatusCode, body, n.pkgLen)
+	}
+	if res, _ := call(t, ts, "PUT", "/api/v1/config/node", big, c.Value); res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("a 3 MB configuration passed the proxy: %d", res.StatusCode)
 	}
 	// Signing out ends the session.
 	call(t, ts, "POST", "/api/v1/logout", "", c.Value)

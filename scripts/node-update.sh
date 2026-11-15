@@ -5,10 +5,13 @@
 #   sudo ~/trellis-deploy/scripts/node-update.sh
 #
 # Every step is idempotent and skipped when already done, so a routine
-# update is: stop meshd, install the binary, start meshd, show status.
+# update is: stop meshd, install the package, start meshd, show status.
 #   1. stop meshd (a loaded bat0 would block a batman-adv module reload)
-#   2. install binary, systemd unit, udev rule (install-node.sh)
-#   3. batman-adv: load the pinned DKMS build, building it only if needed
+#   2. install the trellis package the deploy built (deb/), with apt, so
+#      whatever it depends on comes with it; a node installed by the
+#      earlier scripts is taken over by the package
+#   3. batman-adv: the trellis-batman-adv-dkms package, then load the
+#      pinned build, building it only if needed
 #   3a. MT7915/MT7916 PCIe Wi-Fi: build mt7915e (DKMS) if a card is fitted
 #       and the kernel has no driver for it (Raspberry Pi OS)
 #   3b. radio driver options from the hardware database (modprobe.d), with
@@ -19,8 +22,10 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-BIN="$ROOT/bin/trellis"
-PIN="$(sed -n 's/^BATADV_VERSION="${BATADV_VERSION:-\(.*\)}"$/\1/p' "$HERE/install-batman-adv-dkms.sh")"
+DEB="$(ls "$ROOT"/deb/trellis_*.deb 2>/dev/null | head -1)"
+BATDEB="$(ls "$ROOT"/deb/trellis-batman-adv-dkms_*.deb 2>/dev/null | head -1)"
+BIN=/usr/bin/trellis
+PIN="$(sed -n 's/^BATADV_VERSION=//p' "$ROOT/packaging/dkms/source")"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
 
@@ -42,18 +47,50 @@ if [ -z "${TRELLIS_UPDATE_DETACHED:-}" ] && command -v setsid >/dev/null 2>&1; t
   [ "$rc" -eq 0 ] || echo "(node-update exited with status $rc; full log: $LOG)" >&2
   exit "$rc"
 fi
-[ -x "$BIN" ] || { echo "no binary at $BIN" >&2; exit 1; }
+# On the way out: if this script stopped meshd and fails before starting
+# it again (apt cannot fetch a dependency, a build fails), start it anyway,
+# so the node is never left off the mesh: a node reached over the mesh could
+# not be reached again to repair it. Then the log's last line says how the
+# update ended, for whoever lost the session that started it (deploy.sh
+# reconnects and reads it).
+STOPPED_MESHD=""
+on_exit() {
+  rc=$?
+  if [ -n "$STOPPED_MESHD" ] && ! systemctl is-active --quiet trellis-meshd; then
+    echo "!! the update failed with meshd stopped; starting it again on what is installed"
+    systemctl start trellis-meshd || true
+  fi
+  [ -z "${TRELLIS_UPDATE_DETACHED:-}" ] || echo "== node-update exit $rc"
+}
+trap on_exit EXIT
+[ -n "$DEB" ] || { echo "no trellis package in $ROOT/deb" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
+# apt, never asking: it installs what the package depends on, keeps every
+# configuration file as it is, and takes a development build whatever its
+# version (they do not sort).
+apt_install() {
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades --no-install-recommends \
+    -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef "$@"
+}
 
-step "Trellis $("$BIN" version | cut -d' ' -f2) on $(hostname)"
+step "Trellis $(dpkg-deb -f "$DEB" Trellis-Version) on $(hostname)"
 
 if systemctl is-active --quiet trellis-meshd; then
   echo "-- stopping trellis-meshd"
   systemctl stop trellis-meshd
+  STOPPED_MESHD=1
 fi
 
 step "Install"
-"$HERE/install-node.sh" "$BIN"
+if ! apt_install "$DEB" > /tmp/trellis-apt.log 2>&1; then
+  # Most often a package it depends on is not in the node's stale lists.
+  echo "-- apt could not install it; refreshing the package lists and trying again"
+  apt-get update >/dev/null 2>&1 || true
+  apt_install "$DEB" > /tmp/trellis-apt.log 2>&1 || { tail -n 25 /tmp/trellis-apt.log; echo "!! the trellis package did not install" >&2; exit 1; }
+fi
+grep -E '^trellis: ' /tmp/trellis-apt.log || true
+echo "-- installed: trellis $(dpkg-query -W -f='${Version}' trellis)"
+command -v batctl >/dev/null 2>&1 || apt_install batctl >/dev/null 2>&1 || true
 
 step "batman-adv $PIN"
 loaded="$(cat /sys/module/batman_adv/version 2>/dev/null || true)"
@@ -69,7 +106,17 @@ elif [ "$avail" = "$PIN" ] && [ "$dkms_mod" = 1 ]; then
   echo "-- loaded: $(cat /sys/module/batman_adv/version)"
 else
   echo "-- not installed for this kernel (loaded: ${loaded:-none}); building it (a few minutes)"
-  "$HERE/install-batman-adv-dkms.sh"
+  BATADV_VERSION="$PIN" "$HERE/install-batman-adv-dkms.sh"
+fi
+# The package that owns the source and has DKMS rebuild it after kernel
+# updates. Installed after the module is in place, so its own build step
+# finds nothing left to do.
+if [ -n "$BATDEB" ] && [ "$(dpkg-query -W -f='${Version}' trellis-batman-adv-dkms 2>/dev/null)" != "$(dpkg-deb -f "$BATDEB" Version)" ]; then
+  if apt_install "$BATDEB" > /tmp/trellis-apt.log 2>&1; then
+    echo "-- installed: trellis-batman-adv-dkms $(dpkg-deb -f "$BATDEB" Version)"
+  else
+    tail -n 15 /tmp/trellis-apt.log; echo "!! trellis-batman-adv-dkms did not install; the module in place is used"
+  fi
 fi
 
 step "MT7915/MT7916 driver"
@@ -95,16 +142,8 @@ step "Radio driver options"
 # Module parameters some radios need for a working encrypted mesh, from the
 # hardware database (for example ath9k_htc nohwcrypt=1). A loaded module
 # with the wrong value is reloaded, which re-probes its adapters.
+# The package wrote them to /etc/modprobe.d/trellis.conf.
 opts="$("$BIN" meshctl driver-options)"
-conf=/etc/modprobe.d/trellis.conf
-want="# Written by Trellis node-update.sh from the hardware database.
-$opts"
-if [ -z "$opts" ]; then
-  rm -f "$conf"
-elif ! [ -f "$conf" ] || [ "$(cat "$conf")" != "$want" ]; then
-  printf '%s\n' "$want" > "$conf"
-  echo "-- wrote $conf"
-fi
 printf '%s\n' "$opts" | while read -r _ mod params; do
   [ -n "${mod:-}" ] && [ -d "/sys/module/$mod" ] || continue
   for kv in $params; do
@@ -154,7 +193,7 @@ if [ -f "$DEPLOY_PROFILE" ]; then
     echo "-- installed the mesh profile from the deploy"
   # Compared by what they say: the web UI and meshctl rewrite the file
   # (comments dropped, defaults written out), which changes no setting.
-  elif ! why="$(/usr/local/bin/meshctl profile same "$DEPLOY_PROFILE" /etc/trellis/profile.yaml 2>&1)"; then
+  elif ! why="$(/usr/bin/meshctl profile same "$DEPLOY_PROFILE" /etc/trellis/profile.yaml 2>&1)"; then
     echo "!! /etc/trellis/profile.yaml differs from the deploy's mesh-profile.yaml; left as is."
     echo "   ${why#error: }"
     echo "   Nodes with different profiles cannot join each other. To replace it:"
@@ -163,11 +202,25 @@ if [ -f "$DEPLOY_PROFILE" ]; then
     echo "-- mesh profile matches the deploy"
   fi
 fi
+# The deploy carries a development release key when dev_key.pub exists on
+# the development machine: the node then trusts packages signed with it.
+# This one file is the deploy's own, so a deploy without the key removes it.
+DEPLOY_DEV_KEY="$ROOT/dev-key.pub"
+DEV_KEY_FILE=/etc/trellis/release-keys/deploy-dev.pub
+if [ -f "$DEPLOY_DEV_KEY" ]; then
+  if ! cmp -s "$DEPLOY_DEV_KEY" "$DEV_KEY_FILE"; then
+    install -D -m 0644 "$DEPLOY_DEV_KEY" "$DEV_KEY_FILE"
+    echo "-- trusts the deploy's development release key ($DEV_KEY_FILE)"
+  fi
+elif [ -f "$DEV_KEY_FILE" ]; then
+  rm -f "$DEV_KEY_FILE"
+  echo "-- removed the deploy's development release key"
+fi
 if ! [ -f /etc/trellis/node.yaml ] && [ -f /etc/trellis/profile.yaml ]; then
   # Callsign from the hostname, made a valid DNS label.
   cs="$(hostname | tr 'A-Z_.' 'a-z--' | tr -cd 'a-z0-9-' | sed 's/^-*//; s/-*$//' | cut -c1-63)"
   [ -n "$cs" ] || cs="node"
-  /usr/local/bin/meshctl node new --callsign "$cs" -o /etc/trellis/node.yaml
+  /usr/bin/meshctl node new --callsign "$cs" -o /etc/trellis/node.yaml
   echo "-- created /etc/trellis/node.yaml with callsign $cs and an automatic node ID;"
   echo "   edit it to pin node_id (1-254, unique per mesh), then: sudo meshctl reload"
 fi
@@ -178,15 +231,16 @@ step "meshd"
 # files and the mesh profile as empty or half-written files, still in the
 # page cache.
 sync
-if [ -f /etc/trellis/node.yaml ] && ! /usr/local/bin/meshctl config validate /etc/trellis/node.yaml >/dev/null 2>&1; then
-  /usr/local/bin/meshctl config validate /etc/trellis/node.yaml || true
+if [ -f /etc/trellis/node.yaml ] && ! /usr/bin/meshctl config validate /etc/trellis/node.yaml >/dev/null 2>&1; then
+  /usr/bin/meshctl config validate /etc/trellis/node.yaml || true
   echo "!! configuration invalid; meshd not started" >&2
   exit 1
 fi
 systemctl enable --quiet trellis-meshd
 systemctl start trellis-meshd
+STOPPED_MESHD=""
 for _ in $(seq 1 30); do
-  /usr/local/bin/meshctl status >/dev/null 2>&1 && break
+  /usr/bin/meshctl status >/dev/null 2>&1 && break
   sleep 0.5
 done
 if ! [ -f /etc/trellis/profile.yaml ]; then
@@ -201,7 +255,7 @@ if ! [ -f /etc/trellis/profile.yaml ]; then
   exit 0
 fi
 sleep "${SETTLE:-8}"   # let the mesh link come up before showing status
-/usr/local/bin/meshctl status
+/usr/bin/meshctl status
 
 step "Web UI"
-/usr/local/bin/meshctl web || true
+/usr/bin/meshctl web || true

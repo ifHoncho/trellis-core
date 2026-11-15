@@ -1,0 +1,20 @@
+#!/bin/sh
+# trellis-batman-adv-dkms: build the pinned batman-adv for the running
+# kernel. A build that cannot happen yet (no kernel headers) is not an
+# install failure: the package stays installed and says what is missing.
+set -e
+[ "$1" = configure ] || exit 0
+script=/usr/share/trellis/scripts/install-batman-adv-dkms.sh
+# The release this package carries (mkdeb writes it in), whatever the
+# script's own default is: the two packages are upgraded separately.
+version=@BATADV_VERSION@
+if BATADV_VERSION="$version" TRELLIS_IN_DPKG=1 "$script"; then
+  exit 0
+fi
+cat <<MSG
+trellis-batman-adv-dkms: batman-adv was NOT built for kernel $(uname -r).
+  Fix what the messages above name (usually: install this kernel's headers),
+  then run:  sudo BATADV_VERSION=$version $script
+  "meshctl doctor" shows whether the pinned batman-adv is in use.
+MSG
+exit 0

@@ -147,11 +147,12 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	r := &gossip.Record{
 		V: 1, MAC: me.MAC, ID: me.NodeID, IDSource: me.NodeIDSource, Callsign: d.cfg.Callsign,
 		Addr: addr, Version: d.opts.Version, Boot: g.boot, GW: gw, Orig: orig, Radios: d.meshRadioEntries(),
-		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, MeshChange: true,
+		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, ProfileChange: d.profile.ChangeID(), MeshChange: true,
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
 		Load:       d.gossipLoads(len(d.profile.AllLinks())),
 	}
 	r.Pos, r.NoPos = d.gossipPosition(time.Now())
+	r.Arch, r.Rollouts, _ = d.rolloutSelfCheck(ctx)
 	if d.time != nil {
 		r.Time = d.time.Role()
 	}
@@ -177,6 +178,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	if key := g.currentKey(); key != nil {
 		d.askForNewerProfile(key)
 	}
+	d.noteRoster(d.peers.Peers(), false)
 
 	// Nodes that run the mesh's links differently: same secret, different
 	// profile. A link whose ends differ in width can run at a fraction of
@@ -187,6 +189,17 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			warn("warning", "profile-differs", "%s's mesh profile differs from this node's: %s. A link only runs well when every node has it the same; install the same profile on every node",
 				p.Record.Callsign, strings.Join(diffs, "; "))
 		}
+	}
+
+	// Nodes on another release: every node of a mesh should run the same
+	// release series, so that all of them understand each other's records,
+	// profiles and mesh-wide changes.
+	others := map[string]string{}
+	for _, p := range d.peers.Peers() {
+		others[p.Record.Callsign] = p.Record.Version
+	}
+	if level, code, msg := releaseDifferences(d.opts.Version, others); code != "" {
+		warn(level, code, "%s", msg)
 	}
 
 	g.mu.Lock()

@@ -1,0 +1,140 @@
+# Changelog
+
+## 0.1.0: first alpha release
+
+The first signed release. It is an alpha: the mesh, the client network,
+gateways, multicast, the web UI and the packages are in daily use on test
+nodes, but expect rough edges, and upgrade every node of a mesh together.
+
+What follows is everything added or changed since the previous snapshot of
+this repository.
+
+### Packages, releases and upgrades
+
+- **Debian packages.** `trellis` for arm64, armhf and amd64 (the binary,
+  its systemd units, udev rule and chrony drop-in, and the hardware scripts
+  under `/usr/share/trellis`) and `trellis-batman-adv-dkms` (the pinned
+  batman-adv release, built by DKMS for the node's kernel and again after
+  every kernel update). `apt` brings in what Trellis needs. Installing,
+  upgrading and removing never touch `/etc/trellis` or `/var/lib/trellis`.
+  A node set up by the earlier install scripts is taken over by the
+  package; `scripts/install-node.sh` is gone.
+- **Signed releases.** A package carries an Ed25519 signature inside it,
+  in an archive member `dpkg` skips, so one file is both installable by
+  `apt` and checkable by a node with no other tool. Two release keys are
+  built in; an operator can trust more under `/etc/trellis/release-keys/`.
+- **Upgrades that go back by themselves.** `meshctl upgrade FILE.deb`
+  checks the signature and the version, keeps the running version and the
+  configuration, installs, then checks the node: `meshd` on the new
+  version, nothing failing that worked before, a mesh peer back if it had
+  one, the web page answering. If that does not hold, the old version and
+  its configuration go back in. It runs apart from the operator's session,
+  and a node that loses power in the middle finishes, or goes back, at its
+  next start. `--check`, `--status`, `--resume` and `--rollback`
+  (`--restore-config`) round it off.
+- **Upgrades from the web UI.** Settings → System → Software: the version
+  and package, the trusted keys, the last upgrade and its log; choose a
+  release file, review, confirm, and follow it through the restart. "Go
+  back" returns to the version before. The API is `GET/POST /v1/upgrade`
+  and `POST /v1/upgrade/rollback`; through it a package must be signed by
+  a trusted key and newer than the one installed.
+- **Mixed releases.** Every node warns while the mesh runs different
+  releases: a note for a different version of the same series, a warning
+  for a different series.
+- `meshctl doctor` checks the install (package or scripts, an upgrade left
+  unfinished, the release keys).
+- Building: `make deb`, `make deb-test` (install, upgrade, remove and purge
+  in Debian and Ubuntu containers) and `make release`.
+
+### Security
+
+- **Threat model** ([docs/security.md](docs/security.md)): what Trellis
+  protects, from whom, what stops each adversary and what remains, with
+  the review of the code against it.
+- **Firewall.** `firewall: {wan: closed|open, ssh, allow}` in the node
+  configuration, and Settings → Access → "From outside the mesh". Closed,
+  a node answers from outside the mesh only SSH, ping, the web UI where it
+  is served there, and the ports listed; the mesh, its devices and the
+  internet it shares are untouched. Nodes set up by this release start
+  closed; nodes upgraded to it stay open until closed, and say so. The
+  firewall stays in place while `meshd` is stopped.
+- **`meshd` confined.** Its systemd unit bounds it to the capabilities
+  networking needs, with `NoNewPrivileges` and a sandbox; the helpers it
+  runs inherit them.
+- **Fuzz tests** for every parser of untrusted input: gossip records and
+  messages, packages and keys, mesh profiles and profile codes, node
+  configuration, `regulatory.db`, wpa_supplicant events, DHCP leases,
+  versions and CoT. They run with the unit tests; `make fuzz` runs them
+  longer. Unpacking a package is bounded in size.
+
+### Mesh-wide profile changes
+
+- **Nodes that missed a change find the mesh again.** Each node remembers
+  the other nodes it heard in the last day. One that now hears half of
+  them or fewer is in the smaller part of its mesh: it scans every band its
+  Wi-Fi radios have for its mesh ID, pays a short visit where it hears it
+  (at the width the mesh runs there), and takes the newer profile from the
+  nodes there, or gives them its own. A group left behind together moves
+  together. The larger part of a mesh never scans, and a mesh of one node
+  never does. Not yet for HaLow links.
+- **Changes made apart.** Every mesh-wide change now carries a record of
+  its own and of the changes before it. When two parts of a mesh that each
+  changed the profile while apart meet, the later change is kept on every
+  node; the other is kept in a file on the node that settled it, and an
+  alert says how to send it again.
+- **Switching on time whatever the clocks say.** An offer gives the switch
+  as a delay as well as a time of day, and nodes go by the delay. A node
+  that restarts with a change due makes it at once when its clock cannot
+  be believed: not yet synchronised (no real-time clock), or gone back.
+- The review before sending names the nodes heard in the last day that are
+  not in reach now and will miss the change. Settings → Mesh profile
+  suggests sending changes when every node is on and in reach, from one
+  place at a time.
+
+### Mesh and radios
+
+- **Broadcasts right after a restart.** batman-adv numbers a new `bat0`'s
+  broadcasts from the start again, and other nodes dropped them as repeats
+  for seconds to minutes; `meshd` now uses up the old numbers with a short
+  warm-up that never reaches a device.
+- **Bridge loop avoidance only where it is needed.** Unset, it is on only
+  on a node that bridges wired client ports: elsewhere it protected
+  nothing and held every broadcast back for about 30 seconds after each
+  start. An explicit `true` or `false` still applies mesh-wide.
+- **Peers that restart.** A peer that restarts is no longer taken for one
+  that moved channel, and a peering that only one side holds is reset.
+- Times in the status (uptime, "since") stay right after the clock is
+  corrected at boot on nodes without a real-time clock.
+- The channel survey and the search for the mesh share the radios without
+  scanning over each other.
+
+### Web UI
+
+- Settings → System → Software (upgrades, above), and Settings → Access →
+  "From outside the mesh" (the firewall).
+- **Dismissable unrestricted-mode banner.** It shrinks, in that browser, to
+  a triangle marked U in the corner that shows the warning on hover or a
+  tap; it returns the next time the mesh enters unrestricted mode.
+- **Ignore an alert** on the Alerts page: it leaves the overview and the
+  alert count in that browser, stays listed under "Ignored", and shows
+  again if it turns more serious or comes back after an hour gone.
+- A configuration change says devices must rejoin the Wi-Fi only when it
+  changes the Wi-Fi.
+
+### Tools and development
+
+- `make deploy` builds and installs the packages; a node reached over the
+  mesh that drops its session during the update gets its outcome read
+  back; a failed update starts `meshd` again rather than leave the node
+  off the mesh. A development key in `dev_key.pub` (ignored by git) is
+  trusted by the nodes a deploy updates, and `TRELLIS_DEV_KEY` signs the
+  deploy's packages with it, for trying upgrades; a key built into Trellis
+  is refused there.
+- The DKMS script leaves a loaded batman-adv in place while a mesh uses
+  it, removes old releases only after the new one builds, and handles
+  kernel names with `+`.
+- Lab: broadcasts after a restart, the firewall, and `LAB_BLA` for bridge
+  loop avoidance. `make ui-dev` takes `UNRESTRICTED=1`.
+- Groundwork for upgrading a whole mesh from one node: the order nodes go
+  in, whose turn it is, and moving packages between nodes. Not usable
+  yet.

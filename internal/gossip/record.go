@@ -70,6 +70,11 @@ type Record struct {
 	// ProfileRev is the revision of the mesh profile the node runs
 	// (config.Profile.Revision): a node behind asks one ahead for it.
 	ProfileRev uint64 `json:"pr,omitempty"`
+	// ProfileChange is the ID of the mesh-wide change that made that
+	// revision (config.ChangeInfo), when it has one: a node that does not
+	// know it asks for the profile, and two parts of a mesh that changed it
+	// apart find out when they meet.
+	ProfileChange string `json:"pc,omitempty"`
 	// MeshChange: the node follows mesh-wide profile changes (offers).
 	MeshChange bool `json:"mc,omitempty"`
 	// Regulatory is the profile's regulatory setting: "unrestricted", or
@@ -88,7 +93,26 @@ type Record struct {
 	// NoPos: the node does not share its position (positions.share off).
 	// The others forget its last known one at once.
 	NoPos bool `json:"np,omitempty"`
+	// Arch is the node's Debian architecture (amd64, arm64, armhf): which
+	// package of a mesh-wide upgrade it takes.
+	Arch string `json:"ar,omitempty"`
+	// Rollouts: the node takes mesh-wide upgrades (a package install that
+	// trusts a release key).
+	Rollouts bool `json:"ru,omitempty"`
+	// Rollout is the node's progress in the mesh-wide upgrade under way
+	// (internal/rollout), or nil.
+	Rollout *RolloutState `json:"ro,omitempty"`
 }
+
+// RolloutState is a node's progress in a mesh-wide upgrade.
+type RolloutState struct {
+	ID     string `json:"i"`
+	Phase  string `json:"p"`
+	Reason string `json:"r,omitempty"` // why it skipped, failed or halted; short
+}
+
+// MaxRolloutReason bounds a rollout reason in a record.
+const MaxRolloutReason = 120
 
 // Position is a node's GNSS fix, compact.
 type Position struct {
@@ -166,11 +190,15 @@ func ParseLinkEntry(e string) (band string, channel, widthMHz int, ok bool) {
 	}
 	c, err1 := strconv.Atoi(parts[1])
 	w, err2 := strconv.Atoi(parts[2])
-	if parts[0] == "" || err1 != nil || err2 != nil {
+	// Channel and width are positive and modest; the band is a short
+	// lower-case name ("5g", "s1g").
+	if err1 != nil || err2 != nil || c < 1 || c > 10000 || w < 1 || w > 10000 || !reBand.MatchString(parts[0]) {
 		return "", 0, 0, false
 	}
 	return parts[0], c, w, true
 }
+
+var reBand = regexp.MustCompile(`^[a-z0-9]{1,8}$`)
 
 // RadioEntry is a radio's bands as one Radios entry.
 func RadioEntry(bands []string) string { return strings.Join(bands, "+") }
@@ -282,6 +310,14 @@ func (r *Record) validate() error {
 	if !printable(r.Regulatory, 32) {
 		return fmt.Errorf("regulatory %q not short printable text", r.Regulatory)
 	}
+	if !printable(r.Arch, 16) {
+		return fmt.Errorf("architecture %q not short printable text", r.Arch)
+	}
+	if ro := r.Rollout; ro != nil {
+		if ro.ID == "" || !printable(ro.ID, 32) || ro.Phase == "" || !printable(ro.Phase, 16) || !sentence(ro.Reason, MaxRolloutReason) {
+			return fmt.Errorf("bad rollout state")
+		}
+	}
 	if r.Time != "" && r.Time != TimeGNSS && r.Time != TimeServer {
 		return fmt.Errorf("time %q is not %s or %s", r.Time, TimeGNSS, TimeServer)
 	}
@@ -306,6 +342,9 @@ func (r *Record) validate() error {
 			return fmt.Errorf("link %q is not band/channel/width", e)
 		}
 	}
+	if r.ProfileChange != "" && !validChangeID(r.ProfileChange) {
+		return fmt.Errorf("profile change %q is not 16 hex digits", r.ProfileChange)
+	}
 	if !printable(r.Version, 64) || !printable(r.IDSource, 16) {
 		return fmt.Errorf("version or id source not short printable text")
 	}
@@ -314,6 +353,19 @@ func (r *Record) validate() error {
 
 // printable reports whether s is at most max bytes of printable ASCII
 // without spaces.
+// sentence is like printable, with spaces allowed.
+func sentence(s string, max int) bool {
+	if len(s) > max {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
 func printable(s string, max int) bool {
 	if len(s) > max {
 		return false
@@ -358,4 +410,18 @@ func Same(a, b *Record) bool {
 	ja, _ := json.Marshal(x)
 	jb, _ := json.Marshal(y)
 	return bytes.Equal(ja, jb)
+}
+
+// validChangeID is config.ValidChangeID, kept here so that gossip does not
+// import config.
+func validChangeID(s string) bool {
+	if len(s) != 16 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f') {
+			return false
+		}
+	}
+	return true
 }

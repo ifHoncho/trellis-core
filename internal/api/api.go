@@ -47,6 +47,14 @@ type Provider interface {
 	IdentifyRadio(fingerprint string, seconds int) error
 	Doctor(ctx context.Context) (string, error)
 
+	// UpgradeState is the node's software and its upgrades. Upgrade checks
+	// a release package (a .deb) and, unless dryRun, starts installing it
+	// detached from the caller; the answer comes before meshd restarts.
+	// UpgradeRollback goes back to the version before the last upgrade.
+	UpgradeState(ctx context.Context) (*UpgradeState, error)
+	Upgrade(ctx context.Context, in UpgradeRequest) (*UpgradeCheck, error)
+	UpgradeRollback(ctx context.Context) error
+
 	WebInfo() WebInfo
 	WebLogin(password string) error
 	// WebSetPassword sets the admin password. privileged callers (root on
@@ -63,8 +71,12 @@ type Server struct {
 	Mode os.FileMode
 }
 
-// maxBody bounds every request body: the largest is a node configuration.
-const maxBody = 256 << 10
+// maxBody bounds every request body but a release package: the largest is
+// a node configuration. MaxPackage bounds a package (one is some 5 MB).
+const (
+	maxBody    = 256 << 10
+	MaxPackage = 64 << 20
+)
 
 type peerKey struct{}
 
@@ -136,6 +148,27 @@ func (s *Server) Handler() http.Handler {
 		return map[string]any{"report": text}, nil
 	})
 	get("/web", func(r *http.Request) (any, error) { return p.WebInfo(), nil })
+	get("/upgrade", func(r *http.Request) (any, error) { return p.UpgradeState(r.Context()) })
+	mux.HandleFunc("POST /"+Version+"/upgrade", func(w http.ResponseWriter, r *http.Request) {
+		pkg, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxPackage))
+		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeError(w, Errorf(http.StatusRequestEntityTooLarge, "the package is larger than %d MB", MaxPackage>>20))
+			} else {
+				writeError(w, Errorf(http.StatusBadRequest, "the upload did not arrive whole (%v): try again", err))
+			}
+			return
+		}
+		in := UpgradeRequest{Package: pkg, DryRun: dryRun(r), SHA256: r.URL.Query().Get("sha256")}
+		if in.SHA256 != "" {
+			in.Package = nil // the package kept from the dry run
+		}
+		reply(w, func(r *http.Request) (any, error) { return p.Upgrade(r.Context(), in) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/upgrade/rollback", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, func(r *http.Request) (any, error) { return map[string]any{"ok": true}, p.UpgradeRollback(r.Context()) }, r)
+	})
 
 	mux.HandleFunc("PUT /"+Version+"/config/node", func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))

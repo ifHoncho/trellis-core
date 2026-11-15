@@ -1,0 +1,124 @@
+#!/bin/sh
+# trellis package: after install or upgrade. Never touches /etc/trellis
+# (the node's configuration and mesh profile) or its identity.
+set -e
+[ "$1" = configure ] || exit 0
+previous="${2:-}"
+
+running_systemd() { [ -d /run/systemd/system ]; }
+# Enable units where there is no systemctl either (a container, an image
+# being built): Debian's helper makes the same links.
+enable_units() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable "$@" >/dev/null 2>&1 || true
+  elif command -v deb-systemd-helper >/dev/null 2>&1; then
+    for u in "$@"; do deb-systemd-helper enable "$u" >/dev/null 2>&1 || true; done
+  fi
+}
+
+# The trellis group may open meshd's API socket: webd runs in it, and an
+# operator's account can be added to it to use meshctl without sudo.
+getent group trellis >/dev/null 2>&1 || groupadd --system trellis
+install -d -m 0755 /etc/trellis /var/lib/trellis
+
+# A node installed by the earlier scripts has its own copy of everything
+# under /usr/local and /etc; those would shadow the package's.
+if [ -e /usr/local/bin/trellis ] || [ -L /usr/local/bin/trellis ]; then
+  echo "trellis: taking over from the script install in /usr/local/bin"
+  for f in trellis meshd meshctl webd; do
+    t="/usr/local/bin/$f"
+    if [ "$f" = trellis ] || [ "$(readlink "$t" 2>/dev/null)" = trellis ]; then rm -f "$t"; fi
+  done
+  rm -f /etc/systemd/system/trellis-meshd.service /etc/systemd/system/trellis-webd.service \
+        /etc/systemd/system/trellis-webd.socket /etc/udev/rules.d/70-trellis-names.rules \
+        /etc/tmpfiles.d/trellis.conf
+  # The deploy's sudo rule names meshctl by its old path.
+  s=/etc/sudoers.d/trellis-deploy
+  if [ -f "$s" ] && grep -q '/usr/local/bin/meshctl' "$s"; then
+    sed 's#/usr/local/bin/meshctl#/usr/bin/meshctl#g' "$s" > "$s.new"
+    if visudo -cf "$s.new" >/dev/null 2>&1; then
+      chmod 0440 "$s.new"; mv "$s.new" "$s"
+    else
+      rm -f "$s.new"
+    fi
+  fi
+fi
+
+# hostapd's own service would fight the one meshd runs. Debian installs it
+# masked; make sure.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl mask hostapd.service >/dev/null 2>&1 || true
+else
+  mkdir -p /etc/systemd/system && ln -sf /dev/null /etc/systemd/system/hostapd.service
+fi
+if running_systemd; then
+  systemctl stop hostapd.service >/dev/null 2>&1 || true
+  if systemctl is-active --quiet dnsmasq.service 2>/dev/null; then
+    echo "trellis: WARNING: a system dnsmasq.service is running; it holds port 53 and will stop Trellis's DHCP and DNS. Disable it: systemctl disable --now dnsmasq"
+  fi
+fi
+
+# Driver options some radios need for an encrypted mesh, from the hardware
+# database. They apply when the driver next loads (a reboot, or a replug).
+conf=/etc/modprobe.d/trellis.conf
+opts="$(/usr/bin/trellis meshctl driver-options 2>/dev/null || true)"
+if [ -n "$opts" ]; then
+  printf '# Written by the trellis package from its hardware database.\n%s\n' "$opts" > "$conf.new"
+  if cmp -s "$conf.new" "$conf" 2>/dev/null; then rm -f "$conf.new"; else mv "$conf.new" "$conf"; fi
+else
+  rm -f "$conf"
+fi
+
+# Regulatory rules: the kernel asks Trellis (country and unrestricted mode
+# alike). On a kernel that cannot ask, its own database stays in charge.
+rc=0
+out="$(/usr/share/trellis/scripts/install-regulatory.sh 2>&1)" || rc=$?
+[ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/trellis: /'
+[ "$rc" -eq 0 ] || echo "trellis: the regulatory rules stay as they were; see: meshctl doctor"
+
+if running_systemd; then
+  systemctl daemon-reload || true
+  udevadm control --reload 2>/dev/null || true
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/trellis.conf 2>/dev/null || true
+  # Mesh time: chrony reads the drop-in the package ships.
+  if ! grep -q '^confdir /etc/chrony/conf.d' /etc/chrony/chrony.conf 2>/dev/null; then
+    echo "trellis: WARNING: /etc/chrony/chrony.conf has no 'confdir /etc/chrony/conf.d'; add it for mesh time"
+  fi
+  # Restarted only when the drop-in differs from what chrony last got: a
+  # restart throws away its measurements, and the mesh's time with them
+  # for a few minutes.
+  sum="$(cat /etc/chrony/conf.d/trellis.conf 2>/dev/null | sha256sum)"
+  seen=/var/lib/trellis/chrony-dropin.sha256
+  if [ "$sum" != "$(cat "$seen" 2>/dev/null)" ]; then
+    systemctl try-restart chrony.service 2>/dev/null || systemctl try-restart chronyd.service 2>/dev/null || true
+    printf '%s\n' "$sum" > "$seen"
+  fi
+fi
+
+# Start at boot. An upgrade leaves the choice as the operator set it.
+if [ -z "$previous" ]; then
+  enable_units trellis-meshd.service trellis-webd.socket
+fi
+
+if running_systemd; then
+  if systemctl is-enabled --quiet trellis-webd.socket 2>/dev/null; then
+    systemctl start trellis-webd.socket 2>/dev/null ||
+      echo "trellis: WARNING: the web UI could not take ports 443 and 80 (is another web server running?): systemctl status trellis-webd.socket"
+  fi
+  # Running daemons move to the new binary. Browsers sign in again.
+  systemctl try-restart trellis-webd.service 2>/dev/null || true
+  systemctl try-restart trellis-meshd.service 2>/dev/null || true
+fi
+
+if [ -z "$previous" ] && [ -f /etc/trellis/profile.yaml ]; then
+  echo "trellis: installed. This node keeps its configuration, mesh profile and identity."
+elif [ -z "$previous" ]; then
+  cat <<'MSG'
+trellis: installed. Next:
+  1. sudo meshctl doctor        checks the kernel, batman-adv, radios and helpers
+  2. sudo reboot                the node starts in setup mode
+  3. join the Wi-Fi "trellis-setup-XXXX" (passphrase trellis-setup), or plug
+     into one of the node's Ethernet ports, and open https://10.73.0.1
+MSG
+fi
+exit 0

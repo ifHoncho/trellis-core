@@ -69,7 +69,9 @@ func removeSetupProfile(stateDir string) {
 // defaultNode is the configuration of a node that has no node.yaml: the
 // defaults, under a callsign made from the hostname.
 func defaultNode(hostname string) (*config.Node, error) {
-	n := &config.Node{Schema: config.SchemaVersion, Callsign: defaultCallsign(hostname)}
+	// A node Trellis sets up starts closed to its uplink (docs/security.md).
+	n := &config.Node{Schema: config.SchemaVersion, Callsign: defaultCallsign(hostname),
+		Firewall: config.FirewallConfig{WAN: config.FirewallClosed}}
 	n.ApplyDefaults()
 	if err := n.Validate(); err != nil {
 		return nil, err

@@ -1,0 +1,26 @@
+#!/bin/sh
+# trellis package: before removal. An upgrade keeps everything running
+# until the new version's files are in place.
+set -e
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      systemctl stop trellis-webd.socket trellis-webd.service 2>/dev/null || true
+      # meshd removes every interface, route and rule it made as it stops.
+      systemctl stop trellis-meshd.service 2>/dev/null || true
+    fi
+    for u in trellis-meshd.service trellis-webd.socket; do
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable "$u" >/dev/null 2>&1 || true
+      elif command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper disable "$u" >/dev/null 2>&1 || true
+      fi
+    done
+    # meshd leaves its firewall in place when it stops; removing Trellis
+    # removes it.
+    nft delete table inet trellis_fw 2>/dev/null || true
+    # The kernel reads its own regulatory database again.
+    /usr/share/trellis/scripts/install-regulatory.sh --undo 2>&1 | sed 's/^/trellis: /' || true
+    ;;
+esac
+exit 0

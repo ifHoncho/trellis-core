@@ -94,7 +94,7 @@ func (t *timeReconciler) Reconcile(ctx context.Context) (res reconcile.Result, _
 	tr, err := t.chrony.Tracking(ctx)
 	if errors.Is(err, chrony.ErrNotInstalled) {
 		t.set(status.Clock{Service: "none", Note: "chrony is not installed: this node neither serves nor follows mesh time"}, "")
-		warn("info", "time-no-chrony", "chrony is not installed: this node neither serves nor follows mesh time (scripts/install-node.sh installs it)")
+		warn("info", "time-no-chrony", "chrony is not installed: this node neither serves nor follows mesh time (sudo apt install chrony)")
 		return res, nil
 	}
 	if err != nil {

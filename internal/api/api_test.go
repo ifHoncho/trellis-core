@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -21,6 +22,19 @@ type fakeProvider struct {
 	dry        bool
 	privileged *bool
 	identified string
+	pkg        []byte
+	pkgDry     bool
+}
+
+func (f *fakeProvider) UpgradeState(ctx context.Context) (*UpgradeState, error) {
+	return &UpgradeState{Version: "test", Package: "0.3.0"}, nil
+}
+func (f *fakeProvider) Upgrade(ctx context.Context, in UpgradeRequest) (*UpgradeCheck, error) {
+	f.pkg, f.pkgDry = in.Package, in.DryRun
+	return &UpgradeCheck{From: "0.3.0", To: "0.3.1", Started: !in.DryRun, SHA256: in.SHA256}, nil
+}
+func (f *fakeProvider) UpgradeRollback(ctx context.Context) error {
+	return Errorf(http.StatusConflict, "there is no upgrade to go back from")
 }
 
 func (f *fakeProvider) Status(ctx context.Context) (*status.Status, error) {
@@ -216,6 +230,37 @@ func TestWebAuthEndpoints(t *testing.T) {
 	}
 	if want := os.Getuid() == 0; *p.privileged != want {
 		t.Errorf("privileged = %v for uid %d", *p.privileged, os.Getuid())
+	}
+}
+
+// A release package is far larger than any other request, and reaches the
+// provider byte for byte.
+func TestUpgradeEndpoints(t *testing.T) {
+	p, c, ctx := startServer(t)
+	pkg := make([]byte, 3<<20)
+	for i := range pkg {
+		pkg[i] = byte(i * 7)
+	}
+	code, _, body, err := c.Raw(ctx, "POST", "/upgrade", "dry_run=1", pkg)
+	if err != nil || code != 200 || !strings.Contains(string(body), `"to": "0.3.1"`) {
+		t.Fatalf("upgrade dry run: %d %s %v", code, body, err)
+	}
+	if !p.pkgDry || !bytes.Equal(p.pkg, pkg) {
+		t.Fatalf("the package did not arrive intact (dry %v, %d bytes)", p.pkgDry, len(p.pkg))
+	}
+	// Starting by the hash of the package checked before: no package is sent.
+	if code, _, body, _ := c.Raw(ctx, "POST", "/upgrade", "sha256=abc123", []byte("{}")); code != 200 || p.pkg != nil || !strings.Contains(string(body), `"sha256": "abc123"`) {
+		t.Errorf("start by hash: %d %s, package %d bytes", code, body, len(p.pkg))
+	}
+	if code, _, body, _ := c.Raw(ctx, "GET", "/upgrade", "", nil); code != 200 || !strings.Contains(string(body), `"package": "0.3.0"`) {
+		t.Errorf("upgrade state: %d %s", code, body)
+	}
+	if code, _, _, _ := c.Raw(ctx, "POST", "/upgrade/rollback", "", []byte("{}")); code != http.StatusConflict {
+		t.Errorf("rollback refusal: %d", code)
+	}
+	// Other endpoints keep their small limit.
+	if code, _, _, _ := c.Raw(ctx, "PUT", "/config/node", "", pkg); code != http.StatusBadRequest {
+		t.Errorf("a 3 MB node configuration was taken: %d", code)
 	}
 }
 

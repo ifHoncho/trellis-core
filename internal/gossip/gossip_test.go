@@ -3,6 +3,7 @@ package gossip
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -339,5 +340,33 @@ func TestPosition(t *testing.T) {
 	off.NoPos = true
 	if Same(&lost, &off) {
 		t.Error("turning sharing off compares as no change")
+	}
+}
+
+// A node's architecture and rollout progress travel, and a malformed
+// rollout state is refused.
+func TestRolloutFields(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	r := rec("ea:67:61:6f:bc:8b", 7, 1)
+	r.Arch, r.Rollouts = "arm64", true
+	r.Rollout = &RolloutState{ID: "0a1b2c3d4e5f", Phase: "skipped", Reason: "no package for armhf"}
+	pkt, err := Seal(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(k, pkt)
+	if err != nil || got.Arch != "arm64" || !got.Rollouts || *got.Rollout != *r.Rollout {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, bad := range []*RolloutState{
+		{ID: "", Phase: "done"},
+		{ID: "x", Phase: "done", Reason: "line\nbreak"},
+		{ID: "x", Phase: "done", Reason: strings.Repeat("r", MaxRolloutReason+1)},
+	} {
+		r.Rollout = bad
+		pkt, _ := Seal(k, r)
+		if _, err := Open(k, pkt); err == nil {
+			t.Errorf("accepted %+v", bad)
+		}
 	}
 }

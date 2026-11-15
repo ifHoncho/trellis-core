@@ -86,7 +86,11 @@ function effectsBody(res, intro, said = []) {
   const effects = res.effects.filter((e) => !said.includes(e.code));
   if (effects.length) out.push(h('div.notices', effects.map((e) => notice(e))));
   else out.push(h('p.dim', 'Nothing running is interrupted.'));
-  if (res.ap && res.ap.enabled) {
+  // The Wi-Fi details, only when the change touches the Wi-Fi: it comes up,
+  // moves or restarts, gets new credentials (or a new name with the node),
+  // or the node joins a mesh.
+  const wifiCodes = ['ap-credentials', 'ap-band', 'ap-moves', 'ap-restart', 'ap-up', 'renamed', 'joins-mesh'];
+  if (res.ap && res.ap.enabled && res.effects.some((e) => wifiCodes.includes(e.code))) {
     out.push(h('div', { style: { marginTop: '4px' } },
       h('div.label', { style: { marginBottom: '8px' } }, 'Afterwards, this node’s Wi-Fi is'),
       h('div.join',

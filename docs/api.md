@@ -193,7 +193,7 @@ private mesh of its own, so that its Wi-Fi (`trellis-setup-XXXX`, passphrase
 
 | Request | Body |
 |---|---|
-| `POST /profile/mesh` | A profile for every node: `PUT /profile`'s forms plus `"delay_s"` (15–900, default 60). This node sends it to every node it knows over the mesh, authenticated under the mesh's key, and every node switches to it at the same moment, `delay_s` from now (the nodes keep one time). It gets the next revision (`revision` in the profile), and a node that missed it takes it from any node that has it, once it hears one. The mesh ID and secret cannot change this way (that is a re-key). Takes `?dry_run=1`; the answer adds `revision`, `apply_at` and `nodes` (those it goes to), and its effects are the mesh's: the links that restart at the switch, nodes that cannot follow (no radio for the new links, or an older version), and regulatory modes it changes on other nodes. `GET /status` follows it in `mesh_change`: the revision, the moment, and on the sending node each node's answer (`sent`, `has it`, `refused: …`). |
+| `POST /profile/mesh` | A profile for every node: `PUT /profile`'s forms plus `"delay_s"` (15–900, default 60). This node sends it to every node it knows over the mesh, authenticated under the mesh's key, and every node switches to it at the same moment, `delay_s` from now (the nodes keep one time). It gets the next revision (`revision` in the profile) and a change record (`change`: an `id`, the moment `at`, the node `by`, and the `earlier` changes' ids), and a node that missed it takes it from any node that has it, once it hears one. When two parts of a mesh each made a change while apart, the later one is kept on every node as a new revision, and the other is kept on the nodes that settled it (an alert names the file). The mesh ID and secret cannot change this way (that is a re-key). Takes `?dry_run=1`; the answer adds `revision`, `apply_at` and `nodes` (those it goes to), and its effects are the mesh's: the links that restart at the switch, nodes that cannot follow (no radio for the new links, or an older version), regulatory modes it changes on other nodes, and nodes heard in the last day that are not in reach now (`mesh-change-away`: they will miss it). `GET /status` follows it in `mesh_change`: the revision, the moment, and on the sending node each node's answer (`sent`, `has it`, `refused: …`). |
 | `POST /setup` | `{"callsign": "relay-7", "node_id": 0}` plus the profile in one of `PUT /profile`'s forms. Writes both files and applies them in one step. Takes `?dry_run=1`; the answer's `ap` is the Wi-Fi to join afterwards. |
 
 The first `PUT /password` of a node in setup mode needs no login: whoever
@@ -208,6 +208,14 @@ password`).
 | `POST /radios/identify` | `{"fingerprint": "…", "seconds": 10}` | blinks that radio's LED. `409` when the driver exposes none (`led: false` in the status). |
 | `POST /reconcile` | | asks the control loop for a pass now |
 | `POST /reload` | | re-reads the configuration files (after editing them by hand) |
+
+## Software
+
+| Request | Body | Effect |
+|---|---|---|
+| `GET /upgrade` | | `{version, package, arch, trusted_keys, running, pending, last, log}`: the release meshd runs, the installed package's version (absent when Trellis was not installed from a package), the node's architecture, how many release keys it trusts, an upgrade under way (`pending`: `{from, to, phase, started, reason}`, `phase` being `installing`, `checking` or `rolling-back`), how the last one ended (`last`: `{result, from, to, reason, finished, healthy_after, can_roll_back}`, `result` being `upgraded`, `rolled-back`, `unchanged` or `failed`) and the last lines of its log |
+| `POST /upgrade` | a `trellis` package file, as it is (at most 64 MB) | checks it: signed by a release key the node trusts, for its architecture, newer than the one installed; answers `{from, to, arch, signed_by, started}`. Without `?dry_run=1` it then starts the upgrade, detached: the node installs the package, restarts, checks itself and goes back to the version and configuration it had when it is not healthy, all of it as `meshctl upgrade` does. The answer comes before meshd and webd restart; follow it with `GET /upgrade`, and sign in again once webd is back. `409` while an upgrade runs or is unfinished, or when the node trusts no key. An unsigned or older package, or one signed with an unknown key, is refused here; only root on the node can install one (`meshctl upgrade --allow-untrusted`, `--allow-downgrade`). |
+| `POST /upgrade/rollback` | | goes back to the version before the last upgrade, keeping the configuration as it is now; `409` when there is none (`last.can_roll_back`) |
 
 ## Live status
 

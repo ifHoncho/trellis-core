@@ -24,7 +24,7 @@ RULE=/etc/udev/rules.d/85-trellis-regulatory.rules
 SHARE=/usr/share/trellis
 NONE="$SHARE/regulatory.db.none"
 NONE_SIG="$SHARE/regulatory.db.p7s.none"
-BIN=/usr/local/bin/trellis
+BIN=/usr/bin/trellis
 STATE=/run/trellis-crda/regdom.json
 
 say() { printf '%s\n' "$*"; }
@@ -160,7 +160,9 @@ kernel_asks() {
   { dmesg 2>/dev/null || journalctl -k -b --no-pager 2>/dev/null; } \
     | grep -q -E 'failed to load regulatory.db|regulatory.db is malformed or signature is missing/invalid'
 }
-if kernel_asks; then
+# trellis crda's own record of an answer since boot proves it (the kernel's
+# boot message may have rotated out of its log on a node up for long).
+if [ -f "$STATE" ] || kernel_asks; then
   if [ ! -f "$STATE" ]; then
     cur="$(iw reg get 2>/dev/null | sed -n 's/^country \([A-Z0-9][A-Z0-9]\):.*/\1/p' | head -1)"
     if [ -n "$cur" ] && [ "$cur" != 00 ]; then

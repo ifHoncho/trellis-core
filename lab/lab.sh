@@ -126,6 +126,15 @@ NS air ip link set air0 up
 # The air bridge must not talk IGMP/MLD snooping games with batman frames.
 NS air sh -c 'echo 0 > /sys/class/net/air0/bridge/multicast_snooping' 2>/dev/null
 
+# LAB_BLA: bridge loop avoidance in the lab's profile: off (default, see
+# below), on, or auto (unset, as a real mesh has it: on where a node bridges
+# wired client ports, which every lab node does).
+case "${LAB_BLA:-off}" in
+  off) BLA_YAML=", bridge_loop_avoidance: false" ;;
+  on) BLA_YAML=", bridge_loop_avoidance: true" ;;
+  auto) BLA_YAML="" ;;
+  *) echo "LAB_BLA is off, on or auto" >&2; exit 2 ;;
+esac
 cat > "$RUN/profile.yaml" <<YAML
 schema: 0
 name: lab
@@ -134,12 +143,10 @@ sae_passphrase: lab-passphrase-not-secret
 regulatory: {mode: country, country: US}
 radio: {band: 5g, channel: 149}
 prefix: 10.73.0.0/16
-# Bridge loop avoidance off in the lab: with it on, the in-kernel batman-adv
-# of the development kernel (Fedora 7.2) drops every broadcast from a client
-# behind a wired client port, so EUDs cannot ARP across the mesh (cause not
-# yet identified). Real nodes on the pinned batman-adv, with Wi-Fi clients,
-# work with it on. See docs/dev/testing.md.
-batman: {orig_interval_ms: 500, bridge_loop_avoidance: false}
+# Bridge loop avoidance off by default (LAB_BLA): with it on, batman-adv
+# holds back every broadcast for ~30 s each time bat0 is created, and tests
+# that act right after a start fail. See docs/dev/testing.md.
+batman: {orig_interval_ms: 500$BLA_YAML}
 YAML
 
 lab_mac() {
@@ -352,6 +359,59 @@ left=$(NS node3 ip -o link show 2>/dev/null | grep -cE 'bat0|br-mesh')
 if [ "$left" = 0 ]; then pass "T4a stopping meshd removes bat0 and br-mesh"; else fail "T4a teardown" "$left Trellis interfaces left in node3"; fi
 start_node 3
 if wait_converged 40; then pass "T4b second start after a clean stop converges"; else fail "T4b restart" "did not reconverge"; fi
+
+# T4c: a new bat0 numbers its broadcasts from 1 again, and the other nodes
+# drop numbers they saw from the old one; meshd's warm-up moves them on.
+# node 3 restarts once more while node 1 records the broadcast numbers it
+# receives from it: within seconds they must pass batman-adv's window (64),
+# node 3 must resolve a fresh address on node 1 (an ARP broadcast), and no
+# warm-up frame may reach a device.
+n3mac=$(NS node3 cat /sys/class/net/eth1/address)
+: > "$RUN/t4c-bcast.txt"
+ip netns exec node1 python3 -u -c '
+import socket, struct, sys
+orig = bytes.fromhex(sys.argv[1].replace(":", ""))
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x4305))
+s.bind(("eth1", 0x4305))
+while True:
+    p = s.recv(2048)[14:]
+    if len(p) >= 14 and p[0] == 0x01 and p[8:14] == orig:   # BATADV_BCAST from node 3
+        print(struct.unpack(">I", p[4:8])[0], flush=True)
+' "$n3mac" > "$RUN/t4c-bcast.txt" 2>&1 &
+t4ccap=$!
+ip netns exec eud1 python3 -u -c '
+import socket
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x88b5))
+s.bind(("eth0", 0x88b5))
+while True:
+    s.recv(2048); print("x", flush=True)
+' > "$RUN/t4c-eud1.txt" 2>&1 &
+t4ceud=$!
+warm0=$(grep -c 'broadcast warm-up sent.*frames=64' "$RUN/node3.log")
+kill "$(cat "$RUN/node3/pid")"
+for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+t4cmark=$(wc -l < "$RUN/t4c-bcast.txt")
+start_node 3
+wait_converged 40 || true
+for _ in $(seq 1 30); do
+  [ "$(grep -c 'broadcast warm-up sent.*frames=64' "$RUN/node3.log")" -gt "$warm0" ] && break
+  sleep 0.5
+done
+warmed=$(( $(grep -c 'broadcast warm-up sent.*frames=64' "$RUN/node3.log") - warm0 ))
+NS node1 ip addr add 10.73.250.1/32 dev br-mesh
+t4c=""
+for k in $(seq 1 10); do
+  if NS node3 ping -c 1 -W 1 10.73.250.1 >/dev/null 2>&1; then t4c=$k; break; fi
+done
+NS node1 ip addr del 10.73.250.1/32 dev br-mesh
+kill "$t4ccap" "$t4ceud" 2>/dev/null; wait "$t4ccap" "$t4ceud" 2>/dev/null
+maxseq=$(tail -n +"$((t4cmark + 1))" "$RUN/t4c-bcast.txt" | sort -n | tail -1)
+leaked=$(grep -c x "$RUN/t4c-eud1.txt")
+if [ "$warmed" = 1 ] && [ "${maxseq:-0}" -ge 66 ] && [ -n "$t4c" ] && [ "$leaked" = 0 ]; then
+  pass "T4c after a restart node 1 received node 3's broadcasts up to number $maxseq (window 64), node 3's ARP answered on try $t4c, no warm-up frame reached a device"
+else
+  fail "T4c broadcasts after a restart" "warm-ups this start: $warmed; highest broadcast number at node 1: ${maxseq:-none}; ARP answered: ${t4c:-no}; frames at eud1: $leaked"
+fi
 
 # T5: invalid config is rejected by name and the running state is untouched.
 cp "$RUN/node1/node.yaml" "$RUN/node1/node.yaml.good"
@@ -1177,6 +1237,43 @@ else
     pass "W4 the UI answers on the mesh only: node 1's uplink address refuses, serves with web.wan_access on, and refuses again with it off"
   else
     fail "W4 UI reachable from the mesh only" "uplink address: before=$before, wan_access on=$after, off again=$again ($(tr '\n' ' ' < "$RUN/w-wan.txt"))"
+  fi
+
+  # F1: firewall.wan closed. Node 1 runs two listeners on every address;
+  # from its uplink network only the one listed in firewall.allow answers,
+  # the mesh side reaches both, ICMP passes, and the mesh's clients keep
+  # their internet through node 1 (forwarded traffic is not filtered).
+  # Opened again, both answer from the uplink.
+  ip netns exec node1 $EUD tcpserve 0.0.0.0 4444 > /dev/null 2>&1 &
+  f1a=$!
+  ip netns exec node1 $EUD tcpserve 0.0.0.0 5201 > /dev/null 2>&1 &
+  f1b=$!
+  sleep 0.5
+  reach() { if NS "$1" $EUD tcpclient "$2" "$3" 0.2 > /dev/null 2>&1; then echo yes; else echo no; fi; }
+  open_before=$(reach inet 100.64.1.2 4444)
+  cp "$RUN/node1/node.yaml" "$RUN/node1/node.yaml.f1"
+  printf 'firewall:\n  wan: closed\n  allow: ["tcp/5201"]\n' >> "$RUN/node1/node.yaml"
+  ctl 1 reload > "$RUN/f1.txt" 2>&1
+  sleep 3
+  shut=$(reach inet 100.64.1.2 4444); listed=$(reach inet 100.64.1.2 5201)
+  mesh=$(reach eud1 10.73.1.1 4444)
+  ping_ok=no; NS inet ping -c 1 -W 2 100.64.1.2 > /dev/null 2>&1 && ping_ok=yes
+  fwd=no; NS eud1 ping -c 2 -W 2 198.51.100.1 > /dev/null 2>&1 && fwd=yes
+  # The firewall reads its counter on its own pass (every 15 s).
+  for _ in $(seq 1 20); do
+    fw=$(jsonq 1 "s['gateway']['firewall'] + ' ' + str(s['gateway'].get('firewall_dropped', 0))")
+    [ "${fw##* }" -gt 0 ] 2>/dev/null && break
+    sleep 1
+  done
+  mv "$RUN/node1/node.yaml.f1" "$RUN/node1/node.yaml"
+  ctl 1 reload >> "$RUN/f1.txt" 2>&1
+  sleep 3
+  open_after=$(reach inet 100.64.1.2 4444)
+  kill "$f1a" "$f1b" 2>/dev/null; wait "$f1a" "$f1b" 2>/dev/null
+  if [ "$open_before $shut $listed $mesh $ping_ok $fwd $open_after" = "yes no yes yes yes yes yes" ] && [ "${fw%% *}" = closed ] && [ "${fw##* }" -gt 0 ] 2>/dev/null; then
+    pass "F1 firewall.wan closed: from the uplink only the listed port and ICMP answer ($fw packets turned away), the mesh side reaches everything, clients keep their internet; opened again, all answer"
+  else
+    fail "F1 firewall.wan closed" "open before=$open_before closed: unlisted=$shut listed=$listed mesh-side=$mesh icmp=$ping_ok clients' internet=$fwd status=[$fw] open after=$open_after ($(tr '\n' ' ' < "$RUN/f1.txt"))"
   fi
 
   # W5: a node with no configuration at all (setup mode), set up through

@@ -141,6 +141,70 @@ type WebInfo struct {
 	Prefix     string    `json:"prefix"`     // the mesh prefix
 }
 
+// UpgradeState is how this node's software stands: the version installed,
+// an upgrade under way, how the last one ended, and its log.
+type UpgradeState struct {
+	// Version is what meshd runs; Package the installed package's version,
+	// empty when Trellis was not installed from a package (then it cannot
+	// be upgraded from the API: there is nothing to go back to).
+	Version string `json:"version"`
+	Package string `json:"package,omitempty"`
+	// Arch is the node's Debian architecture: the package it needs.
+	Arch string `json:"arch,omitempty"`
+	// TrustedKeys counts the release keys this node accepts packages from.
+	TrustedKeys int `json:"trusted_keys"`
+	// Running: an upgrade's unit runs now. Pending is its recorded state
+	// (also after a power loss, until it is finished).
+	Running bool            `json:"running"`
+	Pending *UpgradePending `json:"pending,omitempty"`
+	Last    *UpgradeOutcome `json:"last,omitempty"`
+	Log     []string        `json:"log,omitempty"`
+}
+
+// UpgradePending is an upgrade under way.
+type UpgradePending struct {
+	From    string    `json:"from"`
+	To      string    `json:"to"`
+	Phase   string    `json:"phase"` // installing, checking, rolling-back
+	Started time.Time `json:"started"`
+	Reason  string    `json:"reason,omitempty"`
+}
+
+// UpgradeOutcome is how the last upgrade ended.
+type UpgradeOutcome struct {
+	Result       string    `json:"result"` // upgraded, rolled-back, unchanged, failed
+	From         string    `json:"from"`
+	To           string    `json:"to"`
+	Reason       string    `json:"reason,omitempty"`
+	Finished     time.Time `json:"finished"`
+	HealthyAfter bool      `json:"healthy_after"`
+	// CanRollBack: the version before is kept and can be put back.
+	CanRollBack bool `json:"can_roll_back,omitempty"`
+}
+
+// UpgradeRequest is a package to check or install. A dry run keeps the
+// package on the node and answers with its SHA-256; a request naming that
+// hash installs it without sending it again (over a slow mesh link, a
+// package is minutes of airtime).
+type UpgradeRequest struct {
+	Package []byte
+	DryRun  bool
+	SHA256  string
+}
+
+// UpgradeCheck is what a package would do to this node.
+type UpgradeCheck struct {
+	// SHA256 names the checked package, kept on the node for a request
+	// that starts the upgrade without sending it again.
+	SHA256   string `json:"sha256"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Arch     string `json:"arch"`
+	SignedBy string `json:"signed_by"`
+	// Started: the upgrade began (not a dry run).
+	Started bool `json:"started"`
+}
+
 // LoginInput is a password to check.
 type LoginInput struct {
 	Password string `json:"password"`

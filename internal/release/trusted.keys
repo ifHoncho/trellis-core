@@ -1,0 +1,7 @@
+# Release keys every Trellis build trusts, one per line:
+#   trellis-release-key v1 <base64 public key> <comment>
+# "meshctl upgrade" installs only packages signed by one of these, or by a
+# key the node's operator added under /etc/trellis/release-keys/.
+trellis-release-key v1 4Rp5VQsRUY3rC38t/ptsioaQO+OitdoXAzjnviBQmyA= 1
+trellis-release-key v1 lzeCUjdGo13+o6TWzzuowKlUmWrOM6klZM4SZ/ReJ9M= 2
+

@@ -6,11 +6,57 @@ headers (`/usr/include/linux/nl80211.h`, `batman_adv.h`) plus Python 3.
 ```sh
 make            # bin/trellis, with bin/meshd and bin/meshctl symlinks
 make cross      # dist/trellis-linux-{arm64,armv7,amd64}
+make deb        # dist/deb/: trellis_VERSION_{arm64,armhf,amd64}.deb, trellis-batman-adv-dkms
 make check      # gofmt, go vet, unit tests
 ```
 
-Binaries are static (`CGO_ENABLED=0`), stripped, about 9 MB. The version
-string comes from `git describe`; override with `make VERSION=x.y.z`.
+Binaries are static (`CGO_ENABLED=0`), stripped, about 12 MB. The version
+string comes from `git describe`; override with `make VERSION=x.y.z`. A
+release is a tag named `vX.Y.Z`, and its version is `X.Y.Z`.
+
+## Packages and releases
+
+`make deb` needs nothing but Go: `tools/mkdeb` writes the packages itself.
+The first run downloads the pinned batman-adv release
+(`packaging/dkms/source` names it and its checksum) into `dist/cache/`.
+
+| Package | Contents |
+|---|---|
+| `trellis` | `/usr/bin/trellis` (and `meshd`, `meshctl`, `webd`), the systemd units, udev rule, tmpfiles and chrony drop-in, and under `/usr/share/trellis` the scripts for the radios Trellis supports. Its install scripts are `packaging/deb/trellis.*` |
+| `trellis-batman-adv-dkms` | the batman-adv source under `/usr/src`; installing it builds the module with DKMS (`packaging/deb/dkms.*`) |
+
+Every file in a package carries the last commit's time, so the same commit
+gives the same packages. `make deb-test` installs, upgrades, removes and
+purges them in Debian and Ubuntu containers
+([testing.md](testing.md#packages-in-containers)).
+
+**Signing.** A release key is an Ed25519 key pair:
+
+```sh
+go run ./tools/mkdeb keygen --out ~/keys/trellis-release.key --comment "who holds it"
+```
+
+It prints the public line. Put that line in
+`internal/release/trusted.keys` and commit it: nodes trust the keys built
+into the version they run, so the key must be in a release before it can
+sign the next one. Keep the secret file off the network.
+
+**A release:**
+
+```sh
+git tag -s v0.4.0 && TRELLIS_RELEASE_KEY=~/keys/trellis-release.key make release
+```
+
+writes `dist/release/0.4.0/`: the signed packages, the public key and
+`SHA256SUMS` (also signed with gpg when `GPG_KEY` names a key). It refuses
+an untagged or modified tree and a key that is not in `trusted.keys`;
+`ALLOW_DEV=1` and `UNSIGNED=1` make a trial run. `go run ./tools/mkdeb
+verify --pub KEYS FILE.deb` checks a package by hand.
+
+A node takes a release with `sudo meshctl upgrade FILE.deb`
+([guide](../guide.md#9-upgrading)). To try one that no built-in key signed,
+put the public line in `/etc/trellis/release-keys/NAME.pub` on the node, or
+pass `--allow-untrusted`.
 
 ## Deploying to test nodes
 
@@ -30,21 +76,40 @@ scripts/deploy.sh --no-check             # skip tests when iterating quickly
 TRELLIS_SSH_JUMP=user@192.0.2.10 scripts/deploy.sh user@10.73.129.1
 ```
 
-Nodes need `wpasupplicant`, `iw`, `batctl`, `hostapd`, `dnsmasq-base` (the
-binary only: the `dnsmasq` package starts a system DNS server on port 53 that
-blocks Trellis's own) and `nftables`; `install-node.sh` installs whatever is
-missing. `meshctl ap` prints the Wi-Fi join QR code in the terminal, and
+Nodes need `wpasupplicant`, `iw`, `hostapd`, `dnsmasq-base` (the binary
+only: the `dnsmasq` package starts a system DNS server on port 53 that
+blocks Trellis's own), `nftables` and `chrony`; the `trellis` package
+depends on them, so `apt` installs whatever is missing. `meshctl ap` prints the Wi-Fi join QR code in the terminal, and
 `meshctl profile share` the mesh profile's; neither needs another package.
 
-`make deploy` runs gofmt, vet and the unit tests, builds the binary for each
-node's architecture (asked over SSH), syncs only the binary, `scripts/` and
-`packaging/` to `~/trellis-deploy/` on each node, and runs
+`make deploy` runs gofmt, vet and the unit tests, builds the `trellis`
+package for each node's architecture (asked over SSH), syncs it with
+`scripts/` and `packaging/` to `~/trellis-deploy/` on each node, and runs
 `scripts/node-update.sh` there with sudo. That script does every node-side
-step in the right order and skips what is already done: stop meshd,
-install the binary, unit and udev rule, load (or if needed build) the pinned
-batman-adv, install the fallback regulatory database only if the kernel
-rejects the current one, start meshd and print `meshctl status`. The version
-string (`git describe` plus a timestamp) shows which build a node runs.
+step in the right order and skips what is already done: stop meshd, install
+the package with `apt` (a node set up by earlier versions' install scripts
+is taken over by the package), load (or if needed build) the pinned
+batman-adv and install its package, install the fallback regulatory
+database only if the kernel rejects the current one, start meshd and print
+`meshctl status`. The version string (`git describe` plus a timestamp)
+shows which build a node runs. Development builds are not signed and their
+versions do not sort, so a deploy installs with `apt`, not with
+`meshctl upgrade`.
+
+To try upgrades on test nodes (the web UI, the API, a rollout) with
+packages no built-in key signed, use a development key, never a release
+key:
+
+```sh
+go run ./tools/mkdeb keygen --out ~/keys/trellis-dev.key --comment dev > dev_key.pub
+TRELLIS_DEV_KEY=~/keys/trellis-dev.key make deploy
+```
+
+A deploy with `dev_key.pub` in the repository root (git ignores it) makes
+each node trust it (`/etc/trellis/release-keys/deploy-dev.pub`; a deploy
+without it removes that file again), and `TRELLIS_DEV_KEY` signs the
+deploy's packages with it. The deploy refuses a key that is in
+`trusted.keys`.
 
 ### Changing the mesh profile (band, channel)
 
@@ -145,21 +210,28 @@ with different profiles cannot join each other.
 
 ## Installing on a node by hand
 
-Copy the binary for the node's architecture (`arm64` for most current
-single-board computers on a 64-bit OS) and the repo's `scripts/` and `packaging/`
-directories, then as root:
+Copy the packages for the node's architecture (`arm64` for most current
+single-board computers on a 64-bit OS), then:
 
 ```sh
-sudo scripts/install-batman-adv-dkms.sh     # pinned batman-adv 2026.3 via DKMS
-sudo scripts/install-node.sh dist/trellis-linux-arm64
-meshctl doctor
+sudo apt install ./trellis_*_arm64.deb ./trellis-batman-adv-dkms_*_all.deb
+sudo meshctl doctor
+sudo reboot        # the node comes up in setup mode: the guide's step 2
+```
+
+or, instead of the setup page:
+
+```sh
 sudo meshctl profile new --name alpha -o /etc/trellis/profile.yaml   # once per mesh; copy to every node
 sudo meshctl node new --callsign node-1 -o /etc/trellis/node.yaml
-sudo systemctl enable --now trellis-meshd
+sudo systemctl restart trellis-meshd
 sudo meshctl status
 ```
 
-`install-node.sh` never overwrites an existing configuration.
+The packages never overwrite an existing configuration. Where the
+batman-adv module could not be built at install (no kernel headers yet),
+`sudo /usr/share/trellis/scripts/install-batman-adv-dkms.sh` fetches the
+headers and builds it.
 
 ## Running by hand
 

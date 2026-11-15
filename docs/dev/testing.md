@@ -14,6 +14,32 @@ the process supervisor, the wpa_supplicant control protocol against a fake
 supplicant, the API server and client, the hostapd, dnsmasq and nftables
 renderers, AP channel choice, and the client-network addressing.
 
+Fuzzing: the parsers of untrusted input have Go fuzz targets. `make test`
+runs their seed inputs every time; `make fuzz` runs each one for
+`FUZZTIME` (default 30 s) to look for new failures:
+
+| Package | Targets | Input |
+|---|---|---|
+| `gossip` | `FuzzOpenRecord`, `FuzzOpenMessages`, `FuzzOpenRaw`, `FuzzParseLinkEntry` | records and messages from other nodes, signed with the mesh key so the decoding behind the authentication is reached; what is accepted must be valid and seal again |
+| `deb` | `FuzzRead`, `FuzzParseKeys` | release packages (uploaded through the web UI) and key files |
+| `config` | `FuzzParseProfile`, `FuzzDecodeProfileCode`, `FuzzParseNode` | profiles, profile codes from QR codes, node configuration as YAML and JSON; what is accepted must validate |
+| `regdb`, `wpa`, `dnsmasq` | `FuzzParse`, `FuzzParseEvent`, `FuzzParseLeases` | the regulatory database, wpa_supplicant's events, DHCP leases (client hostnames) |
+| `version`, `cot` | `FuzzVersion`, `FuzzMarshal` | versions from gossip and packages (the Debian form must stay valid), callsigns and remarks in the XML phones receive |
+
+For packages and upgrades:
+
+- `internal/deb`: packages written and read back, byte-identical on a
+  second build; signatures (a changed byte, an unknown key, a member after
+  the signature); and `dpkg-deb` reading the result where it is installed.
+- `internal/upgrade`: whole upgrades against a stand-in for dpkg, systemd
+  and meshd: a good one, and releases that crash, do not answer, lose
+  their mesh peers, break a reconciler, rewrite the configuration or do not
+  install, each going back with the configuration as it was; refusals
+  (unsigned, unknown key, other architecture, older); a power loss before
+  the install, after it and half-way through; the boot-time resume in
+  place while an upgrade is pending and gone after.
+- `internal/version`, and the mixed-release warning in `internal/meshd`.
+
 For the web UI and API:
 
 - `internal/qr`: the QR encoder, by reading every symbol back (format
@@ -57,6 +83,18 @@ load modules.
 
 A skipped test is printed as `SKIP <name>: <reason>` and counted; "0
 failures" never hides a skipped suite.
+
+### Restarts (T3, T4)
+
+T3 kills meshd mid-run and restarts it; T4 stops it cleanly (T4a: nothing
+of Trellis's is left) and starts it again (T4b). T4c then checks that the
+restarted node's broadcasts reach the others at once: a new `bat0`
+numbers its broadcasts from 1 again, and batman-adv on the other nodes
+drops numbers it saw from the old one, so before meshd's warm-up an ARP
+request from a node restarted soon after an earlier start went unanswered
+until it had sent as many broadcasts as before (10 s in the lab, minutes on
+a quiet node). T4c also checks that the warm-up frames stop at the other
+nodes' bridge.
 
 ### Client network (T7)
 
@@ -155,7 +193,7 @@ node 3 must re-address live.
 - T8b checks that node 3's client saw its link drop, that a rebind of its old
   lease is NAKed, and that a fresh lease comes from the new pool.
 
-### Web UI and API (W1–W5)
+### Web UI and API (W1–W5), firewall (F1)
 
 `lab/web.py launch` runs `webd` the way its systemd units do: it opens
 ports 443 and 80 in the node's namespace, then hands them to a `webd` that
@@ -168,6 +206,7 @@ has no capabilities and a network namespace of its own. The other
 | W2 | From the EUD on node 1, at `https://10.73.0.1`: the UI loads, `http://` redirects, the API answers 401 before signing in and to a wrong password. Signed in, a setting (`gateway.down_mbit`) is tried, then applied: `meshd` wrote it to `node.yaml` and announces it. An invalid change is a 422 naming its field; `meshd`'s password endpoints are not reachable through `webd`; after signing out the session is dead. Together with W1: `webd` changes the node only through `meshd` |
 | W3 | `GET /topology` shows 3 nodes, all of which answered the link query sent over the mesh, and 3 links each reported from both ends. The profile exports as a code and a 57-module QR symbol |
 | W4 | From the `inet` namespace, node 1's uplink address refuses a TLS handshake on 443; with `meshctl web wan-access on` it serves, and with `off` it refuses again |
+| F1 | Node 1 gets `firewall: {wan: closed, allow: [tcp/5201]}` and runs listeners on 4444 and 5201. From its uplink network only 5201 and ICMP answer, and the drop counter rises; from the mesh both answer; the mesh's clients keep their internet through node 1. Opened again, both answer from the uplink |
 | W5 | A fourth node starts with no `node.yaml` and no profile. It is in setup mode on a private mesh, takes over the port a device is plugged into (which the stand-in network manager runs with DHCP, as on a stock image), and leases it an address. Through the web API only, the device sets the admin password, tries and applies the lab's profile with a callsign, then gives the node's cabled port the mesh role. The node leaves setup mode and node 1 sees it by name |
 
 Notes:
@@ -188,6 +227,15 @@ node to switch would write the shared file for all of them).
 |---|---|
 | P1 | Node 1 sends revision 1 (`batman.orig_interval_ms` 500 → 600) to switch in 15 s: every other node (node 9 from W5 included, when it is up) has it before the switch, and all switch to revision 1 with 600 within 3 s of each other |
 | P2 | Node 3 is stopped; node 2 sends revision 2 (back to 500). Nodes 1 and 2 switch; node 3, started again on revision 1, asks another node for revision 2 and switches to it |
+
+Not in the lab: nodes left on a channel the mesh has left looking for it
+(`findmesh.go`). The lab's links are cables, which have no channels to
+scan. Unit tests cover who looks (`TestSearchWanted`), reading a mesh's
+width from its beacons (`internal/nl80211`), how a visit ends, the roster
+across a restart, settling a profile changed apart and its spreading
+(`meshconflict_test.go`), switching by an offer's delay whatever the
+clocks say, and the restart rules (`TestMeshChangeSurvivesRestart`); the
+rest needs radios: mac80211_hwsim in a VM, or the bench.
 
 ### Node positions (L1–L5)
 
@@ -332,6 +380,23 @@ Planner cases that need specific hardware (a dual-band-concurrent card
 plus HaLow, two radios sharing the AP) are Go unit tests in
 `internal/radio`.
 
+## Packages in containers
+
+```sh
+make deb-test
+```
+
+Builds two versions of the `trellis` package (the newer one signed) and the
+batman-adv package, and in a throwaway Debian 13 and Ubuntu 22.04 container
+(podman or docker) installs them with the distribution's own `apt` over a
+made-up script install, upgrades, downgrades, removes and purges, checking
+after each step: the configuration, profile and identity are untouched
+until the purge, an edited chrony drop-in survives, the script install is
+taken over, units are enabled, the regulatory rules are handed over and
+given back. The containers have no systemd and no kernel headers for the
+host: no service starts and no module is built, and an install must
+survive both.
+
 ## Real nodes
 
 See [docs/hardware.md](../hardware.md) for what a node needs, and
@@ -367,22 +432,31 @@ both; a reboot also clears it, and so does meshd recreating `mesh0`.
 
 ## Known issues found in the lab
 
-- **Bridge loop avoidance on the development kernel.** With BLA on, the
-  in-kernel batman-adv of Fedora's 7.2 kernel drops every broadcast from a
-  client behind a wired client port (`tx_dropped` rises, the client's MAC
-  never enters the local translation table), so clients cannot ARP across
-  the mesh. Its claim and backbone tables are empty when it happens. Nodes
-  on the pinned batman-adv (DKMS 2026.3) with Wi-Fi clients work with BLA
-  on. The lab profile
-  sets `batman.bridge_loop_avoidance: false`; production keeps it on until
-  this is understood (it needs the batman-adv debug log, which needs root).
-- **Broadcasts from a freshly restarted node.** When `bat0` is recreated,
-  batman-adv appears to restart its broadcast sequence numbers, and the
-  other nodes discard the restarted node's broadcasts as duplicates until
-  it has sent more than it had before. A node that ran only briefly before
-  restarting can stay deaf to broadcast ARP for a while. Long-running nodes
-  clear it almost at once. The gateway path no longer depends on it: meshd
-  pins a neighbour entry for every usable gateway from gossip.
+- **Bridge loop avoidance holds broadcasts back after a start.** With BLA
+  on, batman-adv drops every broadcast and multicast frame (`tx_dropped`
+  rises, the claim table stays empty) for its start-up wait, 3 periods of
+  10 s, each time `bat0` is created; then they flow. Earlier this looked
+  like a kernel fault, because the lab's tests run within that wait.
+  Measured on the 7.3 kernel with `LAB_BLA=auto` (BLA on: every lab node
+  bridges wired client ports): drops until about 30 s, then claims appear
+  and the warm-up completes (30 frames held back); the same as on a bench
+  node with DKMS 2026.3. Five tests that act straight after a start fail
+  that way (T2, T4c, T7d, MC2, W5), so the lab keeps BLA off by default.
+  Real nodes have it on only where they bridge wired client ports.
+- **Broadcasts from a freshly restarted node.** Two things hold a
+  restarted node's broadcasts back. batman-adv restarts its broadcast
+  sequence numbers with `bat0`, and the others discard numbers inside
+  their duplicate window: meshd's warm-up uses those numbers up (lab T4c).
+  And bridge loop avoidance, where it is on, drops every broadcast and
+  multicast frame both ways for its start-up wait (3 periods of 10 s,
+  `BATADV_BLA_WAIT_PERIODS`); measured on a bench node: ARP to a neighbour
+  answered 33 s after a restart, the moment `bat0`'s `tx_dropped` stopped
+  rising. So BLA is on only where the node bridges wired client ports.
+  The warm-up counts only frames batman-adv numbered (a dropped one raises
+  `tx_dropped`). The lab runs with BLA off and cannot show the wait.
+- **Bridge loop avoidance in the lab.** `LAB_BLA=auto make lab` runs the
+  lab with the profile's default (on, as every lab node bridges wired
+  client ports), `LAB_BLA=on` forces it; the default is off.
 - **Debugging the lab.** `LAB_INSPECT=script make lab` runs `script` inside
   the lab's namespaces right after the mesh forms (with `$RUN` and `$BIN`
   set), then stops. tcpdump needs `-Z root` there: Fedora's tcpdump drops to

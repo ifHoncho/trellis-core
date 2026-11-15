@@ -489,3 +489,50 @@ func TestRoleOverridesManyLinks(t *testing.T) {
 		t.Error("JSON role mesh0 accepted")
 	}
 }
+
+func TestFirewallConfig(t *testing.T) {
+	n := Node{Schema: SchemaVersion, Callsign: "relay-1"}
+	n.ApplyDefaults()
+	if n.Firewall.WAN != FirewallOpen || n.Firewall.Closed() || !n.Firewall.SSHOpen() {
+		t.Fatalf("defaults: %+v", n.Firewall)
+	}
+	// An open firewall is the default and is not written out; closed is.
+	if y, _ := n.YAML(""); strings.Contains(string(y), "firewall") {
+		t.Errorf("default firewall written:\n%s", y)
+	}
+	n.Firewall.WAN = FirewallClosed
+	if y, _ := n.YAML(""); !strings.Contains(string(y), "wan: closed") {
+		t.Errorf("closed firewall not written:\n%s", y)
+	}
+	for _, bad := range []FirewallConfig{{WAN: "shut"}, {WAN: FirewallClosed, Allow: []string{"tcp/0"}}, {Allow: []string{"sctp/22"}}, {Allow: []string{"22"}}} {
+		m := n
+		m.Firewall = bad
+		if err := m.Validate(); err == nil {
+			t.Errorf("accepted %+v", bad)
+		}
+	}
+	if p, port, err := ParsePort(" UDP/51820 "); err != nil || p != "udp" || port != 51820 {
+		t.Errorf("ParsePort: %s %d %v", p, port, err)
+	}
+}
+
+// Bridge loop avoidance: as set, or, unset, only with wired client ports.
+func TestBLAOn(t *testing.T) {
+	on, off := true, false
+	for _, c := range []struct {
+		set   *bool
+		wired bool
+		want  bool
+		mode  string
+	}{
+		{nil, false, false, "auto"},
+		{nil, true, true, "auto"},
+		{&on, false, true, "on"},
+		{&off, true, false, "off"},
+	} {
+		b := BatmanPlan{BridgeLoopAvoidance: c.set}
+		if got := b.BLAOn(c.wired); got != c.want || b.BLAMode() != c.mode {
+			t.Errorf("set %v wired %v: on %v mode %s, want %v %s", c.set, c.wired, got, b.BLAMode(), c.want, c.mode)
+		}
+	}
+}

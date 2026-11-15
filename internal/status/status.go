@@ -151,6 +151,10 @@ type MeshLink struct {
 	Band     string `json:"band,omitempty"`
 	Channel  int    `json:"channel,omitempty"`
 	WidthMHz int    `json:"width_mhz,omitempty"`
+	// Visit is where the link runs instead of Band, Channel and WidthMHz
+	// for now: most of the mesh is missing, and its mesh ID was heard
+	// there. Absent when it runs its profile's.
+	Visit *MeshLinkVisit `json:"visit,omitempty"`
 	// FreqMHz is 0 until the mesh has started on the link.
 	FreqMHz float64 `json:"freq_mhz,omitempty"`
 	// ChannelBusyPct is how busy the channel is where this node is, over
@@ -516,6 +520,12 @@ type MeshNode struct {
 // GatewayState is this node's gateway role and its choice of gateway
 // (architecture §8).
 type GatewayState struct {
+	// Firewall is what the node takes from outside the mesh: "closed" or
+	// "open" (firewall.wan), the ports open while closed ("tcp/22"), and
+	// how many packets it has turned away.
+	Firewall     string             `json:"firewall"`
+	FirewallOpen []string           `json:"firewall_open,omitempty"`
+	FirewallDrop uint64             `json:"firewall_dropped,omitempty"`
 	Mode         string             `json:"mode"` // auto or off
 	Role         string             `json:"role"` // gateway, client
 	WAN          string             `json:"wan,omitempty"`
@@ -696,6 +706,14 @@ type MeshChange struct {
 	// Nodes is where it stands on each other node, on the node that sent
 	// it: "sent" (no answer yet), "has it", or "refused: why".
 	Nodes []MeshChangeNode `json:"nodes,omitempty"`
+}
+
+// MeshLinkVisit is a channel a mesh link visits to look for the rest of
+// its mesh.
+type MeshLinkVisit struct {
+	Band     string `json:"band"`
+	Channel  int    `json:"channel"`
+	WidthMHz int    `json:"width_mhz"`
 }
 
 // MeshChangeNode is one node's answer to a mesh-wide change.

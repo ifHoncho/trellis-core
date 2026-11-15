@@ -1,0 +1,13 @@
+#!/bin/sh
+# trellis package: before the first install's files are unpacked.
+set -e
+# The script install put its own copy of the chrony drop-in here, owned by
+# no package. Left in place, dpkg would take it for the operator's edit of
+# the package's file and keep it through every later upgrade. The script
+# install replaced it on every update, so it holds no edit worth keeping;
+# a copy stays beside it all the same.
+f=/etc/chrony/conf.d/trellis.conf
+if [ "$1" = install ] && [ -f "$f" ] && ! dpkg-query -S "$f" >/dev/null 2>&1; then
+  mv "$f" "$f.script-install"
+fi
+exit 0

@@ -1,7 +1,9 @@
 package meshd
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"meridian/trellis/internal/config"
 )
 
 func TestLockInstanceExclusive(t *testing.T) {
@@ -72,5 +76,42 @@ func TestClientNetworkAddressing(t *testing.T) {
 	local, _ := net.ParseMAC("02:11:22:33:44:55")
 	if got := apMAC(local, "mt76x2u").String(); got != "06:11:22:33:44:55" {
 		t.Errorf("apMAC mt76x2u of a local address = %s", got)
+	}
+}
+
+func TestWarmupFrame(t *testing.T) {
+	src := net.HardwareAddr{0xa0, 0xb0, 0xc0, 0x00, 0x00, 0x01}
+	f := warmupFrame(src, 300)
+	if len(f) != 60 || !bytes.Equal(f[:6], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) || !bytes.Equal(f[6:12], src) {
+		t.Fatalf("frame header: % x", f[:14])
+	}
+	if f[12] != 0x88 || f[13] != 0xb5 {
+		t.Fatalf("ethertype %x%x, want 88b5 (the one the bridge filter drops)", f[12], f[13])
+	}
+	if f[40] != 0x01 || f[41] != 0x2c {
+		t.Fatalf("sequence field % x", f[40:42])
+	}
+	// The number of frames must cover batman-adv's broadcast window.
+	if warmupCount < 64 {
+		t.Fatal("warmupCount below batman-adv's 64-number broadcast window")
+	}
+}
+
+func TestInputPolicy(t *testing.T) {
+	n := &config.Node{}
+	n.ApplyDefaults()
+	if inputPolicy(n) != nil {
+		t.Fatal("a node without a firewall setting is closed")
+	}
+	no := false
+	n.Firewall = config.FirewallConfig{WAN: config.FirewallClosed, Allow: []string{"tcp/5201", "udp/51820", "tcp/22"}}
+	n.Web.WANAccess = true
+	in := inputPolicy(n)
+	if in == nil || fmt.Sprint(in.TCP) != "[22 80 443 5201]" || fmt.Sprint(in.UDP) != "[51820]" {
+		t.Fatalf("policy %+v", in)
+	}
+	n.Firewall.SSH, n.Web.WANAccess, n.Firewall.Allow = &no, false, nil
+	if in := inputPolicy(n); len(in.TCP) != 0 || len(in.UDP) != 0 {
+		t.Fatalf("closed with nothing open: %+v", in)
 	}
 }

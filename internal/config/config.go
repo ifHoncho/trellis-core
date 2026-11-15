@@ -92,6 +92,10 @@ type Profile struct {
 	// profile whose revision is higher than its own. 0 for a profile that
 	// was never sent that way.
 	Revision uint64 `yaml:"revision,omitempty" json:"revision,omitempty"`
+	// Change identifies the mesh-wide change that made this revision, and
+	// the ones before it (change.go). Absent from a profile never changed
+	// mesh-wide, or changed by an older version.
+	Change *ChangeInfo `yaml:"change,omitempty" json:"change,omitempty"`
 
 	// fromRadio2: Links[0] was written as "radio2", so that is what an
 	// error about it names.
@@ -174,7 +178,10 @@ type BatmanPlan struct {
 	MinVersion     string `yaml:"min_version" json:"min_version"`           // refuse to start below this; default 2024.0
 	PinnedVersion  string `yaml:"pinned_version" json:"pinned_version"`     // warn when different; default 2026.3
 	// BridgeLoopAvoidance protects against layer-2 loops when two nodes'
-	// wired client ports share a switch (architecture §6). Default on.
+	// wired client ports share a switch (architecture §6). Unset: on only
+	// on a node that bridges wired client ports, the only way two nodes'
+	// bridges can meet; elsewhere it would only hold back every broadcast
+	// for its start-up wait (up to 30 s) each time bat0 is created.
 	BridgeLoopAvoidance *bool `yaml:"bridge_loop_avoidance" json:"bridge_loop_avoidance"`
 	// MulticastFanout: when a multicast packet cannot use batman-adv's
 	// multicast packet type (too big, or a node without it), it goes as
@@ -189,8 +196,25 @@ type BatmanPlan struct {
 	MulticastFlood bool `yaml:"multicast_flood,omitempty" json:"multicast_flood,omitempty"`
 }
 
-// BLA reports whether bridge loop avoidance is on (default true).
-func (b BatmanPlan) BLA() bool { return b.BridgeLoopAvoidance == nil || *b.BridgeLoopAvoidance }
+// BLAOn reports whether bridge loop avoidance is on for a node: as set,
+// or, when unset, only where the node bridges wired client ports.
+func (b BatmanPlan) BLAOn(wiredPorts bool) bool {
+	if b.BridgeLoopAvoidance != nil {
+		return *b.BridgeLoopAvoidance
+	}
+	return wiredPorts
+}
+
+// BLAMode is the setting as written: "on", "off", or "auto" when unset.
+func (b BatmanPlan) BLAMode() string {
+	switch {
+	case b.BridgeLoopAvoidance == nil:
+		return "auto"
+	case *b.BridgeLoopAvoidance:
+		return "on"
+	}
+	return "off"
+}
 
 // Node is one node's own configuration.
 type Node struct {
@@ -208,6 +232,8 @@ type Node struct {
 	// fall back to flooding (architecture §9).
 	AllowOldBatman bool      `yaml:"allow_old_batman,omitempty" json:"allow_old_batman"`
 	Web            WebConfig `yaml:"web,omitempty" json:"web"`
+	// Firewall: what this node takes from outside the mesh.
+	Firewall FirewallConfig `yaml:"firewall,omitempty" json:"firewall"`
 	// Positions: whether this node, with a GNSS fix, puts itself on the
 	// team's ATAK map. Off here stops it on this node only.
 	Positions Positions `yaml:"positions,omitempty" json:"positions"`
@@ -232,6 +258,49 @@ type WebConfig struct {
 	// its uplink. Off by default: the UI is reachable only from the mesh and
 	// this node's client ports.
 	WANAccess bool `yaml:"wan_access,omitempty" json:"wan_access"`
+}
+
+// FirewallConfig is what the node itself accepts from outside the mesh: from
+// its uplink network and any interface that is not Trellis's own. The mesh,
+// its client Wi-Fi and its client ports are never filtered here, and
+// neither is traffic the node forwards (the mesh's clients' internet).
+type FirewallConfig struct {
+	// WAN is "closed" (only replies, ICMP, DHCP, SSH, the ports in Allow,
+	// and the web UI when web.wan_access is on) or "open" (everything, as
+	// the operating system has it). A node set up by Trellis starts
+	// closed; absent, it is open, so that an upgraded node keeps what it
+	// had.
+	WAN string `yaml:"wan,omitempty" json:"wan"`
+	// SSH keeps port 22 open while closed. Default on: closing a node to
+	// the network its operator reaches it from is for them to choose.
+	SSH *bool `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+	// Allow lists further ports open while closed: "tcp/5201", "udp/51820".
+	Allow []string `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// Firewall settings.
+const (
+	FirewallOpen   = "open"
+	FirewallClosed = "closed"
+)
+
+// Closed says whether the node is closed to its uplink.
+func (f FirewallConfig) Closed() bool { return f.WAN == FirewallClosed }
+
+// SSHOpen says whether SSH stays open while closed.
+func (f FirewallConfig) SSHOpen() bool { return f.SSH == nil || *f.SSH }
+
+// ParsePort reads an Allow entry: "tcp/22" → ("tcp", 22).
+func ParsePort(s string) (proto string, port int, err error) {
+	proto, num, ok := strings.Cut(strings.ToLower(strings.TrimSpace(s)), "/")
+	if !ok || (proto != "tcp" && proto != "udp") {
+		return "", 0, fmt.Errorf("%q is not tcp/PORT or udp/PORT", s)
+	}
+	port, err = strconv.Atoi(num)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("%q: the port is not 1–65535", s)
+	}
+	return proto, port, nil
 }
 
 // RadiosConfig holds role overrides and per-radio settings (architecture §5.2).
@@ -740,6 +809,9 @@ func (n *Node) ApplyDefaults() {
 	if n.MeshMTU == 0 {
 		n.MeshMTU = 1560
 	}
+	if n.Firewall.WAN == "" {
+		n.Firewall.WAN = FirewallOpen
+	}
 	if n.Gateway.Mode == "" {
 		n.Gateway.Mode = GatewayAuto
 	}
@@ -832,6 +904,9 @@ func (p *Profile) Validate() error {
 	if !reVersion.MatchString(p.Batman.PinnedVersion) {
 		es.add("batman.pinned_version", "must look like 2026.3 (got %q)", p.Batman.PinnedVersion)
 	}
+	if p.Change != nil {
+		p.Change.validate(&es)
+	}
 	return es.orNil()
 }
 
@@ -848,6 +923,17 @@ func (n *Node) Validate() error {
 	}
 	if n.NodeID < 0 || n.NodeID > 254 {
 		es.add("node_id", "must be 1–254, or 0 to claim automatically (got %d)", n.NodeID)
+	}
+	if w := n.Firewall.WAN; w != "" && w != FirewallOpen && w != FirewallClosed {
+		es.add("firewall.wan", "must be %s or %s (got %q)", FirewallClosed, FirewallOpen, w)
+	}
+	if len(n.Firewall.Allow) > 32 {
+		es.add("firewall.allow", "at most 32 ports (got %d)", len(n.Firewall.Allow))
+	}
+	for i, a := range n.Firewall.Allow {
+		if _, _, err := ParsePort(a); err != nil {
+			es.add(fmt.Sprintf("firewall.allow[%d]", i), "%v", err)
+		}
 	}
 	if n.ProfilePath == "" {
 		es.add("profile", "required")

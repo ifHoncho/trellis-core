@@ -42,6 +42,9 @@ type meshLinkReconciler struct {
 	// blocks are the peers wpa_supplicant blocked after failed SAE
 	// attempts, which meshd unblocks early (saeblock.go).
 	blocks saeBlocks
+	// peers: who has been established on the link, and connections to
+	// check against the kernel (peerbook.go).
+	peers peerBook
 	// Per-peer transmit counters and verdicts for one-sided links
 	// (onesided.go).
 	peerTX      map[string]peerTX
@@ -117,9 +120,17 @@ func (m *meshLinkReconciler) ifname() string {
 }
 
 // radioPlan is the link's band, channel and width from the profile, and
-// whether the profile has this link at all.
+// whether the profile has this link at all. A link visiting another
+// channel to look for the rest of its mesh (findmesh.go) runs there
+// instead, band and width included.
 func (m *meshLinkReconciler) radioPlan(p *config.Profile) (config.RadioPlan, bool) {
-	return p.Link(m.link)
+	rp, ok := p.Link(m.link)
+	if ok {
+		if v, ok := m.d.visitPlan(m.link, p); ok {
+			rp = v
+		}
+	}
+	return rp, ok
 }
 
 // linkFacts reads the link's interface.
@@ -184,7 +195,7 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if err != nil {
 			if halow {
 				return res, fmt.Errorf("%s: a HaLow mesh link needs Morse Micro's %s, which is not installed on this node "+
-					"(scripts/install-halow-tools.sh builds it)", meshIfname, bin)
+					"(sudo /usr/share/trellis/scripts/install-halow-tools.sh builds it)", meshIfname, bin)
 			}
 			return res, err
 		}
@@ -264,6 +275,8 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 	}
 	if m.sup == nil {
 		m.sup = proc.New(d.log, m.wpaBin, argv...)
+		// One line per beacon from a peer it has not peered with yet.
+		m.sup.Quiet = []string{"new peer notification"}
 		if err := m.sup.Start(d.ctx); err != nil {
 			m.sup = nil
 			return res, fmt.Errorf("start wpa_supplicant: %w", err)
@@ -306,6 +319,20 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		}
 		d.log.Info("lifted the SAE block on a peer; authentication starts again", "interface", meshIfname, "peer", addr)
 		res.Changed = true
+	}
+	// Peers wpa_supplicant reported connected: the kernel must hold them
+	// established, or the link is one-sided for good.
+	if due := m.peers.dueChecks(time.Now()); len(due) > 0 {
+		if m.resetPhantomPeers(ctx, meshIfname, meshIfindex, due) {
+			res.Changed = true
+		}
+	}
+	// Checks put off (a peer dropped under a minute ago, or the station
+	// table unreadable) come back by themselves.
+	if next := m.peers.nextCheck(); !next.IsZero() {
+		if wait := time.Until(next) + 100*time.Millisecond; res.RequeueAfter == 0 || wait < res.RequeueAfter {
+			res.RequeueAfter = max(wait, 100*time.Millisecond)
+		}
 	}
 	if m.events == nil {
 		if ec, err := wpa.DialEvents(m.ctrlPath()); err == nil {
@@ -380,9 +407,12 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 		case wpa.EvMeshPeerConnected:
 			m.d.log.Info("mesh peer connected", "interface", m.ifname(), "peer", ev.Arg())
 			m.blocks.connected(ev.Arg())
+			m.peers.connected(ev.Arg(), time.Now())
 			m.d.Kick("peer connected")
+			time.AfterFunc(connectedCheckAfter+100*time.Millisecond, func() { m.d.Kick("check a connected peer") })
 		case wpa.EvMeshPeerDisconnected:
 			m.d.log.Info("mesh peer disconnected", "interface", m.ifname(), "peer", ev.Arg())
+			m.peers.disconnected(ev.Arg())
 			m.d.Kick("peer disconnected")
 		case wpa.EvMeshGroupStarted:
 			m.d.log.Info("mesh group started", "interface", m.ifname(), "mesh_id", ev.KV["ssid"])
@@ -436,7 +466,7 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 // for offChannelMS: then it is not on this link's channel, whatever SAE
 // says. A peer this link has no entry for is not judged.
 func (m *meshLinkReconciler) offChannel(mac string) bool {
-	if m.d.nl == nil {
+	if m.d.nl == nil || m.peers.known(mac, time.Now()) {
 		return false
 	}
 	ifc, err := net.InterfaceByName(m.ifname())
@@ -455,6 +485,56 @@ func (m *meshLinkReconciler) offChannel(mac string) bool {
 	return false
 }
 
+// resetPhantomPeers drops, in wpa_supplicant, the peers among macs that it
+// reported connected but the kernel does not hold established. That happens
+// when the kernel's entry goes while the two are still peering (the peer
+// restarted, a leftover entry was removed): wpa_supplicant then counts the
+// peer as connected and ignores it from then on, while the kernel keeps
+// announcing it as new. Dropped, it peers again at the next beacon.
+func (m *meshLinkReconciler) resetPhantomPeers(ctx context.Context, ifname string, ifindex int, macs []string) bool {
+	// Not judged now (no control socket or station table): look again
+	// shortly.
+	later := func() bool {
+		for _, mac := range macs {
+			m.peers.recheck(mac, time.Now().Add(connectedCheckAfter))
+		}
+		return false
+	}
+	if m.d.nl == nil || m.ctrl == nil {
+		return later()
+	}
+	sts, err := m.d.nl.Stations(ifindex)
+	if err != nil {
+		return later()
+	}
+	held := map[string]bool{}
+	for _, s := range sts {
+		if s.Established() {
+			held[strings.ToLower(s.MAC.String())] = true
+		}
+	}
+	changed := false
+	for _, mac := range macs {
+		if held[strings.ToLower(mac)] {
+			continue
+		}
+		if !m.peers.mayReset(mac, time.Now()) {
+			m.d.log.Debug("a peer wpa_supplicant reported connected is still not held by the kernel; dropped it under a minute ago", "interface", ifname, "peer", mac)
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		reply, err := m.ctrl.Request(rctx, "MESH_PEER_REMOVE "+mac)
+		cancel()
+		if err != nil || reply != "OK" {
+			m.d.log.Info("a peer wpa_supplicant reported connected is not held by the kernel, and could not be dropped", "interface", ifname, "peer", mac, "reply", reply, "err", err)
+			continue
+		}
+		m.d.log.Warn("wpa_supplicant reported a peer connected that the kernel does not hold; dropped it so the two peer again", "interface", ifname, "peer", mac)
+		changed = true
+	}
+	return changed
+}
+
 func (m *meshLinkReconciler) stopEvents() {
 	if m.events != nil {
 		close(m.evStop)
@@ -466,6 +546,7 @@ func (m *meshLinkReconciler) stopEvents() {
 func (m *meshLinkReconciler) stop() {
 	m.stopEvents()
 	m.blocks.reset()
+	m.peers.reset()
 	if m.ctrl != nil {
 		m.ctrl.Close()
 		m.ctrl = nil

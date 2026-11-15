@@ -188,12 +188,33 @@ func (d *Daemon) surveyLocal(ctx context.Context) []gossip.SurveyLink {
 		return s.local
 	}
 	_, profile := d.conf()
-	type target struct {
-		link, ifindex int
-		band          string
-		freqs         []uint32
+	var out []gossip.SurveyLink
+	for _, t := range d.scanTargets(profile) {
+		sl := gossip.SurveyLink{Link: t.link, Band: t.band}
+		chs, err := d.surveyBand(ctx, t.link, t.ifindex, t.band, t.freqs, profile.MeshID)
+		if err != nil {
+			sl.Err = gossip.TrimErr(err.Error())
+		}
+		sl.Channels = chs
+		out = append(out, sl)
 	}
-	var targets []target
+	s.local, s.localAt = out, time.Now()
+	d.log.Info("channel survey done", "links", len(out))
+	return out
+}
+
+// scanTarget is one mesh link to scan: its interface, band and the channels
+// its radio may use there.
+type scanTarget struct {
+	link, ifindex int // link from 1
+	band          string
+	freqs         []uint32
+}
+
+// scanTargets are this node's Wi-Fi mesh links that can scan (HaLow is left
+// out: its beacons come once a second, too slow to catch passing by).
+func (d *Daemon) scanTargets(profile *config.Profile) []scanTarget {
+	var targets []scanTarget
 	d.facts.Read(func(f *Facts) {
 		for i, l := range profile.AllLinks() {
 			ifindex := f.MeshIfindex
@@ -211,7 +232,7 @@ func (d *Daemon) surveyLocal(ctx context.Context) []gossip.SurveyLink {
 			if rd == nil || rd.Wiphy == nil || !ok || rd.Wiphy.Bands[band] == nil {
 				continue
 			}
-			t := target{link: i + 1, ifindex: ifindex, band: l.Band}
+			t := scanTarget{link: i + 1, ifindex: ifindex, band: l.Band}
 			for _, fr := range rd.Wiphy.Bands[band].Frequencies {
 				if !fr.Disabled {
 					t.freqs = append(t.freqs, fr.MHz)
@@ -220,19 +241,43 @@ func (d *Daemon) surveyLocal(ctx context.Context) []gossip.SurveyLink {
 			targets = append(targets, t)
 		}
 	})
-	var out []gossip.SurveyLink
-	for _, t := range targets {
-		sl := gossip.SurveyLink{Link: t.link, Band: t.band}
-		chs, err := d.surveyBand(ctx, t.link, t.ifindex, t.band, t.freqs, profile.MeshID)
-		if err != nil {
-			sl.Err = gossip.TrimErr(err.Error())
-		}
-		sl.Channels = chs
-		out = append(out, sl)
+	return targets
+}
+
+// scanOnce has the radio of one interface scan freqs, passively, and waits
+// until it has.
+func (d *Daemon) scanOnce(ifindex int, freqs []uint32) error {
+	if d.nl == nil || len(freqs) == 0 {
+		return errors.New("no channels to scan")
 	}
-	s.local, s.localAt = out, time.Now()
-	d.log.Info("channel survey done", "links", len(out))
-	return out
+	ev, err := nl80211.DialScanEvents()
+	if err != nil {
+		return err
+	}
+	defer ev.Close()
+	if err := d.nl.TriggerScan(ifindex, freqs); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(surveyScanWait)
+	_ = ev.SetDeadline(deadline)
+	for time.Now().Before(deadline) {
+		evs, err := ev.Next()
+		if err != nil {
+			return fmt.Errorf("waiting for the scan: %w", err)
+		}
+		for _, e := range evs {
+			if e.Ifindex != ifindex {
+				continue
+			}
+			switch e.Command {
+			case nl80211.NL80211_CMD_NEW_SCAN_RESULTS:
+				return nil
+			case nl80211.NL80211_CMD_SCAN_ABORTED:
+				return errors.New("the scan was aborted")
+			}
+		}
+	}
+	return errors.New("the scan did not finish")
 }
 
 // surveyBand scans freqs on one interface and reads what the radio found.
@@ -241,36 +286,8 @@ func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string,
 		return nil, errors.New("no channels to scan")
 	}
 	before, _ := d.nl.Survey(ifindex)
-	ev, err := nl80211.DialScanEvents()
-	if err != nil {
+	if err := d.scanOnce(ifindex, freqs); err != nil {
 		return nil, err
-	}
-	defer ev.Close()
-	if err := d.nl.TriggerScan(ifindex, freqs); err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(surveyScanWait)
-	_ = ev.SetDeadline(deadline)
-	finished := false
-	for !finished && time.Now().Before(deadline) {
-		evs, err := ev.Next()
-		if err != nil {
-			return nil, fmt.Errorf("waiting for the scan: %w", err)
-		}
-		for _, e := range evs {
-			if e.Ifindex != ifindex {
-				continue
-			}
-			switch e.Command {
-			case nl80211.NL80211_CMD_NEW_SCAN_RESULTS:
-				finished = true
-			case nl80211.NL80211_CMD_SCAN_ABORTED:
-				return nil, errors.New("the scan was aborted")
-			}
-		}
-	}
-	if !finished {
-		return nil, errors.New("the scan did not finish")
 	}
 	after, _ := d.nl.Survey(ifindex)
 	bss, _ := d.nl.Scan(ifindex)
@@ -491,7 +508,7 @@ func (d *Daemon) Survey() *status.Survey {
 	if r == nil {
 		return nil
 	}
-	out := &status.Survey{Started: r.started, Done: r.done, Nodes: []status.SurveyNode{}, Suggestions: []status.ChannelSuggestion{}}
+	out := &status.Survey{Started: onClock(r.started, time.Now()), Done: r.done, Nodes: []status.SurveyNode{}, Suggestions: []status.ChannelSuggestion{}}
 	var reports []surveyReport
 	for _, mac := range r.order {
 		n := r.nodes[mac]

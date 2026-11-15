@@ -3,7 +3,8 @@
 One Go module (`meridian/trellis`), one binary (`cmd/trellis`) with
 subcommands `meshd`, `meshctl`, `webd` and `crda`. Everything else is
 under `internal/`, except `tools/fakemeshd`, a development stand-in for
-`meshd` that serves the API from made-up data (`make ui-dev`).
+`meshd` that serves the API from made-up data (`make ui-dev`), and
+`tools/mkdeb`, which builds and signs the Debian packages (`make deb`).
 
 | Package | What it does | Kernel interface |
 |---|---|---|
@@ -29,13 +30,18 @@ under `internal/`, except `tools/fakemeshd`, a development stand-in for
 | `probe` | WAN health: ICMP rounds out of one interface, healthy/unhealthy hysteresis | raw ICMP socket |
 | `dhcpc` | DHCPv4 client over a link-layer socket: probing auto ports, holding an auto WAN's lease (renew, rebind, expiry) | AF_PACKET socket |
 | `reconcile` | The loop: ordered reconcilers, kicks, timer, teardown in reverse | — |
-| `meshd` | The daemon: facts, reconcilers (`host`, `time` (mesh time through chrony), `radios` with the regulatory domain, `meshlink` and `meshlinks` (one per mesh link, with the moved-peer and one-sided-link checks), `batman`, `ports`, `bridge`, `filters`, `anycast`, `gateway`, `gossip`, `ap`, `dhcp`), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`) | all of the above |
+| `meshd` | The daemon: facts, reconcilers (below), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), mesh-wide profile changes (`meshchange.go`) and settling those made apart (`meshconflict.go`), channel surveys (`survey.go`), finding the mesh again (`findmesh.go`) with the nodes heard lately (`roster.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`), upgrades through the API (`apiupgrade.go`), mixed-release warnings (`releases.go`) | all of the above |
 | `api` | API v1 (docs/api.md): the server meshd runs on its unix socket, the request and answer types, and the client meshctl and webd use | — |
 | `status` | The status JSON types (the contract between meshd, meshctl and webd) | — |
 | `qr` | QR code encoder (byte mode, versions 1–40) for the Wi-Fi join code and the profile code; draws as SVG, as rows for the UI, or in a terminal | — |
 | `webd` | The web UI and network API: listeners from systemd, the mesh-only connection guard, TLS certificate, sessions, the proxy to meshd, the live event stream, and the UI's files (`ui/`, built in) | unix socket to meshd |
 | `doctor` | Host preflight checks (architecture §6.1) and the paste-able report | sysfs, nl80211, exec |
 | `meshctl` | The CLI | — |
+| `version` | Version strings: releases, builds between them, development builds; the release series two nodes must share; the Debian form | — |
+| `deb` | Writes and reads Debian packages (ar, tar, gzip), and signs them: an Ed25519 signature in a member of the archive that dpkg skips | — |
+| `release` | The release keys a node trusts: built in (`trusted.keys`) and the operator's (`/etc/trellis/release-keys`) | — |
+| `rollout` | A rolling mesh-wide upgrade (being built): the order nodes take a release in, whose turn it is, halting on a rollback; moving packages between nodes, checked by hash | — |
+| `upgrade` | An upgrade that goes back: check, keep the running version and configuration, install, health check, rollback, resume after a power loss; started detached (`trellis-upgrade-run`) by `meshctl` and by meshd's API alike | exec `dpkg`, `systemctl`, `systemd-run`; meshd's API |
 
 Generated code: `internal/batadv/consts_gen.go` and
 `internal/nl80211/consts_gen.go` come from the kernel uapi headers via
@@ -48,31 +54,46 @@ They run in this order on every pass; each is idempotent and reports whether
 it changed anything.
 
 1. `host`: directories, NetworkManager unmanaged-devices file.
-2. `radios`: inventory, fingerprints, role plan with removal debounce, create
-   `mesh0`/`ap0`, remove kernel interfaces on managed radios, rfkill,
-   underlay MTU, regulatory domain, channel sanity.
-3. `meshlink`: render wpa_supplicant config, supervise it, read its state,
-   apply the TX power cap, record SAE failures.
-4. `batman`: module version gate, `bat0` (BATMAN_V, identity MAC), settings
-   from architecture §6, hard interfaces (`mesh0` and wired `mesh` ports).
-5. `bridge`: `br-mesh` with `bat0`, `ap0` and wired client ports, node
+2. `firewall`: the `inet trellis_fw` table that closes the node to what
+   comes from outside the mesh (architecture §11), put back if anything
+   removes it; left in place while meshd is stopped.
+3. `radios`: inventory, fingerprints, role plan with removal debounce, create
+   the mesh and AP interfaces, remove kernel interfaces on managed radios,
+   rfkill, underlay MTU, regulatory domain, channel sanity.
+4. `meshlink`, `meshlinks`: one per mesh link. Render the wpa_supplicant
+   config, supervise it, read its state, record SAE failures; remove a
+   peer's leftover entry when it moved to another link, and a peer the
+   kernel does not hold as established.
+5. `batman`: module version gate, `bat0` (BATMAN_V, identity MAC), settings
+   from architecture §6, hard interfaces (every mesh link and wired `mesh`
+   ports), and the broadcast warm-up after `bat0` is created.
+6. `ports`: wired ports and their roles (`auto` probes each one).
+7. `bridge`: `br-mesh` with `bat0`, the AP and wired client ports, node
    address `10.73.N.1/16`.
-6. `filters`: the nftables `bridge trellis` table (architecture §7.7),
+8. `filters`: the nftables `bridge trellis` table (architecture §7.7),
    applied atomically with `nft -f` and re-applied if anything removes it.
-7. `anycast`: `anycast0`, a macvlan on `br-mesh` with `10.73.0.1/32` and the
+9. `anycast`: `anycast0`, a macvlan on `br-mesh` with `10.73.0.1/32` and the
    mesh-wide MAC `02:74:72:65:6c:01`, plus the §7.4 sysctls and a permanent
    bridge FDB entry so the bridge hands those frames to it without flooding.
    Withheld while the filters are not in place: it would leak mesh-wide.
-8. `gateway`: WAN detection and probing, batman-adv `gw_mode`, gateway
+10. `gateway`: WAN detection and probing, batman-adv `gw_mode`, gateway
    selection (plus a 500 ms monitor goroutine that kicks the loop on a
    change), policy rules and tables, the `inet trellis` table (pinning marks,
    NAT), IPv4 forwarding, and the DNS upstream for dnsmasq.
-9. `gossip`: the gossip socket on `br-mesh`, this node's record (sent on
-   change), expiry, and node ID conflict warnings.
-10. `ap`: hostapd on `ap0` (WPA2-PSK, SSID = callsign, generated passphrase
-   kept in `identity.yaml`), channel chosen away from the mesh frequency, a
-   transmit power cap when the AP has its own radio.
-11. `dhcp`: dnsmasq serving `10.73.N.100–199` with router and DNS `10.73.0.1`,
+11. `time`: the mesh's time servers for chrony, from gossip.
+12. `survey`: each link's channel load, sampled every 10 s.
+13. `findmesh`: a node that hears half or fewer of the nodes it knew
+   scans for the rest on other channels and visits where it hears them
+   (architecture §12.6); also the alert after a conflict was settled.
+14. `gossip`: the gossip socket on `br-mesh`, this node's record (sent on
+   change), expiry, node ID conflict warnings, and asking for a newer mesh
+   profile.
+15. `positions`: this node's position on the ATAK map, and the last known
+   positions of nodes that left.
+16. `ap`: hostapd (WPA2-PSK, SSID = callsign, generated passphrase kept in
+   `identity.yaml`), channel chosen away from the mesh frequency, or the
+   mesh link's when they share a radio.
+17. `dhcp`: dnsmasq serving `10.73.N.100–199` with router and DNS `10.73.0.1`,
    authoritative (foreign leases are NAKed), `.mesh` names for every node
    from gossip, outside names forwarded to the selected gateway.
 
@@ -92,7 +113,13 @@ restoring the kernel's wlan interface on radios Trellis took over.
 | `/run/trellis/hostapd-ap0.conf`, `/run/trellis/hostapd/` | generated hostapd config (0600) and its control socket |
 | `/run/trellis/dnsmasq.conf` | generated dnsmasq config |
 | `/var/lib/trellis/radios.yaml` | radio memory: kernel interface names, last roles |
+| `/var/lib/trellis/mesh-change.json` | a mesh-wide profile change waiting for its moment (0600: it holds the mesh secret) |
+| `/var/lib/trellis/known-nodes.json` | the other nodes heard in the last day, with ages (finding the mesh again) |
+| `/var/lib/trellis/profile-dropped.yaml` | the profile dropped when two parts of the mesh had changed it apart (0600) |
 | `/run/trellis/meshd.sock` | API socket |
+| `/etc/trellis/release-keys/*.pub` | release keys the operator trusts besides the built-in ones |
+| `/var/lib/trellis/upgrade/` | the last upgrade: its log and outcome, the previous version's package and configuration (0700); while one is under way also its state, the old binary, and `/etc/systemd/system/trellis-upgrade-resume.service` |
+| `/usr/share/trellis/scripts/`, `/usr/share/trellis/packaging/` | the hardware scripts and what they install, as in the repository |
 | `/run/trellis/wpa-mesh0.conf`, `/run/trellis/wpa/` | generated wpa_supplicant config and its control sockets |
 
 ## The web UI's files
@@ -123,7 +150,8 @@ Rules the code keeps to (a test checks the first two):
 
 To work on it: `make ui-dev` serves the UI on `http://127.0.0.1:8480`
 against `tools/fakemeshd` (`SETUP=1` for the setup wizard, `LINKS=2` or `3`
-for more mesh links, HaLow among them).
+for more mesh links, HaLow among them, `UNRESTRICTED=1` for a mesh in
+unrestricted regulatory mode).
 `tools/uishot.py` takes screenshots of it with a headless Firefox, at any
 window size and in any theme, and reports JavaScript errors:
 

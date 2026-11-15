@@ -15,7 +15,7 @@ func checkTime(r *Report) {
 	if _, err := exec.LookPath("chronyd"); err == nil || fileExists("/usr/sbin/chronyd") {
 		r.add(Pass, "time service", "chrony (serves and follows mesh time)", "")
 	} else {
-		r.add(Warn, "time service", "chrony is not installed: this node neither serves nor follows mesh time", "scripts/install-node.sh installs it")
+		r.add(Warn, "time service", "chrony is not installed: this node neither serves nor follows mesh time", "sudo apt install chrony")
 	}
 	cmdline, _ := os.ReadFile("/proc/cmdline")
 	gpsd, err := os.ReadFile("/etc/default/gpsd")

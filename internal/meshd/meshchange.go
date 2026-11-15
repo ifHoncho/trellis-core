@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/gossip"
@@ -44,18 +46,29 @@ const (
 	meshChangeLinger   = 30 * time.Second // offers go on this long past the switch
 	meshChangeShowFor  = 10 * time.Minute // status shows the last change this long
 	meshChangeAskEvery = 10 * time.Second // a node behind asks at most this often
+	// meshChangeClockSlack is how much further away a switch may seem after a
+	// restart than when the change arrived before the clock counts as gone back.
+	meshChangeClockSlack = 30 * time.Second
+	// meshChangeCatchUp is how long after an answer a node that was behind
+	// switches: the nodes of a part of the mesh that was left behind ask
+	// within a few seconds of each other and get the same moment, so they
+	// move together rather than one by one, each leaving the rest behind.
+	meshChangeCatchUp = 15 * time.Second
 )
 
 // meshChange is a profile change this node has, waiting to switch or done.
 type meshChange struct {
 	Rev     uint64    `json:"rev"`
 	ApplyAt time.Time `json:"apply_at"`
-	From    string    `json:"from"` // callsign of the node that sent it
-	Sender  bool      `json:"sender"`
-	YAML    string    `json:"yaml"`
-	State   string    `json:"state"` // pending, applied, failed
-	Error   string    `json:"error,omitempty"`
-	Done    time.Time `json:"done,omitempty"`
+	// WaitMS is how far away the switch was when this node took the change:
+	// after a restart it can only be nearer, unless the clock went back.
+	WaitMS int64     `json:"wait_ms,omitempty"`
+	From   string    `json:"from"` // callsign of the node that sent it
+	Sender bool      `json:"sender"`
+	YAML   string    `json:"yaml"`
+	State  string    `json:"state"` // pending, applied, failed
+	Error  string    `json:"error,omitempty"`
+	Done   time.Time `json:"done,omitempty"`
 }
 
 // meshChangeTarget is one node an offer goes to, on the sender.
@@ -73,6 +86,11 @@ type meshChanges struct {
 	stop    chan struct{} // ends the sender's resend loop
 	asked   time.Time
 	answer  map[string]time.Time // requests answered, by asker
+	// unknown is when each change ID a peer runs and this node does not
+	// know was first seen (askForNewerProfile waits askHoldoff after it).
+	unknown  map[string]time.Time
+	conflict *meshConflict // the last conflict settled (meshconflict.go)
+	catchUp  time.Time     // the moment answers to nodes behind give (meshChangeCatchUp)
 }
 
 // meshChangeFromPeer reports whether a peer record can follow a mesh-wide
@@ -121,7 +139,7 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		return nil, api.Invalid("the switch can be %v to %v from now", meshChangeMin, meshChangeMax)
 	}
 	q := *p
-	q.Revision = curProfile.Revision
+	q.Revision, q.Change = curProfile.Revision, curProfile.Change
 	res := &api.ApplyResult{Changed: !sameYAML(*curProfile, q), Effects: profileEffects(curProfile, p, false, d.profileView(cur, curProfile, p))}
 	res.Effects = meshWideEffects(res.Effects, curProfile, p)
 	at := time.Now().Add(delay).Truncate(time.Second)
@@ -159,6 +177,23 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s %s a version that cannot follow a mesh-wide change: install the profile there by hand, or %s keep the old one.",
 			listAnd(behind), map[bool]string{true: "runs", false: "run"}[len(behind) == 1], map[bool]string{true: "it will", false: "they will"}[len(behind) == 1]))
 	}
+	// Nodes heard in the last day but not now (roster.go) will miss it.
+	live := map[string]bool{}
+	for _, peer := range d.peers.Peers() {
+		live[peer.Record.MAC] = true
+	}
+	var away []string
+	for mac, callsign := range d.rosterKnown() {
+		if !live[mac] {
+			away = append(away, callsign)
+		}
+	}
+	if len(away) > 0 {
+		slices.Sort(away)
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-away", "%s %s heard in the last day but %s not in reach now: %s miss this change, and look for the mesh when %s back. Sending it when every node is on and in reach is safer.",
+			listAnd(away), map[bool]string{true: "was", false: "were"}[len(away) == 1], map[bool]string{true: "is", false: "are"}[len(away) == 1],
+			map[bool]string{true: "it will", false: "they will"}[len(away) == 1], map[bool]string{true: "it is", false: "they are"}[len(away) == 1]))
+	}
 	if c := d.time.Clock(); !c.Synced {
 		res.Effects = append(res.Effects, effect("warning", "mesh-change-clock", "This node's clock is not synchronised (%s): nodes switch when their own clocks reach the moment, so they may switch apart.", c.Note))
 	}
@@ -171,6 +206,7 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	}
 
 	p.Revision = max(d.currentRevision(), d.highestPeerRevision()) + 1
+	p.StartChange(d.latestProfile(), at, cur.Callsign)
 	data, err := p.YAML("")
 	if err != nil {
 		return nil, err
@@ -222,11 +258,6 @@ func (d *Daemon) sendMeshChange(c *meshChange, stop chan struct{}) {
 	me := d.identity()
 	key := d.gossip.currentKey()
 	cur, _ := d.conf()
-	pkt, err := gossip.SealOffer(key, &gossip.Offer{V: 1, MAC: me.MAC, Callsign: cur.Callsign, Rev: c.Rev, ApplyAtMS: c.ApplyAt.UnixMilli(), Profile: c.YAML})
-	if err != nil {
-		d.log.Error("cannot send the mesh-wide change", "err", err)
-		return
-	}
 	tick := time.NewTicker(meshChangeResend)
 	defer tick.Stop()
 	for {
@@ -240,6 +271,13 @@ func (d *Daemon) sendMeshChange(c *meshChange, stop chan struct{}) {
 		}
 		m.mu.Unlock()
 		if len(waiting) == 0 || time.Now().After(c.ApplyAt.Add(meshChangeLinger)) {
+			return
+		}
+		// Sealed afresh each round: the delay to the switch shrinks.
+		pkt, err := gossip.SealOffer(key, &gossip.Offer{V: 1, MAC: me.MAC, Callsign: cur.Callsign, Rev: c.Rev, ApplyAtMS: c.ApplyAt.UnixMilli(),
+			InMS: max(0, time.Until(c.ApplyAt)).Milliseconds(), Profile: c.YAML})
+		if err != nil {
+			d.log.Error("cannot send the mesh-wide change", "err", err)
 			return
 		}
 		for _, t := range waiting {
@@ -273,16 +311,33 @@ func (d *Daemon) handleProfileOffer(key, pkt []byte, from *net.UDPAddr) error {
 		ok, why = false, "the offer's revision does not match its profile"
 	case p.MeshID != curProfile.MeshID || p.SAEPassphrase != curProfile.SAEPassphrase:
 		ok, why = false, "a mesh-wide change cannot change the mesh ID or the secret"
-	case o.ApplyAtMS > time.Now().Add(meshChangeMax+time.Minute).UnixMilli():
+	}
+	// The moment: by the delay when the offer gives one (whatever the
+	// clocks say), else by the time of day, else now.
+	at := time.Now()
+	switch {
+	case o.InMS > 0:
+		at = at.Add(time.Duration(o.InMS) * time.Millisecond)
+	case o.ApplyAtMS != 0:
+		at = time.UnixMilli(o.ApplyAtMS)
+	}
+	if ok && at.After(time.Now().Add(meshChangeMax+time.Minute)) {
 		ok, why = false, "the switch is too far in the future (clocks apart?)"
 	}
 	if ok {
-		at := time.UnixMilli(o.ApplyAtMS)
-		if o.ApplyAtMS == 0 {
-			at = time.Now()
-		}
 		have := d.currentRevision()
+		mine := d.latestProfile()
+		rel := config.Compare(mine, p)
 		switch {
+		case rel == config.RelSame:
+			// A repeat, or this node has it already: answer again.
+		case rel == config.RelAhead:
+			ok, why = false, fmt.Sprintf("this node already has a later change (revision %d)", have)
+		case rel == config.RelDiverged:
+			// Changed apart from this node's profile: settle it.
+			if err := d.reconcileProfiles(mine, p, o.Callsign); err != nil {
+				ok, why = false, err.Error()
+			}
 		case o.Rev < have:
 			ok, why = false, fmt.Sprintf("this node already has revision %d", have)
 		case o.Rev == have:
@@ -365,8 +420,17 @@ func (d *Daemon) handleProfileRequest(key, pkt []byte, from *net.UDPAddr) error 
 			return err
 		}
 		o.Profile = string(data)
+		// Older versions switch at once (no "at"); newer ones at a moment
+		// shared by every node that asks around now (meshChangeCatchUp).
+		m.mu.Lock()
+		if !time.Now().Before(m.catchUp) {
+			m.catchUp = time.Now().Add(meshChangeCatchUp)
+		}
+		o.InMS = max(time.Millisecond, time.Until(m.catchUp)).Milliseconds()
+		m.mu.Unlock()
 	case pending != nil && pending.Rev == r.Rev && pending.State == "pending":
 		o.Profile, o.ApplyAtMS = pending.YAML, pending.ApplyAt.UnixMilli()
+		o.InMS = max(0, time.Until(pending.ApplyAt)).Milliseconds()
 	default:
 		return nil
 	}
@@ -377,43 +441,79 @@ func (d *Daemon) handleProfileRequest(key, pkt []byte, from *net.UDPAddr) error 
 	return d.gossip.sendTo(pkt, from.IP)
 }
 
-// askForNewerProfile asks a node that runs a higher revision for it: this
-// node missed a change. Called on every gossip pass; asks at most every
-// meshChangeAskEvery.
+// askForNewerProfile asks another node for its profile when it runs a
+// higher revision (this node missed a change), or a mesh-wide change this
+// node does not know (it is ahead, or the mesh was changed apart: the
+// answer settles it, meshconflict.go). Called on every gossip pass; asks at
+// most every meshChangeAskEvery, and about an unknown change only
+// askHoldoff after first hearing of it.
 func (d *Daemon) askForNewerProfile(key []byte) {
+	me := d.identity()
+	if me == nil {
+		return
+	}
 	have := d.currentRevision()
+	mine := d.latestProfile()
+	now := time.Now()
+	m := &d.meshChanges
+	m.mu.Lock()
 	var best *gossip.Record
+	heard := map[string]bool{}
 	for _, p := range d.peers.Peers() {
 		r := p.Record
-		if r.ProfileRev > have && (best == nil || r.ProfileRev > best.ProfileRev) && net.ParseIP(r.Addr) != nil {
+		if net.ParseIP(r.Addr) == nil {
+			continue
+		}
+		unknown := unknownChange(mine, r)
+		if unknown {
+			heard[r.ProfileChange] = true
+			if m.unknown == nil {
+				m.unknown = map[string]time.Time{}
+			}
+			if _, ok := m.unknown[r.ProfileChange]; !ok {
+				m.unknown[r.ProfileChange] = now
+			}
+			if now.Sub(m.unknown[r.ProfileChange]) < askHoldoff(me.NodeID) {
+				continue
+			}
+		} else if r.ProfileRev <= have {
+			continue
+		}
+		if best == nil || r.ProfileRev > best.ProfileRev {
 			rr := r
 			best = &rr
 		}
 	}
-	if best == nil {
-		return
+	for id := range m.unknown {
+		if !heard[id] {
+			delete(m.unknown, id)
+		}
 	}
-	m := &d.meshChanges
-	m.mu.Lock()
-	due := time.Since(m.asked) >= meshChangeAskEvery
+	due := best != nil && time.Since(m.asked) >= meshChangeAskEvery && d.gossip != nil
 	if due {
-		m.asked = time.Now()
+		m.asked = now
 	}
 	m.mu.Unlock()
-	me := d.identity()
-	if !due || me == nil {
+	if !due {
 		return
 	}
 	pkt, err := gossip.SealMessage(key, gossip.RequestMagic, &gossip.Request{V: 1, MAC: me.MAC, Rev: best.ProfileRev})
 	if err != nil {
 		return
 	}
-	d.log.Info("another node runs a newer mesh profile; asking it", "node", best.Callsign, "revision", best.ProfileRev, "this_node", have)
+	if best.ProfileRev > have {
+		d.log.Info("another node runs a newer mesh profile; asking it", "node", best.Callsign, "revision", best.ProfileRev, "this_node", have)
+	} else {
+		d.log.Info("another node runs a mesh-wide change this node does not know; asking it", "node", best.Callsign, "revision", best.ProfileRev, "change", best.ProfileChange, "this_node", have)
+	}
 	_ = d.gossip.sendTo(pkt, net.ParseIP(best.Addr))
 }
 
 // acceptMeshChange keeps c, on disk too, and arranges the switch.
 func (d *Daemon) acceptMeshChange(c *meshChange) error {
+	if c.WaitMS == 0 {
+		c.WaitMS = max(0, time.Until(c.ApplyAt)).Milliseconds()
+	}
 	if err := d.saveMeshChange(c); err != nil {
 		return fmt.Errorf("cannot keep the change: %w", err)
 	}
@@ -496,8 +596,46 @@ func (d *Daemon) loadMeshChange() {
 		_ = os.Remove(filepath.Join(d.opts.StateDir, meshChangeFile))
 		return
 	}
-	d.log.Info("a mesh-wide profile change from before the restart is still due", "revision", c.Rev, "apply_at", c.ApplyAt.Format(time.RFC3339))
+	// A node without a clock of its own (no RTC) starts from a saved,
+	// stale time and only gets the right one from the mesh. Waiting for the
+	// moment by that clock leaves it on the old settings while every other
+	// node has switched, where it cannot reach the mesh to correct its clock.
+	// It switches now: the moment is near, or past.
+	//
+	// A clock can also be wrong and still count as synchronised (a stale
+	// source, an RTC that drifted). The switch can only have come nearer
+	// since the change arrived; one that seems further away than it was
+	// then (than the longest delay a sender may set, for a change kept by
+	// an older version) means the clock went back, and waiting for it would
+	// strand the node the same way. Then too it switches now: a few nodes
+	// that took the change and restarted together go to the new settings
+	// together, rather than staying on the old ones as a group that hears
+	// itself and never looks for the mesh.
+	most := meshChangeMax
+	if c.WaitMS > 0 {
+		most = time.Duration(c.WaitMS) * time.Millisecond
+	}
+	switch left := time.Until(c.ApplyAt); {
+	case !clockSynced():
+		d.log.Info("a mesh-wide profile change from before the restart is due; the clock is not synchronised yet, so it is made now", "revision", c.Rev, "apply_at", c.ApplyAt.Format(time.RFC3339))
+		c.ApplyAt = time.Now()
+	case left > most+meshChangeClockSlack:
+		d.log.Warn("a mesh-wide profile change from before the restart seems further away than when it arrived: the clock went back, so it is made now",
+			"revision", c.Rev, "apply_at", c.ApplyAt.Format(time.RFC3339), "seems_in", left.Round(time.Second), "was_in", most.Round(time.Second))
+		c.ApplyAt = time.Now()
+	default:
+		d.log.Info("a mesh-wide profile change from before the restart is still due", "revision", c.Rev, "apply_at", c.ApplyAt.Format(time.RFC3339))
+	}
 	_ = d.acceptMeshChange(&c)
+}
+
+// clockSynced reports whether the kernel holds the system clock
+// synchronised (chrony marks it once it has a source; timedatectl shows the
+// same). A variable for tests.
+var clockSynced = func() bool {
+	var tx unix.Timex
+	state, err := unix.Adjtimex(&tx)
+	return err == nil && state != unix.TIME_ERROR && tx.Status&unix.STA_UNSYNC == 0
 }
 
 func (d *Daemon) meshChangeState() *meshChange {

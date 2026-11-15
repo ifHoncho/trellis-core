@@ -104,6 +104,7 @@ func Run(opts Options) *Report {
 	r.OS = osRelease()
 
 	checkPlatform(r)
+	checkInstall(r)
 	checkKernelVersion(r)
 	checkKernelConfig(r)
 	checkHeaders(r)
@@ -314,7 +315,7 @@ func checkBatman(r *Report, opts Options) {
 	path, modVersion := modinfo("batman-adv")
 	if !mi.Loaded {
 		if path == "" {
-			r.add(Fail, "batman-adv module", "not loaded and modinfo finds no module", "install the pinned DKMS build: scripts/install-batman-adv-dkms.sh")
+			r.add(Fail, "batman-adv module", "not loaded and modinfo finds no module", "install the pinned DKMS build: sudo /usr/share/trellis/scripts/install-batman-adv-dkms.sh")
 			return
 		}
 		mi = batadv.ModuleInfo{Raw: modVersion}
@@ -346,7 +347,7 @@ func checkBatman(r *Report, opts Options) {
 	case v.IsZero():
 		r.add(Warn, "batman-adv module", desc+"; version unknown", "")
 	case v.Less(minV):
-		r.add(Fail, "batman-adv module", desc+fmt.Sprintf("; below the minimum %s", minV), "install the pinned DKMS build: scripts/install-batman-adv-dkms.sh")
+		r.add(Fail, "batman-adv module", desc+fmt.Sprintf("; below the minimum %s", minV), "install the pinned DKMS build: sudo /usr/share/trellis/scripts/install-batman-adv-dkms.sh")
 	case v != pinV || inferred:
 		r.add(Warn, "batman-adv module", desc+fmt.Sprintf("; differs from the pinned release %s", pinV), "install the pinned DKMS build so every node runs identical code")
 	default:
@@ -577,7 +578,7 @@ func checkRegulatory(r *Report) {
 			r.add(Pass, "regulatory rules", fmt.Sprintf("answered by trellis crda: %s, %s mode, from %s; the kernel has the %s rules", st.Alpha2, st.Mode, st.Source, mode), "")
 		}
 		if ruleErr != nil {
-			r.add(Warn, "regulatory rules", regdb.UdevRule+" is missing: the next request goes unanswered", "sudo scripts/install-regulatory.sh")
+			r.add(Warn, "regulatory rules", regdb.UdevRule+" is missing: the next request goes unanswered", "sudo /usr/share/trellis/scripts/install-regulatory.sh")
 		}
 		return
 	}
@@ -599,7 +600,7 @@ func checkRegulatory(r *Report) {
 	}
 	switch {
 	case strings.Contains(string(out), "regulatory.db is malformed or signature is missing/invalid"):
-		r.add(Fail, "regulatory.db", "the kernel rejected /lib/firmware/regulatory.db (malformed or signed by a key it does not trust), so it stays in the world domain", "sudo scripts/install-regulatory.sh, then reboot (or scripts/install-regdb-fallback.sh)")
+		r.add(Fail, "regulatory.db", "the kernel rejected /lib/firmware/regulatory.db (malformed or signed by a key it does not trust), so it stays in the world domain", "sudo /usr/share/trellis/scripts/install-regulatory.sh, then reboot (or /usr/share/trellis/scripts/install-regdb-fallback.sh)")
 	case strings.Contains(string(out), "failed to load regulatory.db"):
 		r.add(Fail, "regulatory.db", "the kernel could not load /lib/firmware/regulatory.db", "apt install --reinstall wireless-regdb")
 	default:
@@ -688,7 +689,7 @@ func checkHaLowTools(r *Report, opts Options, p *config.Profile) {
 		return
 	}
 	if path, err := proc.LookPath(wpa.S1GBinary); err != nil {
-		r.add(Fail, wpa.S1GBinary, "not found (the profile has a HaLow mesh link and this node a HaLow radio)", "sudo scripts/install-halow-tools.sh")
+		r.add(Fail, wpa.S1GBinary, "not found (the profile has a HaLow mesh link and this node a HaLow radio)", "sudo /usr/share/trellis/scripts/install-halow-tools.sh")
 	} else {
 		r.add(Pass, wpa.S1GBinary, path, "")
 	}

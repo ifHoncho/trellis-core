@@ -7,6 +7,7 @@ import { bandName, since, duration, count, plural, meshLinks, meshRadios, carrie
 import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
 import { channelsSection } from './channels.js';
 import { appearanceSection } from './appearance.js';
+import { softwarePanel } from './software.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
@@ -198,7 +199,10 @@ function profileSection(d, st) {
     panel('Channel and rules', { meta: ui.scope === 'mesh' ? 'on every node' : `on ${st.node.callsign} only` },
       h('div.form',
         ui.scope === 'mesh'
-          ? notice({ level: 'info', message: `This node sends the change to every node it knows (${plural(others.length, 'other node')}), and they all switch at the same moment. A node out of reach takes it when it next hears one that has it, as long as they still share a link; the review lists the nodes that cannot follow.` })
+          ? [notice({ level: 'info', message: `This node sends the change to every node it knows (${plural(others.length, 'other node')}), and they all switch at the same moment. A node out of reach takes it when it next hears one that has it, as long as they still share a link; the review lists the nodes that cannot follow.` }),
+            // Habits that keep a mesh-wide change from splitting the mesh.
+            h('p', { style: { fontSize: '13px', color: 'var(--ink-3)', lineHeight: '1.45', margin: '0', maxWidth: '85ch' } },
+              'To keep the mesh together, send changes when every node is on and in reach, and from one place at a time. A node that misses a change has to search for the mesh when it is back; if two groups each change the mesh while apart, the later change wins when they meet and the other is dropped.')]
           : notice({ level: 'warning', message: others.length
             ? `This changes ${st.node.callsign} only. Nothing sends it to the other ${others.length === 1 ? 'node' : others.length + ' nodes'} of the mesh, and a node whose channel or secret differs cannot hear the rest.`
             : 'This changes this node only. Every node of a mesh needs the same profile: one whose channel or secret differs cannot hear the rest.' }),
@@ -267,13 +271,14 @@ function accessSection(d, st) {
   return [
     panel('Where this page answers', {},
       h('div.form',
-        toggle('Also on the node’s uplink network', 'Off: only from the mesh and from this node’s own Wi-Fi and device ports. On: also from the network its uplink is plugged into. Until Trellis has its firewall, the admin password is all that protects it there.',
+        toggle('Also on the node’s uplink network', 'Off: only from the mesh and from this node’s own Wi-Fi and device ports. On: also from the network its uplink is plugged into, where the admin password protects it.',
           !!d.web.wan_access, (v) => { d.web.wan_access = v; redraw(); }),
         kv([
           ['From its own devices', h('span', 'https://', st.client_network.anycast.address || '10.73.0.1', h('span.sans.dim', '  or  '), 'https://node.mesh')],
           ['From the mesh', h('span', 'https://', st.node.address.split('/')[0], h('span.sans.dim', '  or  '), 'https://', st.node.callsign, '.mesh')],
         ]),
         h('p.faint', { style: { fontSize: '13.5px', maxWidth: '75ch' } }, 'The addresses always work. The .mesh names only resolve on a device that asks this node for names: a phone with Private DNS set to a provider, a browser with secure DNS, or a VPN asks elsewhere and reports that the site cannot be found.'))),
+    firewallPanel(d, st),
     panel('Admin password', {},
       h('div.form',
         h('div.fields',
@@ -285,6 +290,31 @@ function accessSection(d, st) {
           h('span.faint', { style: { fontSize: '13.5px' } }, 'Forgotten? On the node: ', h('code', 'sudo meshctl web password')),
           button(ui.busy ? 'Changing…' : 'Change password', change, 'primary', { disabled: ui.busy || !ui.current || ui.next.length < 8 })))),
   ];
+}
+
+// firewallPanel: what the node takes from outside the mesh (firewall.*).
+function firewallPanel(d, st) {
+  const fw = (d.firewall ||= { wan: 'open' });
+  const closed = fw.wan === 'closed';
+  const g = st.gateway || {};
+  const ports = (fw.allow || []).join(' ');
+  const setPorts = (text) => {
+    const list = text.split(/[\s,]+/).map((p) => p.trim().toLowerCase()).filter(Boolean);
+    fw.allow = list.length ? list : null;
+    redraw();
+  };
+  const now = g.firewall === 'closed'
+    ? h('span', h('span.ok', 'closed'), h('span.faint', `  ·  open: ${(g.firewall_open || []).join(' ') || 'nothing but replies, ICMP and DHCP'}  ·  ${count(g.firewall_dropped || 0)} packets turned away`))
+    : h('span.warn', 'open: every service the system runs answers from outside the mesh');
+  return panel('From outside the mesh', { meta: 'firewall' },
+    h('div.form',
+      kv([['Now', now]]),
+      toggle('Closed to everything but the mesh', 'On: from the uplink network and any other interface that is not the mesh, the node takes only replies to its own traffic, ICMP, DHCP, and the ports below. The mesh, this node’s Wi-Fi and device ports, and the internet it shares are not affected.',
+        closed, (v) => { fw.wan = v ? 'closed' : 'open'; redraw(); }),
+      closed ? toggle('SSH stays open', 'Port 22, for whoever manages the node from its uplink network.', fw.ssh !== false,
+        (v) => { fw.ssh = v ? null : false; redraw(); }) : null,
+      closed ? field('Further open ports', h('input.input', { value: ports, placeholder: 'tcp/5201 udp/51820', spellcheck: false,
+        onchange: (e) => setPorts(e.target.value) }), { hint: 'tcp/PORT or udp/PORT, separated by spaces. The web UI’s ports open by themselves when it answers on the uplink network.' }) : null));
 }
 
 // timePanel: how the node keeps time, and its GNSS receiver.
@@ -341,6 +371,7 @@ function systemSection(d, st) {
         ['Gossip', `${count(st.gossip.sent)} sent · ${count(st.gossip.received)} received · ${st.gossip.auth_failed} refused`],
         ['meshd', `pid ${st.process.pid} · ${st.process.open_files} files · ${st.process.goroutines} goroutines`],
       ])),
+    softwarePanel(st),
     timePanel(st),
     panel('Control loop', { flush: true, meta: st.reconcile.converged ? `settled · pass ${count(st.reconcile.passes)} took ${st.reconcile.last_duration}` : 'still applying changes',
       },

@@ -117,8 +117,11 @@ type Daemon struct {
 
 	meshChanges meshChanges    // mesh-wide profile changes (meshchange.go)
 	survey      surveyState    // channel load and surveys (survey.go)
+	findMesh    findMesh       // a node alone looking for its mesh (findmesh.go)
+	roster      roster         // the nodes heard lately, kept across restarts (roster.go)
 	positions   positionsState // node positions on the ATAK map (positions.go)
 	peers       *gossip.Table
+	rolloutSelf rolloutSelf
 }
 
 // New loads configuration and prepares the daemon. It does not touch the
@@ -357,7 +360,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.radios = newRadioReconciler(d)
 	d.meshlink = newMeshLinkReconciler(d, 0)
 	d.morelinks = &moreLinksReconciler{d: d}
-	recs := []reconcile.Reconciler{newHostReconciler(d), d.radios, d.meshlink, d.morelinks}
+	recs := []reconcile.Reconciler{newHostReconciler(d), newFirewallReconciler(d), d.radios, d.meshlink, d.morelinks}
 	d.batman = newBatmanReconciler(d)
 	d.bridge = newBridgeReconciler(d)
 	d.ports = newPortsReconciler(d)
@@ -371,7 +374,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp)
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp)
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -382,6 +385,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	go d.handleSignals(ctx, cancel)
 	go d.gnss.Run(ctx)
 	d.loadMeshChange()
+	d.loadRoster()
 
 	serveErr := make(chan error, 1)
 	if serve != nil {
@@ -396,6 +400,9 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	}
 	d.log.Info("meshd starting", "version", d.opts.Version, "callsign", d.cfg.Callsign, "node_id", ident.NodeID, "mesh", d.profile.MeshID)
 	err = d.loop.Run(ctx)
+	if d.peers != nil {
+		d.noteRoster(d.peers.Peers(), true)
+	}
 	select {
 	case serr := <-serveErr:
 		err = errors.Join(err, serr)
@@ -575,6 +582,9 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 			l = linkLoad{busy: -1}
 		}
 		ml.ChannelBusyPct, ml.NoiseDBm = l.busy, l.noise
+		if v, ok := d.visitPlan(i, profile); ok {
+			ml.Visit = &status.MeshLinkVisit{Band: v.Band, Channel: v.Channel, WidthMHz: v.Width}
+		}
 	}
 	if st.Gateway.Candidates == nil {
 		st.Gateway.Candidates = []status.GatewayCandidate{}
@@ -686,6 +696,13 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 			st.ClientNet.Filters.Drops, st.ClientNet.Filters.Rules = drops, rules
 		}
 	}
+	// The firewall towards everything outside the mesh, as the firewall
+	// reconciler last found it in the kernel.
+	d.facts.Read(func(f *Facts) {
+		st.Gateway.Firewall = f.Firewall.State
+		st.Gateway.FirewallOpen = append([]string(nil), f.Firewall.Open...)
+		st.Gateway.FirewallDrop = f.Firewall.Dropped
+	})
 	if d.bat != nil && batIfindex != 0 {
 		d.collectBatman(st, batIfindex)
 	}
@@ -723,7 +740,56 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		}
 		st.Reconcile.Reconcilers = append(st.Reconcile.Reconcilers, ri)
 	}
+	statusOnClock(st)
 	return st, nil
+}
+
+// onClock puts a time meshd took itself on the clock as it reads at now. A
+// node without an RTC starts from a stale saved time, and chrony then steps
+// the clock, here by a day: a time taken before the step keeps the old wall
+// reading, and a duration shown from it is a day out ("up 25h" twelve
+// minutes after boot). Each such time also holds Go's monotonic reading,
+// which no step moves; from that the time is placed again. A time without
+// one (from a file, another node, dnsmasq) comes back unchanged.
+func onClock(t, now time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return now.Add(-now.Sub(t))
+}
+
+// statusOnClock puts the times in a status that meshd took itself on the
+// clock as it reads at st.Time. Shared structures are copied first: the
+// status must not write into meshd's own state.
+func statusOnClock(st *status.Status) {
+	now := st.Time
+	st.StartedAt = onClock(st.StartedAt, now)
+	st.Reconcile.LastPass = onClock(st.Reconcile.LastPass, now)
+	for i := range st.Reconcile.Reconcilers {
+		st.Reconcile.Reconcilers[i].LastChanged = onClock(st.Reconcile.Reconcilers[i].LastChanged, now)
+	}
+	st.Gateway.WANSince = onClock(st.Gateway.WANSince, now)
+	if st.Gateway.Selected != nil {
+		sel := *st.Gateway.Selected
+		sel.Since = onClock(sel.Since, now)
+		st.Gateway.Selected = &sel
+	}
+	for i := range st.Ports {
+		st.Ports[i].Since = onClock(st.Ports[i].Since, now)
+	}
+	for _, l := range append([]*status.MeshLink{&st.MeshLink}, linkPtrs(st.MoreLinks)...) {
+		for i := range l.SAEFailures {
+			l.SAEFailures[i].Time = onClock(l.SAEFailures[i].Time, now)
+		}
+	}
+}
+
+func linkPtrs(ls []status.MeshLink) []*status.MeshLink {
+	out := make([]*status.MeshLink, len(ls))
+	for i := range ls {
+		out[i] = &ls[i]
+	}
+	return out
 }
 
 func (d *Daemon) collectBatman(st *status.Status, batIfindex int) {

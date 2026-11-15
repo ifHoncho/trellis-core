@@ -6,7 +6,7 @@ Requires=trellis-webd.socket
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/trellis webd
+ExecStart=/usr/bin/trellis webd
 Restart=on-failure
 RestartSec=2
 

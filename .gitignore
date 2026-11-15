@@ -21,5 +21,7 @@ __pycache__/
 *.swp
 .DS_Store
 deploy.hosts
+# Development release key the deploy makes test nodes trust (scripts/deploy.sh)
+/dev_key.pub
 # Mesh profile carried by scripts/deploy.sh; holds the mesh secret
 mesh-profile.yaml

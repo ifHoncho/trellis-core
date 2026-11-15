@@ -67,6 +67,8 @@ Commands:
   web password [--stdin|--clear] set (or remove) the web UI's admin password
   web wan-access on|off          also serve the web UI on the node's uplink network
   clients [--json]               devices joined to this node: AP clients and DHCP leases
+  upgrade FILE.deb               install a release; the node goes back to the old one if it is not healthy after
+  upgrade --status|--rollback|--resume
   reconcile                      ask meshd for a pass now
   reload                         ask meshd to re-read its configuration
   version
@@ -107,6 +109,8 @@ Commands:
 		err = cmdClients(ctx, client, rest[1:], stdout)
 	case "web":
 		err = cmdWeb(ctx, client, rest[1:], stdout, stderr)
+	case "upgrade":
+		err = cmdUpgrade(client, rest[1:], stdout)
 	case "reconcile":
 		if err = client.Reconcile(ctx); err == nil {
 			fmt.Fprintln(stdout, "reconcile requested")
@@ -620,6 +624,11 @@ ap:
 
 mesh_mtu: %d
 allow_old_batman: false
+
+firewall:
+  wan: closed          # from outside the mesh: closed (replies, ICMP, DHCP, SSH, allow) or open
+  ssh: true            # port 22 stays open while closed
+  allow: []            # further ports open while closed: tcp/5201, udp/51820
 `, n.Schema, n.Callsign, n.NodeID, n.ProfilePath, n.MeshMTU)
 	return emit(stdout, *out, *force, 0o644, buf.String())
 }
@@ -1227,6 +1236,9 @@ func linkTitle(ml status.MeshLink) string {
 
 func printMeshLink(w io.Writer, title string, ml status.MeshLink, st *status.Status, first bool) {
 	fmt.Fprintf(w, "\n%s: transport %s", title, ml.Transport)
+	if v := ml.Visit; v != nil {
+		fmt.Fprintf(w, ", visiting %s at %d MHz for now (looking for the rest of the mesh)", config.RadioPlan{Band: v.Band, Channel: v.Channel}.Name(), v.WidthMHz)
+	}
 	if ml.Interface != "" {
 		fmt.Fprintf(w, ", %s mtu %d", ml.Interface, ml.MTU)
 		sup := "wpa_supplicant stopped"
@@ -1333,6 +1345,16 @@ func printGateway(w io.Writer, st *status.Status) {
 		fmt.Fprintf(w, "; DNS via %s", strings.Join(g.DNS, ","))
 	}
 	fmt.Fprintln(w)
+	switch g.Firewall {
+	case "closed":
+		open := "nothing but replies, ICMP and DHCP"
+		if len(g.FirewallOpen) > 0 {
+			open = strings.Join(g.FirewallOpen, " ")
+		}
+		fmt.Fprintf(w, "Firewall: closed from outside the mesh (open: %s), %d packets turned away\n", open, g.FirewallDrop)
+	case "open":
+		fmt.Fprintln(w, "Firewall: open from outside the mesh (firewall.wan)")
+	}
 	if len(g.Candidates) > 0 {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  GATEWAY\tNODE\tADDRESS\tPATH THROUGHPUT\tLAST SEEN\tUSABLE")

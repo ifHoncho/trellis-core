@@ -32,6 +32,10 @@ type Offer struct {
 	// (the nodes keep one time); 0: at once (an answer to a
 	// Request, for a change that has happened already).
 	ApplyAtMS int64 `json:"at,omitempty"`
+	// InMS is the same moment as a delay from when the offer was sent, in
+	// milliseconds; 0 when not given (older versions). A node that has it
+	// goes by it: it holds whatever the two nodes' clocks say.
+	InMS int64 `json:"in,omitempty"`
 	// Profile is the profile's YAML, the mesh secret included: offers
 	// travel inside the mesh, on its encrypted links.
 	Profile string `json:"p"`
@@ -69,7 +73,7 @@ func OpenOffer(key, pkt []byte) (*Offer, error) {
 	switch {
 	case !validMAC(o.MAC):
 		return nil, fmt.Errorf("%w: bad mac %q", ErrInvalid, o.MAC)
-	case o.Rev == 0 || o.Profile == "" || o.ApplyAtMS < 0:
+	case o.Rev == 0 || o.Profile == "" || o.ApplyAtMS < 0 || o.InMS < 0:
 		return nil, fmt.Errorf("%w: offer without revision or profile", ErrInvalid)
 	case o.Callsign != "" && !reCallsign.MatchString(o.Callsign):
 		return nil, fmt.Errorf("%w: callsign %q", ErrInvalid, o.Callsign)

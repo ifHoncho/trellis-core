@@ -1,0 +1,7 @@
+# The batman-adv release every Trellis node runs, as packaged in
+# trellis-batman-adv-dkms. The checksum is of the release tarball from
+# open-mesh.org; REVISION counts changes to the packaging of one release.
+BATADV_VERSION=2026.3
+BATADV_URL=https://downloads.open-mesh.org/batman/releases/batman-adv-2026.3/batman-adv-2026.3.tar.gz
+BATADV_SHA256=c3524e7d8f148786a052654a7b1090e394746d3a71ee5d657f986dd7af161762
+REVISION=1

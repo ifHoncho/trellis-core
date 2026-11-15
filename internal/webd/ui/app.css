@@ -676,6 +676,37 @@ svg { display: block; }
 .banner { padding: 9px 30px; font-size: 13.5px; background: color-mix(in srgb, var(--warn) 14%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); color: var(--ink); display: flex; gap: 10px; align-items: center; }
 .banner.bad { background: color-mix(in srgb, var(--bad) 16%, var(--bg)); border-bottom-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .banner .dot { color: var(--warn); } .banner.bad .dot { color: var(--bad); }
+.banner .dismiss { margin-left: auto; flex: none; }
+
+/* The dismissed unrestricted banner: a triangle marked U; the warning shows
+   beside it on hover, focus or a tap. In the corner above the page on a
+   wide screen, in the top bar on a phone. */
+.reg-corner { position: relative; height: 0; z-index: 25; }
+.reg-corner .reg-mini { position: absolute; top: 6px; right: 16px; }
+.reg-mini { position: relative; flex: none; }
+.reg-tri { display: block; padding: 3px; border: 0; background: none; cursor: pointer; border-radius: var(--radius); }
+.reg-tri:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.reg-tri .tri {
+  display: flex; align-items: flex-end; justify-content: center; width: 26px; height: 23px; padding-bottom: 3px;
+  background: var(--warn); clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  color: var(--bg); font: 700 11px/1 var(--mono);
+}
+.reg-pop {
+  display: none; position: absolute; right: 0; top: calc(100% + 8px); z-index: 40; width: min(360px, calc(100vw - 28px));
+  padding: 12px 14px; background: var(--bg-2); color: var(--ink); font-size: 13.5px; line-height: 1.45;
+  border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--radius);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.reg-pop::before { content: ""; position: absolute; left: 0; right: 0; top: -10px; height: 10px; } /* keeps the hover across the gap */
+.reg-mini:hover .reg-pop, .reg-mini:focus-within .reg-pop, .reg-mini.open .reg-pop { display: block; }
+.reg-pop-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+
+/* Alerts with their Ignore button; ignored ones dimmed, in their own list. */
+.alert { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+.alert > .btn { margin-top: 6px; }
+.alert.ignored .notice { opacity: 0.6; }
+.ignored-alerts { margin-top: 26px; }
+.ignored-alerts .dim { font-size: 13px; margin: 4px 0 10px; }
 
 .toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; max-width: min(420px, calc(100vw - 40px)); }
 .toast { padding: 12px 14px; background: var(--bg-3); border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: var(--radius); box-shadow: var(--shadow); font-size: 14px; animation: rise 0.25s ease-out; }
@@ -853,6 +884,7 @@ details > summary::-webkit-details-marker { display: none; }
   .tabbar .count { position: absolute; top: 5px; left: calc(50% + 6px); min-width: 16px; padding: 2px 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font-size: 9.5px; }
   .main { padding: 16px 12px 96px; }
   .banner { padding: 9px 14px; }
+  .reg-corner { display: none; }
   .grid { grid-template-columns: minmax(0, 1fr); }
   .c3, .c4, .c5, .c6, .c7, .c8, .c12 { grid-column: auto; }
   .hero { grid-template-columns: minmax(0, 1fr); }

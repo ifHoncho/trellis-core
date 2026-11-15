@@ -91,7 +91,7 @@ func (r *radioReconciler) regulatory(nl regNL, warn func(level, code, format str
 			case answered != nil:
 				msg += "; trellis crda answers the kernel: see journalctl -t trellis-crda"
 			case rd.Alpha2 == "00":
-				msg += "; it most likely rejects /lib/firmware/regulatory.db (signature). Run sudo scripts/install-regulatory.sh and reboot, or see sudo meshctl doctor"
+				msg += "; it most likely rejects /lib/firmware/regulatory.db (signature). Run sudo /usr/share/trellis/scripts/install-regulatory.sh and reboot, or see sudo meshctl doctor"
 			}
 			warn("error", "regdomain-not-applied", "%s", msg)
 		}
@@ -132,7 +132,7 @@ func (r *radioReconciler) regulatory(nl regNL, warn func(level, code, format str
 		if _, err := os.Stat(regulatoryRule); err == nil {
 			reg.Note = "unrestricted mode is installed and takes effect at the next boot (the kernel keeps the regulatory database it loaded at start); operating under " + want + " limits until then"
 		} else {
-			reg.Note = "unrestricted mode needs Trellis to answer the kernel's regulatory requests: run sudo scripts/install-regulatory.sh (make deploy does) and reboot; operating under " + want + " limits"
+			reg.Note = "unrestricted mode needs Trellis to answer the kernel's regulatory requests: run sudo /usr/share/trellis/scripts/install-regulatory.sh and reboot; operating under " + want + " limits"
 		}
 		warn("warning", "unrestricted-unavailable", "%s", reg.Note)
 	case switching:

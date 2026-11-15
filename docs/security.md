@@ -1,0 +1,192 @@
+# Security model and threat model
+
+What Trellis protects, from whom, how, and what it does not protect yet.
+The design is in [architecture.md](architecture.md) §11; this document is
+the threat model that design is checked against, and the record of that
+check.
+
+## What is worth protecting
+
+| Asset | Why it matters |
+|---|---|
+| **The mesh secret** (the SAE passphrase in the mesh profile) | Whoever has it can join a node to the mesh, read nothing on its own (links are encrypted per hop) but take part as a member: route traffic, see every client's traffic that crosses it, and send authenticated control data. |
+| **Traffic on the mesh** | ATAK situational awareness, chat, voice, and whatever the team's devices send. |
+| **Positions** | Every node with a GNSS fix reports where it is. Positions are the most sensitive data the mesh carries. |
+| **Control of a node** | The web UI and API change radios, links, the mesh profile and the software. |
+| **The software itself** | A node installs releases. A forged release runs as root on every node that takes it. |
+| **Availability** | The mesh must keep carrying traffic while nodes move, fail, restart and upgrade. |
+
+## Who it is protected from
+
+| | Adversary | Can reach |
+|---|---|---|
+| **A1** | Someone in radio range without the mesh secret | The air: every mesh link and every node's client Wi-Fi |
+| **A2** | A device on a node's client Wi-Fi or Ethernet port (a team member's phone, or a compromised one) | The client network: every device and node on the mesh, by design |
+| **A3** | A host on a gateway's uplink network (the LAN, an LTE router's network) | The node's uplink address |
+| **A4** | A mesh member: a node with the mesh secret that is buggy, out of date, or captured and reprogrammed | Everything a node can send: frames, routes, gossip, mesh-wide changes |
+| **A5** | Someone with a node in their hands | Its storage: configuration, mesh secret, identity, admin password hash |
+| **A6** | Someone who tampers with a release on its way to a node | A package file handed to `meshctl upgrade` or the web UI |
+
+Jamming the radio, or the GNSS signal, is out of reach of any software
+measure: it is noted where it changes what a node believes, not where it
+stops the radio.
+
+## What stops them
+
+### A1: radio range, no secret
+
+- **Mesh links** are 802.11s with SAE: a node without the passphrase
+  cannot peer, and every link is encrypted per hop with management frame
+  protection.
+- **Client Wi-Fi** is WPA2-PSK with a passphrase of its own per node,
+  separate from the mesh secret: knowing a node's Wi-Fi passphrase gives
+  the client network (A2), not mesh membership.
+- **What remains:** deauthentication and jamming deny service. Repeated
+  failed SAE attempts are throttled by wpa_supplicant; meshd lifts a block
+  early only for peers that were members on that link moments before.
+  wpa_supplicant and hostapd parse frames from anyone in range and run as
+  root inside meshd's sandbox (below).
+
+### A2: a device on the client network
+
+- **The client network is flat on purpose** (requirement R2): a device
+  reaches every other device on the mesh. A compromised phone can scan
+  and attack the team's other devices; Trellis does not isolate clients
+  from each other.
+- **Node services on the client network:** DHCP and DNS (dnsmasq, on mesh
+  addresses only), the web UI (sign-in required), NTP (chrony serves the
+  mesh prefix). meshd's own sockets (gossip, link queries) are on the
+  mesh bridge, and **client ports drop the gossip port in both
+  directions**, so a device can neither read nor inject control data.
+- **Rogue services** from a device are contained to its port: DHCP-server
+  replies, router advertisements and IGMP queries arriving from client
+  ports are dropped.
+- **Broadcast floods** from a device are limited where they would cost
+  every node airtime: IPv4 broadcast other than ARP and allow-listed ports
+  is dropped before the mesh, and link-local multicast is rate-limited.
+  A device can still send unicast as fast as its link allows.
+- **The web UI:** a signed-in admin only; password stored as a salted
+  PBKDF2-SHA256 hash readable by root; five wrong passwords start a lockout
+  that doubles up to a minute; session cookies are `SameSite=Strict`,
+  `HttpOnly`, `Secure`, and every change needs a header no other site can
+  set. The certificate is the node's own, self-signed: a browser has to be
+  told once to trust it, and nothing stops a man in the middle on the
+  client Wi-Fi from presenting another the first time.
+- **Setup mode** (a node without a mesh profile) runs an open-passphrase
+  Wi-Fi, `trellis-setup`, and whoever reaches it first sets the admin
+  password. It ends as soon as the node joins a mesh.
+
+### A3: the uplink network
+
+- **The web UI refuses connections whose either end is outside the mesh
+  prefix** unless `web.wan_access` is set: a host on the uplink network can
+  address a node's mesh address through the gateway's routing, but cannot
+  have one.
+- **dnsmasq** listens on mesh addresses only. **chrony** listens on all
+  addresses but serves only the mesh prefix.
+- **SSH** is the operating system's, as the operator configured it.
+- **The firewall** (`firewall.wan: closed` in the node configuration, or
+  Settings → Access): from anything that is not the mesh side (its uplink
+  network, any other interface), the node takes only replies to its own
+  traffic, ICMP, DHCP replies, SSH (unless turned off), the web UI where
+  it is served beyond the mesh, and the ports its operator lists. The
+  mesh, the node's Wi-Fi and device ports, and the internet it forwards
+  for its clients are not filtered. A node set up by Trellis starts
+  closed; a node upgraded from an earlier release keeps what it had
+  (open) until its operator closes it, and says so under Alerts.
+- **What remains:** an open node takes whatever its system serves.
+  A closed node stays closed while meshd is stopped (an upgrade, a
+  restart, a crash); removing Trellis removes the firewall.
+  Positions never leave through a gateway (a lab test checks the uplink
+  side), and gossip is never routed.
+
+### A4: a mesh member
+
+Every member is trusted: membership is the mesh secret, and the secret is
+shared. What limits a buggy or hostile member:
+
+- **Gossip is authenticated** with a key derived from the mesh secret
+  (HMAC-SHA256, replay-checked by boot ID and sequence number), and
+  **every record is validated** before use: addresses, IDs and callsigns
+  must be well formed, so a member cannot write lines into another node's
+  DNS or firewall configuration, or control characters onto an operator's
+  terminal. The decoders are fuzzed.
+- **Mesh-wide profile changes** come from any member, are authenticated
+  and offered with a switch time; each node checks the profile as strictly
+  as one installed by hand. A change cannot replace the mesh ID or secret.
+  When two parts of a mesh changed it apart, the change that took effect
+  later is kept; a member can date its change ahead to win, which gives it
+  nothing it could not already do by sending a change.
+- **What remains:** a captured node holds the mesh secret, and with it
+  everything above: it can join, route, read the traffic it routes, and
+  push mesh-wide changes (other links, other channels, unrestricted
+  regulatory mode). **Re-keying the mesh** from one node, and per-node keys
+  with revocation, are planned; until then a captured node means setting
+  every node up with a new profile.
+
+### A5: a node in someone's hands
+
+- The mesh profile, node identity and admin password hash are files
+  readable by root only. They are not encrypted at rest: whoever can read
+  the storage has the mesh secret (see A4) and the admin password hash.
+- **What remains:** the mesh secret of a lost node must be treated as
+  known. Storage encryption is up to the image (planned) or the operator.
+
+### A6: tampered releases
+
+- **A release package carries an Ed25519 signature** inside it. A node
+  installs only packages signed by a key it trusts: the release keys built
+  into the version it runs, and keys its operator added under
+  `/etc/trellis/release-keys/`. Through the web UI and API the signature
+  is mandatory and a package may not be older than the one installed;
+  overriding either is for root on the node (`meshctl upgrade
+  --allow-untrusted`, `--allow-downgrade`).
+- Unpacking a package is bounded (a crafted archive cannot make the root
+  daemon unpack gigabytes), and the package parser is fuzzed.
+- **An upgrade checks the node afterwards and goes back** when it is not
+  healthy, so a broken release does not strand a node.
+- **What remains:** the release keys are the keys to every node. Two are
+  built in, either of which signs a release, each kept offline and apart.
+  A lost or stolen key is dropped by the next release, signed with the
+  other one, and every node must be upgraded to it; until then the stolen
+  key still signs packages the nodes take.
+
+### Positions
+
+- Sent only inside the mesh, to the mesh's ATAK group, with a time-to-live
+  of one hop on the bridge; never through a gateway.
+- One switch in the mesh profile stops every node reporting (emissions
+  control), and each node can be stopped on its own.
+- **What remains:** anyone on the client network (A2) receives them, as
+  ATAK's own reports. GNSS can be spoofed: a node reports where its
+  receiver says it is.
+
+## Privileges on a node
+
+| Process | Runs as | Can |
+|---|---|---|
+| `meshd` | root, inside a systemd sandbox: only the capabilities networking needs, no new privileges, the file system read-only except its own directories and the network managers' configuration | everything about the node's network, its radios and helper processes, and starting an upgrade |
+| `hostapd`, `wpa_supplicant`, `dnsmasq` | children of meshd, inside its sandbox; dnsmasq drops to an unprivileged user | their own jobs |
+| `webd` | a user that exists only while it runs, no capabilities, no network namespace of its own, unix sockets only | serve pages and pass a signed-in admin's requests to meshd's socket |
+| `trellis crda` | root, run by udev for a moment | answer the kernel's regulatory requests |
+| `meshctl` | the operator | talk to meshd's socket (root and the `trellis` group) |
+
+Membership of the `trellis` group is admin access: the API socket needs no
+password.
+
+## Review against the implementation
+
+The model above, checked against the code and a running node. Each finding
+is either fixed, or planned with its reason.
+
+| | Finding | Status |
+|---|---|---|
+| R1 | meshd ran as unrestricted root, and hostapd and wpa_supplicant (which parse frames from anyone in radio range) with it; the architecture claimed network capabilities only. | **Fixed:** meshd's unit bounds the capabilities to those networking needs and sandboxes the file system; its children inherit the bounds. |
+| R2 | No input firewall on the uplink. | **Fixed:** `firewall.wan: closed`, the default for nodes Trellis sets up; nodes upgraded from earlier releases stay open until their operator closes them (an upgrade never closes ports by surprise), with a notice. A lab test (F1) checks it on a real kernel. |
+| R3 | A captured node cannot be shut out. | Planned: re-keying from one node. It needs per-node keys first: the new secret must reach the other nodes in a form the captured node cannot read, although it is a member and may relay the very packets that carry it. |
+| R4 | Setup mode's Wi-Fi passphrase is public, and the first visitor sets the admin password. | By design for self-installs; images may carry a per-device passphrase. |
+| R5 | The web UI's certificate is trusted on first use. | Accepted for now; a certificate fingerprint in the node's QR code would close it. |
+| R6 | Secrets are not encrypted at rest. | Accepted: a node's own storage; image-level encryption planned. |
+| R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, DHCP leases, versions and the CoT writer: parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. One finding fixed (a link entry with a negative channel was accepted). |
+| R8 | A release could be signed with the production key during a trial build, and would then be accepted everywhere. | **Fixed:** development builds are refused a release key unless forced, and trial releases refuse a trusted key. |
+| R9 | Client devices are not isolated from each other. | By design (R2); a per-port option to isolate a client could come later. |

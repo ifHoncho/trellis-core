@@ -3,18 +3,37 @@
 # the running kernel now and rebuilt automatically after kernel updates
 # (architecture §6.1). Run as root on a Debian-family system.
 #
-#   scripts/install-batman-adv-dkms.sh            # pinned release (2026.3)
+#   scripts/install-batman-adv-dkms.sh            # the pinned release
 #   BATADV_VERSION=2026.2 scripts/install-batman-adv-dkms.sh
+#
+# The release, unless BATADV_VERSION names one: that of the installed
+# trellis-batman-adv-dkms package (which owns its source), else the pin in
+# packaging/dkms/source, the one place Trellis pins it.
 #
 # The module lands in /lib/modules/<kernel>/updates/dkms/, which takes
 # precedence over the kernel's own copy.
+#
+# The trellis-batman-adv-dkms package ships the source in /usr/src and runs
+# this script when it is installed (TRELLIS_IN_DPKG=1: no package may be
+# installed from inside dpkg, so missing kernel headers or compilers are
+# named instead). Run by hand, it fetches what is missing.
 set -eu
 
-BATADV_VERSION="${BATADV_VERSION:-2026.3}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "${BATADV_VERSION:-}" ]; then
+  v="$(dpkg-query -W -f='${db:Status-Abbrev} ${Version}' trellis-batman-adv-dkms 2>/dev/null || true)"
+  case "$v" in ii*) BATADV_VERSION="${v##* }"; BATADV_VERSION="${BATADV_VERSION%-*}" ;; esac
+fi
+if [ -z "${BATADV_VERSION:-}" ]; then
+  BATADV_VERSION="$(sed -n 's/^BATADV_VERSION=//p' "$HERE/../packaging/dkms/source" 2>/dev/null || true)"
+fi
+[ -n "${BATADV_VERSION:-}" ] || { echo "no batman-adv release to install: set BATADV_VERSION" >&2; exit 2; }
 REPO="${BATADV_REPO:-https://github.com/open-mesh-mirror/batman-adv.git}"
+IN_DPKG="${TRELLIS_IN_DPKG:-}"
+# apt-get, where there is one and this is not running inside dpkg.
+can_apt() { [ -z "$IN_DPKG" ] && command -v apt-get >/dev/null 2>&1; }
 NAME=trellis-batman-adv
 SRC="/usr/src/${NAME}-${BATADV_VERSION}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
 KREL="$(uname -r)"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -37,7 +56,7 @@ fi
 # Kernel headers: Debian, Ubuntu and Raspberry Pi OS package them as
 # linux-headers-$(uname -r); older Raspberry Pi OS as raspberrypi-kernel-headers;
 # FriendlyElec images keep a .deb under /opt/archives.
-if ! [ -f "/lib/modules/${KREL}/build/Makefile" ] && command -v apt-get >/dev/null 2>&1; then
+if ! [ -f "/lib/modules/${KREL}/build/Makefile" ] && can_apt; then
   echo "-- no kernel headers for ${KREL}; trying to install them"
   export DEBIAN_FRONTEND=noninteractive
   if apt-get install -y --no-install-recommends "linux-headers-${KREL}" >/dev/null 2>&1; then
@@ -75,14 +94,19 @@ if [ -n "$CFG" ] && echo "$CFG" | grep -q '^CONFIG_BATMAN_ADV=y'; then
   exit 1
 fi
 
-if command -v apt-get >/dev/null 2>&1; then
+if can_apt && ! { command -v dkms && command -v make && command -v gcc; } >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y --no-install-recommends dkms git build-essential >/dev/null
+  apt-get install -y --no-install-recommends dkms build-essential >/dev/null
 fi
 
-if [ -d "$SRC/.git" ]; then
-  echo "-- source already present at $SRC"
+# The source: shipped by the package, left by an earlier run, or fetched.
+if [ -f "$SRC/Makefile" ] && [ -f "$SRC/net/batman-adv/main.c" ]; then
+  echo "-- source present at $SRC"
 else
+  if ! command -v git >/dev/null 2>&1; then
+    can_apt || { echo "!! no batman-adv source at $SRC and no git to fetch it" >&2; exit 1; }
+    apt-get install -y --no-install-recommends git >/dev/null
+  fi
   rm -rf "$SRC"
   echo "-- fetching v${BATADV_VERSION} from ${REPO}"
   git clone --quiet --branch "v${BATADV_VERSION}" --depth 1 "$REPO" "$SRC"
@@ -90,13 +114,6 @@ fi
 sed "s/@VERSION@/${BATADV_VERSION}/" "$HERE/../packaging/dkms/dkms.conf" > "$SRC/dkms.conf"
 install -m 0755 "$HERE/../packaging/dkms/trellis-build.sh" "$SRC/trellis-build.sh"
 
-# Remove other versions of this package so only the pinned one is active.
-# dkms status lines look like "name/version, kernel, arch: state",
-# "name/version: added" or, on old dkms, "name, version, kernel, arch: state".
-dkms status 2>/dev/null | grep "^${NAME}[/,]" \
-  | sed -E "s|^${NAME}[/,] *([^,:]+).*|\1|" | sort -u | while read -r v; do
-  [ -n "$v" ] && [ "$v" != "$BATADV_VERSION" ] && dkms remove "${NAME}/${v}" --all || true
-done
 
 BUILD="/lib/modules/${KREL}/build"
 
@@ -106,7 +123,7 @@ if [ -n "$WANT_GCC" ] && [ "$WANT_GCC" -gt 0 ]; then
   WANT_GCC=$((WANT_GCC / 10000))
   HAVE_GCC="$(gcc -dumpversion 2>/dev/null | cut -d. -f1)"
   if [ "$HAVE_GCC" != "$WANT_GCC" ] && ! command -v "gcc-$WANT_GCC" >/dev/null 2>&1; then
-    if apt-cache show "gcc-$WANT_GCC" >/dev/null 2>&1; then
+    if can_apt && apt-cache show "gcc-$WANT_GCC" >/dev/null 2>&1; then
       echo "-- the kernel was built with gcc $WANT_GCC; installing gcc-$WANT_GCC (default here is gcc $HAVE_GCC)"
       apt-get install -y --no-install-recommends "gcc-$WANT_GCC" >/dev/null || true
     else
@@ -156,17 +173,75 @@ diagnose() {
   exit 1
 }
 
-dkms status 2>/dev/null | grep -q "^${NAME}/${BATADV_VERSION}" || dkms add "${NAME}/${BATADV_VERSION}"
-dkms build "${NAME}/${BATADV_VERSION}" -k "$KREL" || diagnose
-dkms install --force "${NAME}/${BATADV_VERSION}" -k "$KREL"
+# dkms status lines look like "name/version, kernel, arch: state",
+# "name/version: added" or, on old dkms, "name, version, kernel, arch:
+# state". Matched as fixed strings: kernel names carry "+" and versions ".".
+dkms_has() { # version [kernel]: registered (for that kernel)
+  if [ -n "${2:-}" ]; then
+    dkms status 2>/dev/null | grep -F -e "${NAME}/$1, $2," -e "${NAME}, $1, $2," | grep -q -F ': installed'
+  else
+    dkms status 2>/dev/null | grep -q -F -e "${NAME}/$1," -e "${NAME}/$1:" -e "${NAME}, $1,"
+  fi
+}
+
+# Other releases of this package, so that only the pinned one is active:
+# those dkms lists, and the leftovers of those it no longer can (a package
+# upgrade deletes the old source before this runs). A release whose source
+# a package owns is left alone: removing it is that package's business.
+# Prints what it removed.
+remove_others() {
+  {
+    dkms status 2>/dev/null | grep -F -e "${NAME}/" -e "${NAME}, " | sed -E "s|^${NAME}[/,] *([^,:]+).*|\1|"
+    for d in /var/lib/dkms/"${NAME}"/[0-9]* /usr/src/"${NAME}"-[0-9]*; do
+      [ -d "$d" ] && basename "$d" | sed "s|^${NAME}-||"
+    done
+  } | sort -u | while read -r v; do
+    if [ -n "$v" ] && [ "$v" != "$BATADV_VERSION" ]; then
+      if dpkg-query -S "/usr/src/${NAME}-${v}" >/dev/null 2>&1; then
+        echo "-- left batman-adv $v alone: the trellis-batman-adv-dkms package owns it" >&2
+        continue
+      fi
+      dkms remove "${NAME}/${v}" --all >/dev/null 2>&1 || true
+      rm -rf "/var/lib/dkms/${NAME}/${v}" "/usr/src/${NAME}-${v}"
+      echo "$v"
+    fi
+  done
+}
+
+if dkms_has "$BATADV_VERSION" "$KREL"; then
+  echo "-- already built and installed for ${KREL}"
+  # Others left over from an earlier run: removing one may take the module
+  # file it shares with this release, so install this one again after.
+  if [ -n "$(remove_others)" ]; then
+    dkms install --force "${NAME}/${BATADV_VERSION}" -k "$KREL"
+  fi
+else
+  dkms_has "$BATADV_VERSION" || dkms add "${NAME}/${BATADV_VERSION}"
+  # Built first: a release that fails to build leaves the node with the
+  # module it had. The others go before the install, which then puts its
+  # own module file in place.
+  dkms build "${NAME}/${BATADV_VERSION}" -k "$KREL" || diagnose
+  for v in $(remove_others); do echo "-- removed batman-adv $v"; done
+  dkms install --force "${NAME}/${BATADV_VERSION}" -k "$KREL"
+fi
 depmod -a
 
-echo "-- reloading module"
-modprobe -r batman-adv 2>/dev/null || true
-modprobe batman-adv
-echo "-- loaded batman-adv version: $(cat /sys/module/batman_adv/version)"
+# Unloading batman-adv deletes every mesh interface of it. With a mesh
+# running (a package installed on a live node), the new module waits.
+loaded="$(cat /sys/module/batman_adv/version 2>/dev/null || true)"
+if [ "$loaded" = "$BATADV_VERSION" ]; then
+  echo "-- batman-adv $loaded is loaded"
+elif ip -o link show type batadv 2>/dev/null | grep -q .; then
+  echo "-- batman-adv ${loaded:-?} carries the running mesh; $BATADV_VERSION loads at the next boot, or now with:"
+  echo "   sudo systemctl stop trellis-meshd && sudo modprobe -r batman-adv && sudo systemctl start trellis-meshd"
+else
+  echo "-- loading the new module"
+  modprobe -r batman-adv 2>/dev/null || true
+  modprobe batman-adv
+  echo "-- loaded batman-adv version: $(cat /sys/module/batman_adv/version)"
+fi
 echo "-- module file: $(modinfo -n batman-adv)"
 case "$(modinfo -n batman-adv)" in
-  */updates/*) echo "== OK: the DKMS build is in use" ;;
+  */updates/*) echo "== OK: the DKMS build is installed" ;;
   *) echo "!! the kernel's own copy is still being loaded; check 'dkms status' and depmod" >&2; exit 1 ;;
 esac

@@ -108,6 +108,12 @@ func (n Node) Sparse() Node {
 	if n.MeshMTU == 1560 {
 		n.MeshMTU = 0
 	}
+	if n.Firewall.WAN == FirewallOpen {
+		n.Firewall.WAN = ""
+	}
+	if n.Firewall.SSH != nil && *n.Firewall.SSH {
+		n.Firewall.SSH = nil
+	}
 	if n.Gateway.Mode == GatewayAuto {
 		n.Gateway.Mode = ""
 	}

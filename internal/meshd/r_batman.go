@@ -3,13 +3,16 @@ package meshd
 import (
 	"context"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/vishvananda/netlink"
 
 	"meridian/trellis/internal/batadv"
+	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/reconcile"
 	"meridian/trellis/internal/rtnl"
 )
@@ -24,6 +27,18 @@ type batmanReconciler struct {
 	// loggedUnsupported records that unsupported settings were reported.
 	loggedUnsupported bool
 	wantAllSince      time.Time // when this node started asking for all IPv4 multicast
+	// warmedIfindex is the bat0 the broadcast warm-up was started on
+	// (bcastwarmup.go): once per bat0, as its numbering starts at 1. The
+	// sender sets it back to 0 when it fails, so the next pass tries again.
+	warmedIfindex atomic.Int64
+	// warmFailedAt is when the last warm-up failed (unix ns): a new try
+	// waits warmupRetry after it.
+	warmFailedAt atomic.Int64
+	// blaIfindex is the bat0 on which bridge loop avoidance was turned on
+	// for a wired client port: it stays on for that bat0's life, so that
+	// plugging a cable in and out does not start its 30 s start-up wait
+	// again each time.
+	blaIfindex int
 }
 
 // defaultMcastFanout is batman-adv's own default for multicast_fanout.
@@ -83,7 +98,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	if v.Less(minV) {
 		if !cfg.AllowOldBatman {
 			d.facts.Update(func(f *Facts) { f.BatPresent = false })
-			return res, fmt.Errorf("batman-adv %s is below the minimum %s required by the mesh profile; install the pinned %s build (scripts/install-batman-adv-dkms.sh), or set allow_old_batman: true in node.yaml for bench experiments", v, minV, pinV)
+			return res, fmt.Errorf("batman-adv %s is below the minimum %s required by the mesh profile; install the pinned %s build (sudo /usr/share/trellis/scripts/install-batman-adv-dkms.sh), or set allow_old_batman: true in node.yaml for bench experiments", v, minV, pinV)
 		}
 		warn("warning", "batman-old-allowed", "running batman-adv %s below the minimum %s because allow_old_batman is set; this node forces the whole mesh into multicast flooding", v, minV)
 	} else if mismatch {
@@ -159,7 +174,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	// node happened to be one of the three DHT candidates for its address.
 	want := batadv.Settings{
 		AggregatedOGMs:      boolp(true),
-		BridgeLoopAvoidance: boolp(d.profile.Batman.BLA()),
+		BridgeLoopAvoidance: boolp(b.blaOn(idx)),
 		DistributedARPTable: boolp(false),
 		Fragmentation:       boolp(true),
 		MulticastForceflood: boolp(d.profile.Batman.MulticastFlood),
@@ -265,6 +280,10 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	if link, err = netlink.LinkByName(BatIfname); err != nil {
 		return res, err
 	}
+	// Only now: a broadcast sent on a bat0 that is not up yet fails.
+	if link.Attrs().Flags&net.FlagUp != 0 {
+		b.warmUp(idx, hifs, mac, b.carriesHaLow(desired))
+	}
 	mtu := link.Attrs().MTU
 	if mtu < 1280 {
 		warn("warning", "bat0-mtu-low", "%s MTU is %d, below the 1280 bytes the multicast packet type needs", BatIfname, mtu)
@@ -292,6 +311,75 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		}
 	}
 	return res, nil
+}
+
+// warmUp starts the broadcast warm-up on a new bat0 once one of its hard
+// interfaces is active: before that batman-adv drops broadcasts without
+// numbering them.
+func (b *batmanReconciler) warmUp(idx int, hifs []batadv.HardIf, mac net.HardwareAddr, halow bool) {
+	if int64(idx) == b.warmedIfindex.Load() || b.d.ctx == nil {
+		return
+	}
+	if t := b.warmFailedAt.Load(); t != 0 && time.Since(time.Unix(0, t)) < warmupRetry {
+		return
+	}
+	active := false
+	for _, h := range hifs {
+		active = active || h.Active
+	}
+	if !active {
+		return
+	}
+	// Not before the mesh has peered: on a radio link batman-adv marks the
+	// interface active at once, and broadcasts sent before the first peer
+	// is established reach nobody. The numbers would be used up and the
+	// first one a neighbour sees could fall inside its window. A neighbour
+	// in batman-adv's table means a link that carries frames.
+	if nb, err := b.d.bat.Neighbors(idx); err != nil || len(nb) == 0 {
+		return
+	}
+	b.warmedIfindex.Store(int64(idx))
+	ctx, log := b.d.ctx, b.d.log
+	gap := warmupGap
+	if halow {
+		gap = warmupGapHaLow
+	}
+	go func() {
+		start := time.Now()
+		n, held, err := sendWarmup(ctx, idx, BatIfname, mac, gap)
+		if err != nil && ctx.Err() == nil {
+			log.Warn("broadcast warm-up cut short; tried again shortly", "numbered", n, "of", warmupCount, "held_back", held, "err", err, "retry_in", warmupRetry)
+			b.warmFailedAt.Store(time.Now().UnixNano())
+			b.warmedIfindex.CompareAndSwap(int64(idx), 0)
+			time.AfterFunc(warmupRetry+100*time.Millisecond, func() { b.d.Kick("broadcast warm-up retry") })
+			return
+		}
+		if ctx.Err() != nil {
+			log.Debug("broadcast warm-up stopped: meshd is stopping", "frames", n)
+			return
+		}
+		log.Info("broadcast warm-up sent", "frames", n, "held_back", held, "took", time.Since(start).Round(time.Millisecond))
+	}()
+}
+
+// blaOn decides bridge loop avoidance for bat0 (config BLAOn): when the
+// profile leaves it unset, on once the node bridges a wired client port,
+// and from then on for the rest of this bat0's life.
+func (b *batmanReconciler) blaOn(idx int) bool {
+	if len(b.d.clientPorts()) > 0 {
+		b.blaIfindex = idx
+	}
+	return b.d.profile.Batman.BLAOn(b.blaIfindex == idx && idx != 0)
+}
+
+// carriesHaLow says whether one of bat0's hard interfaces is a HaLow link.
+func (b *batmanReconciler) carriesHaLow(hard map[string]bool) bool {
+	for i, l := range b.d.profile.AllLinks() {
+		if l.Band == config.BandS1G && hard[config.LinkIfname(i)] {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *batmanReconciler) Teardown(ctx context.Context) error {

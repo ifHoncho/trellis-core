@@ -40,6 +40,12 @@ gateway:
 web:
   wan_access: false              # true: also serve the web UI on the node's uplink network (a bench); see docs/api.md
 
+firewall:                        # what the node itself takes from outside the mesh (docs/security.md)
+  wan: closed                    # closed: only replies, ICMP, DHCP, SSH, the web UI with wan_access, and allow
+                                 # open: everything (absent means open, so an upgraded node keeps what it had)
+  ssh: true                      # port 22 stays open while closed
+  allow: []                      # further ports open while closed: [tcp/5201, udp/51820]
+
 mesh_mtu: 1560                   # underlay MTU requested on mesh0 (1500 + batman-adv headers)
 allow_old_batman: false          # bench only: run with a batman-adv older than the profile minimum
 

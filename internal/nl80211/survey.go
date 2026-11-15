@@ -108,6 +108,9 @@ type BSS struct {
 	MeshID    string // an 802.11s mesh's ID; empty for other networks
 	// SeenMSAgo is how long ago the network was last heard.
 	SeenMSAgo uint32
+	// WidthMHz is the width the network runs at, from its operation
+	// elements (HT, VHT, HE in 6 GHz); 0 when it gives none.
+	WidthMHz int
 }
 
 // Scan dumps the networks the radio of an interface has heard, from its
@@ -140,7 +143,9 @@ func (c *Client) Scan(ifindex int) ([]BSS, error) {
 					case NL80211_BSS_SEEN_MS_AGO:
 						b.SeenMSAgo = bd.Uint32()
 					case NL80211_BSS_INFORMATION_ELEMENTS:
-						b.SSID, b.MeshID = ssidAndMeshID(bd.Bytes())
+						ies := bd.Bytes()
+						b.SSID, b.MeshID = ssidAndMeshID(ies)
+						b.WidthMHz = ChannelWidth(ies)
 					}
 				}
 				return nil
@@ -204,3 +209,83 @@ func DialScanEvents() (*EventConn, error) {
 
 // SetDeadline bounds the next Next.
 func (e *EventConn) SetDeadline(t time.Time) error { return e.c.SetDeadline(t) }
+
+// ChannelWidth reads the width a network runs at from the operation
+// elements in its beacon: HE's 6 GHz operation information, else VHT
+// operation (80 or 160 MHz), else HT operation (20 or 40 MHz). 0 when the
+// frame has none of them (a network without HT runs at 20 MHz).
+func ChannelWidth(ies []byte) int {
+	width, he6 := 0, 0
+	vht, vhtSeen := byte(0), false
+	var seg0, seg1 byte
+	for len(ies) >= 2 {
+		id, n := ies[0], int(ies[1])
+		if 2+n > len(ies) {
+			break
+		}
+		v := ies[2 : 2+n]
+		switch id {
+		case 61: // HT Operation: primary channel, then HT operation information
+			if n >= 2 {
+				width = 20
+				// Secondary channel above (1) or below (3), and the
+				// station channel width bit: 40 MHz.
+				if off := v[1] & 3; (off == 1 || off == 3) && v[1]&4 != 0 {
+					width = 40
+				}
+			}
+		case 192: // VHT Operation: channel width, centre segments 0 and 1
+			if n >= 3 {
+				vht, seg0, seg1, vhtSeen = v[0], v[1], v[2], true
+			}
+		case 255: // element ID extension
+			if n >= 1 && v[0] == 36 { // HE Operation
+				he6 = he6GHzWidth(v[1:])
+			}
+		}
+		ies = ies[2+n:]
+	}
+	switch {
+	case he6 > 0:
+		return he6
+	case vhtSeen && vht == 2: // 160 MHz, the deprecated form
+		return 160
+	case vhtSeen && vht >= 1:
+		if seg1 != 0 && (int(seg1)-int(seg0) == 8 || int(seg0)-int(seg1) == 8) {
+			return 160
+		}
+		return 80
+	}
+	return width
+}
+
+// he6GHzWidth reads the width from an HE Operation element's 6 GHz
+// operation information (after the extension ID); 0 when it has none.
+func he6GHzWidth(v []byte) int {
+	if len(v) < 6 {
+		return 0
+	}
+	params := uint32(v[0]) | uint32(v[1])<<8 | uint32(v[2])<<16
+	off := 6 // parameters (3), BSS colour (1), basic HE-MCS and NSS set (2)
+	if params&(1<<14) != 0 {
+		off += 3 // VHT operation information
+	}
+	if params&(1<<15) != 0 {
+		off++ // max co-hosted BSSID indicator
+	}
+	if params&(1<<17) == 0 || len(v) < off+5 {
+		return 0
+	}
+	switch v[off+1] & 3 { // control: channel width
+	case 0:
+		return 20
+	case 1:
+		return 40
+	case 2:
+		return 80
+	}
+	if c0, c1 := v[off+2], v[off+3]; c1 != 0 && (int(c1)-int(c0) == 8 || int(c0)-int(c1) == 8) {
+		return 160
+	}
+	return 80 // 80+80 counts as 80: one segment
+}

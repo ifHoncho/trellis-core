@@ -16,6 +16,9 @@ import (
 type Facts struct {
 	mu sync.RWMutex
 
+	// Firewall is what the firewall reconciler found in force.
+	Firewall firewallFacts
+
 	Radios      []*radio.Radio
 	Plan        *radio.Plan
 	Roles       map[string]radio.Role // active roles by fingerprint

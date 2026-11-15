@@ -25,6 +25,9 @@ type Supervisor struct {
 	Log  *slog.Logger
 	// MaxBackoff caps the restart delay. Default 30 s.
 	MaxBackoff time.Duration
+	// Quiet lists text that makes an output line routine, logged at debug
+	// level whatever stream it came on.
+	Quiet []string
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
@@ -178,6 +181,12 @@ func (s *Supervisor) pipe(wg *sync.WaitGroup, r io.Reader, level slog.Level) {
 		lv := level
 		if lv == levelStderr {
 			lv = stderrLevel(line)
+		}
+		for _, q := range s.Quiet {
+			if strings.Contains(line, q) {
+				lv = slog.LevelDebug
+				break
+			}
 		}
 		s.Log.Log(context.Background(), lv, line)
 	}

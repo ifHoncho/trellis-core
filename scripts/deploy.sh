@@ -5,10 +5,17 @@
 #
 # Hosts come from the arguments, or from deploy.hosts in the repo root (one
 # user@host per line; # comments allowed). For each node: detect its CPU
-# architecture, build that binary once, sync only what a node needs to
-# ~/trellis-deploy/ on it, and run scripts/node-update.sh there with sudo.
+# architecture, build the trellis package for it once (tools/mkdeb), sync
+# only what a node needs to ~/trellis-deploy/ on it, and run
+# scripts/node-update.sh there with sudo: it installs the package.
 # If mesh-profile.yaml exists in the repo root (git ignores it), it travels
 # with the deploy and is installed on nodes that have no profile yet.
+# If dev_key.pub exists in the repo root (git ignores it), the nodes trust
+# it: it is installed as /etc/trellis/release-keys/deploy-dev.pub (and
+# removed again by a deploy without it). With TRELLIS_DEV_KEY=<its secret
+# key file> the deploy's trellis packages are signed with it, so they can
+# be tried through the web UI, the API or a rollout. Never a key built
+# into Trellis (internal/release/trusted.keys): the deploy refuses one.
 #
 # Options:
 #   --no-check    skip gofmt, go vet and unit tests before building
@@ -53,7 +60,7 @@ while [ $# -gt 0 ]; do
     --web-password) MODE=webpw ;;
     --web-wan) MODE=webwan; WEBWAN="${2:-}"; shift
       case "$WEBWAN" in on|off) ;; *) echo "--web-wan takes on or off" >&2; exit 2 ;; esac ;;
-    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) HOSTS+=("$1") ;;
   esac
@@ -160,7 +167,7 @@ say() { printf '\n\033[1m### %s\033[0m\n' "$*"; }
 if [ "$MODE" = status ]; then
   for h in "${HOSTS[@]}"; do
     say "$h"
-    rssh -t "$h" 'sudo /usr/local/bin/meshctl status' || echo "(failed)"
+    rssh -t "$h" 'sudo meshctl status' || echo "(failed)"
   done
   exit 0
 fi
@@ -173,7 +180,7 @@ if [ "$MODE" = webpw ]; then
   rc=0
   for h in "${HOSTS[@]}"; do
     say "$h"
-    printf '%s\n' "$PW" | rssh "$h" 'sudo -n /usr/local/bin/meshctl web password --stdin' || { rc=1; echo "(failed: needs the current meshctl, and scripts/deploy.sh --setup for password-less sudo)"; }
+    printf '%s\n' "$PW" | rssh "$h" 'sudo -n meshctl web password --stdin' || { rc=1; echo "(failed: needs the current meshctl, and scripts/deploy.sh --setup for password-less sudo)"; }
   done
   exit $rc
 fi
@@ -182,7 +189,7 @@ if [ "$MODE" = webwan ]; then
   rc=0
   for h in "${HOSTS[@]}"; do
     say "$h"
-    rssh "$h" "sudo -n /usr/local/bin/meshctl web wan-access $WEBWAN" || { rc=1; echo "(failed)"; }
+    rssh "$h" "sudo -n meshctl web wan-access $WEBWAN" || { rc=1; echo "(failed)"; }
     [ "$WEBWAN" = on ] && echo "   https://${h#*@}/"
   done
   exit $rc
@@ -193,7 +200,7 @@ if [ "$MODE" = profile ]; then
   declare -A PRESULT
   for h in "${HOSTS[@]}"; do
     say "$h: install profile"
-    if rssh "$h" 'sudo -n /usr/local/bin/meshctl profile install -' < "$ROOT/mesh-profile.yaml"; then
+    if rssh "$h" 'sudo -n meshctl profile install -' < "$ROOT/mesh-profile.yaml"; then
       PRESULT[$h]=ok
     else
       PRESULT[$h]=FAILED
@@ -205,7 +212,7 @@ if [ "$MODE" = profile ]; then
   rc=0
   for h in "${HOSTS[@]}"; do
     say "$h (${PRESULT[$h]})"
-    rssh "$h" 'sudo -n /usr/local/bin/meshctl status' 2>&1 \
+    rssh "$h" 'sudo -n meshctl status' 2>&1 \
       | grep -E '^(mesh "|Mesh link|batman-adv:|Warnings|  \[ERROR\])|^  ([0-9a-f]{2}:){5}[0-9a-f]{2} ' || true
     [ "${PRESULT[$h]}" = ok ] || rc=1
   done
@@ -218,7 +225,7 @@ if [ "$MODE" = setup ]; then
     if [ -n "$KEY" ]; then ssh-copy-id -i "$KEY.pub" "$h"; else ssh-copy-id "$h"; fi
     say "$h: passwordless sudo for the update script and meshctl"
     user="${h%%@*}"; [ "$user" = "$h" ] && user="$(whoami)"
-    rule="$user ALL=(root) NOPASSWD: /home/$user/$REMOTE_DIR/scripts/node-update.sh, /usr/local/bin/meshctl"
+    rule="$user ALL=(root) NOPASSWD: /home/$user/$REMOTE_DIR/scripts/node-update.sh, /usr/bin/meshctl"
     rssh -t "$h" "echo '$rule' | sudo tee /etc/sudoers.d/trellis-deploy >/dev/null && sudo chmod 0440 /etc/sudoers.d/trellis-deploy && sudo visudo -cf /etc/sudoers.d/trellis-deploy"
   done
   exit 0
@@ -231,41 +238,103 @@ if [ "$CHECK" = 1 ]; then
 fi
 
 base="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
-VERSION="$base+$(date +%m%d.%H%M%S)"
+VERSION="${base#v}+$(date +%m%d.%H%M%S)"
 declare -A ARCH_OF BUILT
 say "Build $VERSION"
+# Development builds are signed only with the development key, which only
+# the nodes deployed with dev_key.pub trust; a key built into Trellis would
+# make every node take them.
+DEV_SIGN=()
+if [ -n "${TRELLIS_DEV_KEY:-}" ]; then
+  devpub="$(go run ./tools/mkdeb pubkey --key "$TRELLIS_DEV_KEY" | cut -d' ' -f1-3)"
+  if grep -q -F "$devpub" internal/release/trusted.keys; then
+    echo "TRELLIS_DEV_KEY is a release key built into Trellis: every node would take these development builds. Use the development key." >&2
+    exit 1
+  fi
+  if ! [ -f dev_key.pub ] || ! grep -q -F "$devpub" dev_key.pub; then
+    echo "TRELLIS_DEV_KEY's public key is not in dev_key.pub, so the nodes would not trust what it signs:" >&2
+    echo "  go run ./tools/mkdeb pubkey --key $TRELLIS_DEV_KEY --comment dev > dev_key.pub" >&2
+    exit 1
+  fi
+  DEV_SIGN=(--key "$TRELLIS_DEV_KEY" --sign-dev)
+  echo "(trellis packages signed with the development key)"
+fi
+if [ -f dev_key.pub ]; then
+  devlines="$(grep -v -E '^[[:space:]]*(#|$)' dev_key.pub || true)"
+  if [ -z "$devlines" ] || grep -v -q -E '^trellis-release-key v1 [A-Za-z0-9+/]{43}=( .*)?$' <<<"$devlines"; then
+    echo "dev_key.pub is not a Trellis release public key (go run ./tools/mkdeb pubkey --key FILE makes one)" >&2
+    exit 1
+  fi
+fi
+rm -rf dist/deploy/batman-adv
+# The batman-adv package needs the pinned release's tarball, fetched once.
+# Without it (no network here) nodes keep, or fetch, their own copy.
+BATADV_TARBALL="dist/cache/batman-adv-$(sed -n 's/^BATADV_VERSION=//p' packaging/dkms/source).tar.gz"
+[ -f "$BATADV_TARBALL" ] || make -s "$BATADV_TARBALL" || echo "(no batman-adv tarball: deploying without the trellis-batman-adv-dkms package)"
 for h in "${HOSTS[@]}"; do
-  m="$(rssh "$h" uname -m)" || { echo "cannot reach $h" >&2; exit 1; }
+  # The package must match the userland, which dpkg names; the kernel may
+  # differ (Raspberry Pi OS 32-bit boots a 64-bit kernel). A few tries: a
+  # node reached over the mesh may be cut off for a moment (a node on the
+  # path restarting).
+  m=""
+  for try in 1 2 3; do
+    m="$(rssh "$h" 'dpkg --print-architecture 2>/dev/null || uname -m')" && [ -n "$m" ] && break
+    m=""
+    [ "$try" -lt 3 ] && { echo "($h did not answer; trying again)" >&2; sleep 5; }
+  done
+  [ -n "$m" ] || { echo "cannot reach $h" >&2; exit 1; }
   case "$m" in
-    aarch64|arm64) a=arm64 ;;
-    armv7l|armv7) a=armv7 ;;
-    armv6l) a=armv6 ;;
-    x86_64) a=amd64 ;;
+    arm64|aarch64) a=arm64 ;;
+    # armhf: one build for every 32-bit ARM board, the Pi Zero's ARMv6 included.
+    armhf|armv7l|armv7|armv6l) a=armv6 ;;
+    amd64|x86_64) a=amd64 ;;
     *) echo "$h: unsupported architecture $m" >&2; exit 1 ;;
   esac
   ARCH_OF[$h]=$a
   if [ -z "${BUILT[$a]:-}" ]; then
     goarch=$a; goarm=""
-    [ "$a" = armv7 ] && { goarch=arm; goarm=7; }
     [ "$a" = armv6 ] && { goarch=arm; goarm=6; }
     out="dist/deploy/$a/bin/trellis"
+    rm -rf "dist/deploy/$a"
     mkdir -p "dist/deploy/$a/bin"
     CGO_ENABLED=0 GOOS=linux GOARCH=$goarch GOARM=$goarm go build -trimpath \
       -ldflags "-s -w -X main.version=$VERSION" -o "$out" ./cmd/trellis
-    echo "built $out"
+    debarch=$a; [ "$a" = armv6 ] && debarch=armhf
+    go run ./tools/mkdeb trellis --version "$VERSION" --arch "$debarch" --binary "$out" --out "dist/deploy/$a/deb" "${DEV_SIGN[@]}"
+    if [ -f "$BATADV_TARBALL" ]; then
+      [ -n "$(ls dist/deploy/batman-adv/*.deb 2>/dev/null)" ] ||
+        go run ./tools/mkdeb batman-adv --source "$BATADV_TARBALL" --out dist/deploy/batman-adv --epoch "$(git log -1 --format=%ct)"
+      cp dist/deploy/batman-adv/*.deb "dist/deploy/$a/deb/"
+    fi
+    rm -rf "dist/deploy/$a/bin"   # the package carries the binary
     BUILT[$a]=1
   fi
 done
+
+# update_outcome reconnects to a node whose session dropped and prints the
+# update's exit status from its log, once it has one (up to 2 minutes).
+update_outcome() {
+  local line
+  for _ in $(seq 1 24); do
+    sleep 5
+    line="$(rssh "$1" 'tail -n 1 /var/log/trellis-node-update.log' 2>/dev/null)" || continue
+    case "$line" in "== node-update exit "*) echo "${line##* }"; return 0 ;; esac
+  done
+  return 1
+}
 
 declare -A RESULT
 for h in "${HOSTS[@]}"; do
   a="${ARCH_OF[$h]}"
   say "$h ($a): sync"
   stage="dist/deploy/$a"
-  rm -rf "$stage/scripts" "$stage/packaging" "$stage/profile.yaml"
+  rm -rf "$stage/scripts" "$stage/packaging" "$stage/profile.yaml" "$stage/dev-key.pub"
   cp -r scripts packaging "$stage/"
   if [ -f mesh-profile.yaml ]; then
     install -m 0600 mesh-profile.yaml "$stage/profile.yaml"
+  fi
+  if [ -f dev_key.pub ]; then
+    install -m 0644 dev_key.pub "$stage/dev-key.pub"
   fi
   if rssh "$h" command -v rsync >/dev/null 2>&1; then
     rsync -a --delete -e "$RSYNC_RSH" "$stage/" "$h:$REMOTE_DIR/"
@@ -276,6 +345,12 @@ for h in "${HOSTS[@]}"; do
   say "$h: update"
   if rssh -t "$h" 'sudo "$HOME/'"$REMOTE_DIR"'/scripts/node-update.sh"'; then
     RESULT[$h]=ok
+  elif rc="$(update_outcome "$h")" && [ "$rc" = 0 ]; then
+    # The session went (a node reached over the mesh loses its path when
+    # its own meshd restarts), but the update finished.
+    RESULT[$h]="ok (the session dropped; the update finished)"
+  elif [ -n "$rc" ]; then
+    RESULT[$h]="FAILED (exit $rc; see /var/log/trellis-node-update.log on the node)"
   else
     RESULT[$h]="FAILED or disconnected (the update runs on; see /var/log/trellis-node-update.log on the node)"
   fi
