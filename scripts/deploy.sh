@@ -50,6 +50,8 @@ CHECK=1
 MODE=deploy
 HOSTS=()
 declare -A MESH=()   # LAN host (no user) → mesh address, from deploy.hosts
+declare -A PORT=()   # LAN host (no user) → ssh port, from deploy.hosts
+declare -A LINE=()   # host → the rest of its deploy.hosts line, given to trellis-deploy as it is
 LISTED=()            # every host in deploy.hosts: candidates to reach the others through
 
 while [ $# -gt 0 ]; do
@@ -68,17 +70,23 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# deploy.hosts gives the hosts when none are named, and the mesh= address of
-# any host either way.
+# deploy.hosts gives the hosts when none are named, and each host's
+# settings (mesh=, port=, callsign=, id=) either way.
 if [ -f "$ROOT/deploy.hosts" ]; then
   named=${#HOSTS[@]}
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"
-    read -r host extra _ <<<"$line" || true
+    read -r host rest <<<"$line" || true
     [ -n "${host:-}" ] || continue
     [ "$named" -eq 0 ] && HOSTS+=("$host")
     LISTED+=("$host")
-    case "${extra:-}" in mesh=*) MESH["${host#*@}"]="${extra#mesh=}" ;; esac
+    LINE["$host"]="${rest:-}"
+    for f in ${rest:-}; do
+      case "$f" in
+        mesh=*) MESH["${host#*@}"]="${f#mesh=}" ;;
+        port=*) PORT["${host#*@}"]="${f#port=}" ;;
+      esac
+    done
   done < "$ROOT/deploy.hosts"
 fi
 if [ ${#HOSTS[@]} -eq 0 ]; then
@@ -114,7 +122,7 @@ fi
 # directly.
 PROXY=""
 if [ -z "${TRELLIS_SSH_JUMP:-}" ] && [ ${#MESH[@]} -gt 0 ]; then
-  reach() { timeout 3 bash -c 'exec 3<>"/dev/tcp/$0/22"' "$1" 2>/dev/null; }
+  reach() { timeout 3 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$1" "${PORT[$1]:-22}" 2>/dev/null; }
   declare -A VIA=()
   jump=""
   for h in "${HOSTS[@]}"; do
@@ -127,6 +135,7 @@ if [ -z "${TRELLIS_SSH_JUMP:-}" ] && [ ${#MESH[@]} -gt 0 ]; then
   fi
   if [ ${#VIA[@]} -gt 0 ] && [ -n "$jump" ]; then
     PROXY="$(mktemp)"
+    trap 'rm -f "$PROXY"' EXIT
     {
       echo '#!/usr/bin/env bash'
       echo 'case "$1" in'
@@ -152,17 +161,33 @@ if [ -z "${TRELLIS_SSH_JUMP:-}" ] && [ ${#MESH[@]} -gt 0 ]; then
     HOSTS=("${first[@]}" "${rest[@]}")
   fi
 fi
-# rsync takes its ssh command as one string. The options above survive that
-# only while none contains a space; the ProxyCommand does, so it goes
-# through a wrapper that keeps each option whole.
-RSYNC_RSH="ssh ${SSH_OPTS[*]}"
-if [ -n "${TRELLIS_SSH_JUMP:-}" ] || [ -n "$PROXY" ]; then
-  RSYNC_RSH="$(mktemp)"
-  trap 'rm -f "$RSYNC_RSH" ${PROXY:+"$PROXY"}' EXIT
-  { echo '#!/usr/bin/env bash'; printf 'exec ssh'; printf ' %q' "${SSH_OPTS[@]}"; echo ' "$@"'; } > "$RSYNC_RSH"
-  chmod +x "$RSYNC_RSH"
-fi
-rssh() { ssh "${SSH_OPTS[@]}" "$@"; }
+# rssh [-t] HOST COMMAND: ssh with the options above and the host's port.
+rssh() {
+  local tty=()
+  [ "$1" = -t ] && { tty=(-t); shift; }
+  local h="$1"; shift
+  local port=()
+  [ -n "${PORT[${h#*@}]:-}" ] && port=(-p "${PORT[${h#*@}]}")
+  ssh "${SSH_OPTS[@]}" "${tty[@]}" "${port[@]}" "$h" "$@"
+}
+
+# trellis-deploy does the node work (deploy and --setup), as it does for
+# users: built here, given the hosts with their deploy.hosts settings, and
+# the ssh key and jump host this script was told about.
+deploy_tool() {
+  CGO_ENABLED=0 go build -trimpath -o dist/deploy/trellis-deploy ./cmd/trellis-deploy
+  HOSTS_FILE="$(mktemp)"
+  trap 'rm -f "$HOSTS_FILE" ${PROXY:+"$PROXY"}' EXIT
+  for h in "${HOSTS[@]}"; do echo "$h ${LINE[$h]:-}"; done > "$HOSTS_FILE"
+  TOOL_ARGS=()
+  [ -n "$KEY" ] && TOOL_ARGS+=(--ssh-option "IdentityFile=$KEY")
+  if [ -n "${TRELLIS_SSH_JUMP:-}" ]; then
+    local jcmd="ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+    [ -n "$KEY" ] && jcmd+=" -o IdentityFile=$KEY"
+    TOOL_ARGS+=(--ssh-option "ProxyCommand=$jcmd -W %h:%p $TRELLIS_SSH_JUMP")
+  fi
+  return 0
+}
 say() { printf '\n\033[1m### %s\033[0m\n' "$*"; }
 
 if [ "$MODE" = status ]; then
@@ -221,18 +246,18 @@ if [ "$MODE" = profile ]; then
 fi
 
 if [ "$MODE" = setup ]; then
-  for h in "${HOSTS[@]}"; do
-    say "$h: SSH key"
-    if [ -n "$KEY" ]; then ssh-copy-id -i "$KEY.pub" "$h"; else ssh-copy-id "$h"; fi
-    [ -n "${SUDO_NOPASS:-}" ] || continue
-    # All of sudo: the deploy runs its scripts as root (sudo sh …), which a
-    # narrower rule would allow anyway. Asked for explicitly only.
-    say "$h: sudo without a password"
-    user="${h%%@*}"; [ "$user" = "$h" ] && user="$(whoami)"
-    rule="$user ALL=(ALL) NOPASSWD: ALL"
-    rssh -t "$h" "echo '$rule' | sudo tee /etc/sudoers.d/trellis-deploy >/dev/null && sudo chmod 0440 /etc/sudoers.d/trellis-deploy && sudo visudo -cf /etc/sudoers.d/trellis-deploy"
-  done
-  exit 0
+  # trellis-deploy --setup: the key with ssh-copy-id where it does not log
+  # in yet; with --sudo-nopasswd also the sudo rule, checked by visudo
+  # before it replaces anything.
+  cd "$ROOT"
+  mkdir -p dist/deploy
+  deploy_tool
+  setup=(--setup)
+  [ -n "${SUDO_NOPASS:-}" ] && setup+=(--sudo-nopasswd)
+  [ -n "$KEY" ] && setup+=(--ssh-key "$KEY.pub")
+  rc=0
+  dist/deploy/trellis-deploy "${setup[@]}" "${TOOL_ARGS[@]}" "$HOSTS_FILE" || rc=$?
+  exit $rc
 fi
 
 cd "$ROOT"
@@ -269,32 +294,14 @@ fi
 OUT=dist/deploy/release
 rm -rf dist/deploy
 mkdir -p "$OUT"
-declare -A BUILT
-for h in "${HOSTS[@]}"; do
-  # The package must match the userland, which dpkg names; the kernel may
-  # differ (Raspberry Pi OS 32-bit boots a 64-bit kernel). A few tries: a
-  # node reached over the mesh may be cut off for a moment.
-  m=""
-  for try in 1 2 3; do
-    m="$(rssh "$h" 'dpkg --print-architecture 2>/dev/null || uname -m')" && [ -n "$m" ] && break
-    m=""
-    [ "$try" -lt 3 ] && { echo "($h did not answer; trying again)" >&2; sleep 5; }
-  done
-  [ -n "$m" ] || { echo "($h does not answer: trellis-deploy will skip it)" >&2; continue; }
-  case "$m" in
-    arm64|aarch64) a=arm64 goarch=arm64 goarm="" ;;
-    # armhf: one build for every 32-bit ARM board, the Pi Zero's ARMv6 included.
-    armhf|armv7l|armv7|armv6l) a=armhf goarch=arm goarm=6 ;;
-    amd64|x86_64) a=amd64 goarch=amd64 goarm="" ;;
-    *) echo "$h: unsupported architecture $m" >&2; continue ;;
-  esac
-  [ -z "${BUILT[$a]:-}" ] || continue
+# Every architecture: trellis-deploy gives each node the one it needs (one
+# build for every 32-bit ARM board, the Pi Zero's ARMv6 included).
+for t in arm64:arm64: armhf:arm:6 amd64:amd64:; do
+  IFS=: read -r a goarch goarm <<<"$t"
   CGO_ENABLED=0 GOOS=linux GOARCH=$goarch GOARM=$goarm go build -trimpath \
     -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-$a" ./cmd/trellis
   go run ./tools/mkdeb trellis --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-$a" --out "$OUT" --key "$DEVKEY" --sign-dev
-  BUILT[$a]=1
 done
-[ ${#BUILT[@]} -gt 0 ] || { echo "no node answered" >&2; exit 1; }
 # The batman-adv package needs the pinned release's tarball, fetched once.
 # Without it (no network here) nodes keep, or fetch, their own copy.
 BATADV_TARBALL="dist/cache/batman-adv-$(sed -n 's/^BATADV_VERSION=//p' packaging/dkms/source).tar.gz"
@@ -303,29 +310,18 @@ if [ -f "$BATADV_TARBALL" ]; then
   go run ./tools/mkdeb batman-adv --source "$BATADV_TARBALL" --out "$OUT" --epoch "$(git log -1 --format=%ct)" --key "$DEVKEY"
 fi
 ( cd "$OUT" && sha256sum -- *.deb > SHA256SUMS )
-CGO_ENABLED=0 go build -trimpath -o dist/deploy/trellis-deploy ./cmd/trellis-deploy
+deploy_tool
 
 # trellis-deploy does the rest, as it does for users: every node checked,
 # then each one upgraded in turn (meshctl upgrade, which checks the node and
 # goes back if it is not healthy; FAST=1: apt, no health check), nodes
 # reached over the mesh first. It finds them through deploy.hosts' mesh=
 # addresses itself.
-hosts="$(mktemp)"
-trap 'rm -f "$hosts" ${RSYNC_RSH:+"$RSYNC_RSH"} ${PROXY:+"$PROXY"}' EXIT
-for h in "${HOSTS[@]}"; do
-  if [ -n "${MESH[${h#*@}]:-}" ]; then echo "$h mesh=${MESH[${h#*@}]}"; else echo "$h"; fi
-done > "$hosts"
-args=(--from "$OUT" --trust dev_key.pub --node-key dev_key.pub --any-version --yes)
+args=(--from "$OUT" --trust dev_key.pub --node-key dev_key.pub --any-version --yes "${TOOL_ARGS[@]}")
 [ -f mesh-profile.yaml ] && args+=(--profile mesh-profile.yaml)
 [ -n "${FAST:-}" ] && args+=(--no-health-check)
 [ -n "${DRY_RUN:-}" ] && args+=(--dry-run)
-[ -n "$KEY" ] && args+=(--ssh-option "IdentityFile=$KEY")
-if [ -n "${TRELLIS_SSH_JUMP:-}" ]; then
-  jcmd="ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
-  [ -n "$KEY" ] && jcmd+=" -o IdentityFile=$KEY"
-  args+=(--ssh-option "ProxyCommand=$jcmd -W %h:%p $TRELLIS_SSH_JUMP")
-fi
 say "Deploy $VERSION"
 rc=0
-dist/deploy/trellis-deploy "${args[@]}" "$hosts" || rc=$?
+dist/deploy/trellis-deploy "${args[@]}" "$HOSTS_FILE" || rc=$?
 exit $rc

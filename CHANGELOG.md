@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.1: fixes to trellis-deploy
+
+Fixes from a code review of 0.2.0.
+
+- **Upgrades over the mesh:** an upgrade whose SSH session dropped while
+  the node restarted its mesh was read back against the wrong version
+  string. For a development build it waited ten minutes and reported a
+  failure, which stopped the remaining upgrades.
+- **`--setup` on new devices:** a device ssh had never connected to was
+  taken for unreachable, so its key was never installed. Host keys are now
+  accepted the first time a device is seen and refused if they change
+  (`--ssh-option StrictHostKeyChecking=yes` requires known hosts).
+- **Nodes reached over the mesh** are connected to through a command that
+  carries your ssh options (key, timeouts) to the hop as well, and work
+  with a ProxyCommand of your own. They keep their `port=`. A node that
+  answers and refuses the key, or whose host key changed, is reported as
+  such rather than tried again over the mesh.
+- **Upgrades** now run `meshctl prepare` afterwards, as installs do, so a
+  release's driver options and regulatory rules apply; a node that runs
+  Trellis but waits in setup mode gets the `--profile` and joins the mesh;
+  a node that asks for a reboot afterwards says so in the summary.
+- **`--no-health-check`:** an error line in the node's log is no longer
+  taken for the install's end while it still runs.
+- **The development key** a run gave the nodes (`--node-key`) is removed
+  by a run on the built-in release keys alone, once the node took the
+  release.
+- **Smaller:** your `--ssh-option` values override the tool's defaults;
+  Ctrl-C at a prompt stops the program; `--new-mesh` reports a failed
+  write; the admin password is not asked for with `--no-reboot`, which
+  says so; a node keeping a different mesh profile is warned about; the
+  plan names the node a route goes through; no crash on empty output.
+- **`make deploy`:** `deploy.hosts` lines reach `trellis-deploy` whole
+  (`port=`, `callsign=`, `id=`); every architecture is built, with no
+  probing node by node; `deploy.sh --setup` runs `trellis-deploy --setup`.
+
 ## 0.2.0: deploying from your computer
 
 Trellis now installs on a set of devices from one

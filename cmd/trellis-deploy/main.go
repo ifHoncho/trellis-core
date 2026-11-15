@@ -94,11 +94,15 @@ func run() int {
 			fmt.Fprintf(os.Stderr, "trellis-deploy: %v (an existing profile is never overwritten)\n", err)
 			return 1
 		}
-		if _, err := f.Write(y); err != nil {
-			f.Close()
+		_, err = f.Write(y)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(*outFile) // a half-written profile would block the next try
+			fmt.Fprintf(os.Stderr, "trellis-deploy: writing %s: %v\n", *outFile, err)
 			return 1
 		}
-		f.Close()
 		fmt.Printf("Mesh %q written to %s. It holds the mesh's secret: keep it private.\nNext: trellis-deploy --profile %s NODES-FILE\n", *newMesh, *outFile, *outFile)
 		return 0
 	}
@@ -132,6 +136,7 @@ func run() int {
 			return fail("%v", err)
 		}
 		defer ssh.Close()
+		atExit = append(atExit, ssh.Close)
 		return runSetup(ctx, ssh, hosts, *sshKey, *sudoNoPass, *yes, *dry)
 	}
 
@@ -195,6 +200,7 @@ func run() int {
 		return fail("%v", err)
 	}
 	defer ssh.Close()
+	atExit = append(atExit, ssh.Close)
 	fmt.Printf("\n== Looking at %d node(s)\n", len(hosts))
 	states := deploy.Inspect(ctx, ssh, hosts, r.Debian)
 	steps := deploy.Plan(hosts, states, r, deploy.PlanOptions{Profile: len(profile) > 0, Force: *force, AnyVersion: *anyVersion})
@@ -220,12 +226,13 @@ func run() int {
 		fmt.Println("\nDry run: nothing was done.")
 		return 0
 	}
-	if !*yes && !confirm(fmt.Sprintf("\nGo ahead with %d node(s)? [y/N] ", work)) {
+	if !*yes && !confirm(ctx, fmt.Sprintf("\nGo ahead with %d node(s)? [y/N] ", work)) {
 		fmt.Println("Nothing was done.")
 		return 1
 	}
 
-	runner := &deploy.Runner{SSH: ssh, Release: r, Profile: profile, Reboot: !*noReboot, Jobs: *jobs, KeepGoing: *keepGoing, Fast: *fast, Out: os.Stdout}
+	runner := &deploy.Runner{SSH: ssh, Release: r, Profile: profile, Reboot: !*noReboot, Jobs: *jobs, KeepGoing: *keepGoing, Fast: *fast, Out: os.Stdout,
+		DropNodeKey: *nodeKey == "" && *trust == ""}
 	if *nodeKey != "" {
 		b, err := os.ReadFile(*nodeKey)
 		if err != nil {
@@ -248,7 +255,7 @@ func run() int {
 			if retry {
 				fmt.Printf("  that did not work on %s\n", s.Name())
 			}
-			return secret(fmt.Sprintf("  sudo password on %s (%s): ", s.Name(), s.Host.Target))
+			return secret(ctx, fmt.Sprintf("  sudo password on %s (%s): ", s.Name(), s.Host.Target))
 		})
 		if err != nil {
 			return fail("%v", err)
@@ -271,17 +278,22 @@ func run() int {
 			installs++
 		}
 	}
-	if installs > 0 && !*noWebPass && (*webPass || !*yes) {
+	// Setting it needs meshd running, which a new node does only after its
+	// reboot: with --no-reboot it is set afterwards, on the node.
+	if *webPass && !runner.Reboot {
+		fmt.Println("\n--web-password does nothing with --no-reboot: a new node runs only after its reboot; set the password on it then (sudo meshctl web password).")
+	}
+	if installs > 0 && runner.Reboot && !*noWebPass && (*webPass || !*yes) {
 		fmt.Println("\nThe web UI's admin password for the new nodes (at least 8 characters; Enter: set it later)")
 		for {
-			a, err := secret("  password: ")
+			a, err := secret(ctx, "  password: ")
 			if err != nil {
 				return fail("%v", err)
 			}
 			if a == "" {
 				break
 			}
-			b, _ := secret("  again: ")
+			b, _ := secret(ctx, "  again: ")
 			if a == b && len(a) >= 8 {
 				runner.WebPassword = a
 				break
@@ -314,8 +326,14 @@ func run() int {
 	fmt.Println("\n== Summary")
 	deploy.Summary(os.Stdout, outs)
 	deploy.JoinDetails(os.Stdout, outs)
-	if installs > 0 && runner.WebPassword == "" && runner.Reboot {
-		fmt.Println("\nThe new nodes' web UI has no admin password yet: on a node, sudo meshctl web password.")
+	installed := 0
+	for _, o := range outs {
+		if o.OK && o.Step.Action == deploy.Install {
+			installed++
+		}
+	}
+	if installed > 0 && runner.WebPassword == "" {
+		fmt.Println("\nThe new nodes' web UI has no admin password yet: once a node runs, sudo meshctl web password on it.")
 	}
 	fmt.Printf("\nLogs: %s\n", logDir)
 	if n := deploy.Failed(outs); n > 0 {
@@ -368,7 +386,7 @@ func runSetup(ctx context.Context, ssh *deploy.SSH, hosts []deploy.Host, key str
 		fmt.Println("\nDry run: nothing was done.")
 		return 0
 	}
-	if !yes && !confirm("\nGo ahead? [y/N] ") {
+	if !yes && !confirm(ctx, "\nGo ahead? [y/N] ") {
 		fmt.Println("Nothing was done.")
 		return 1
 	}
@@ -406,7 +424,7 @@ func runSetup(ctx context.Context, ssh *deploy.SSH, hosts []deploy.Host, key str
 		if retry {
 			fmt.Printf("  that did not work on %s\n", s.Name())
 		}
-		return secret(fmt.Sprintf("  sudo password on %s: ", s.Name()))
+		return secret(ctx, fmt.Sprintf("  sudo password on %s: ", s.Name()))
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trellis-deploy:", err)
@@ -438,34 +456,77 @@ func printPlan(steps []deploy.Step) {
 	for _, s := range steps {
 		where := s.Host.Key()
 		if v := s.State.Route.Via; v != "" {
-			_, through, _ := strings.Cut(v, "@")
+			through := v
+			if _, host, ok := strings.Cut(v, "@"); ok {
+				through = host
+			}
+			if p := s.State.Route.ViaPort; p != 0 {
+				through += fmt.Sprintf(":%d", p)
+			}
 			where += " (mesh, via " + through + ")"
 		}
 		fmt.Printf("  %-*s  %-34s  %-6s  %-11s  %s\n", width, s.Name(), where, s.State.Arch, s.Action, s.Why)
 	}
 }
 
+// atExit runs before an interrupt at a prompt ends the program (deferred
+// calls do not run then): the shared ssh connections are closed.
+var atExit []func()
+
 // stdin is read through one buffer: two would each swallow lines.
 var stdin = bufio.NewReader(os.Stdin)
 
-func confirm(q string) bool {
+// readLine reads a line from the terminal. The interrupt is caught for the
+// run, so at a prompt Ctrl-C would do nothing: here it ends the program,
+// with the terminal's echo back on.
+func readLine(ctx context.Context) (string, error) {
+	type answer struct {
+		line string
+		err  error
+	}
+	ch := make(chan answer, 1)
+	go func() {
+		l, err := stdin.ReadString('\n')
+		ch <- answer{l, err}
+	}()
+	select {
+	case a := <-ch:
+		return a.line, a.err
+	case <-ctx.Done():
+		echo(true)
+		fmt.Fprintln(os.Stderr, "\ninterrupted: stopped here")
+		for _, f := range atExit {
+			f()
+		}
+		os.Exit(130)
+		return "", ctx.Err()
+	}
+}
+
+func echo(on bool) bool {
+	arg := "-echo"
+	if on {
+		arg = "echo"
+	}
+	c := exec.Command("stty", arg)
+	c.Stdin = os.Stdin
+	return c.Run() == nil
+}
+
+func confirm(ctx context.Context, q string) bool {
 	fmt.Print(q)
-	line, _ := stdin.ReadString('\n')
+	line, _ := readLine(ctx)
 	a := strings.ToLower(strings.TrimSpace(line))
 	return a == "y" || a == "yes"
 }
 
 // secret reads a line without echoing it (stty, on Linux and macOS).
-func secret(prompt string) (string, error) {
+func secret(ctx context.Context, prompt string) (string, error) {
 	fmt.Print(prompt)
-	off := exec.Command("stty", "-echo")
-	off.Stdin = os.Stdin
-	quiet := off.Run() == nil
-	line, err := stdin.ReadString('\n')
+	quiet := echo(false)
+	line, err := readLine(ctx)
 	if quiet {
-		on := exec.Command("stty", "echo")
-		on.Stdin = os.Stdin
-		_ = on.Run()
+		echo(true)
 	}
 	fmt.Println()
 	if err != nil && line == "" {

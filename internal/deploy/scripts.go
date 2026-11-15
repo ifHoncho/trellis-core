@@ -10,6 +10,7 @@ package deploy
 const installScript = `#!/bin/sh
 set -u
 D="$1"; CS="$2"; ID="$3"
+` + nodeKeyFunctions + `
 export DEBIAN_FRONTEND=noninteractive
 inst() {
   apt-get install -y --no-install-recommends \
@@ -17,10 +18,7 @@ inst() {
 }
 set -- "$D/trellis.deb"
 [ -f "$D/dkms.deb" ] && set -- "$@" "$D/dkms.deb"
-if [ -f "$D/node-key.pub" ]; then
-  install -D -m 0644 "$D/node-key.pub" /etc/trellis/release-keys/deploy-dev.pub
-  echo "-- trusts the deploy's release key (/etc/trellis/release-keys/deploy-dev.pub)"
-fi
+trust_node_key
 
 echo "@@ step installing the packages"
 if ! inst "$@" > "$D/apt.log" 2>&1; then
@@ -41,7 +39,12 @@ echo "@@ step preparing the system (a few minutes when modules are built)"
 echo "@@ step configuration"
 if [ -f "$D/profile.yaml" ]; then
   if [ -e /etc/trellis/profile.yaml ]; then
-    echo "-- a mesh profile is in place already: kept"
+    if why=$(/usr/bin/meshctl profile same "$D/profile.yaml" /etc/trellis/profile.yaml 2>&1); then
+      echo "-- the same mesh profile is in place already"
+    else
+      why=$(printf '%s' "$why" | tr '\n' ' ')
+      echo "@@ warn this node keeps its own mesh profile, which differs from --profile's or cannot be compared with it (${why#error: }): it may not join the others"
+    fi
   else
     install -D -m 0600 "$D/profile.yaml" /etc/trellis/profile.yaml && echo "-- mesh profile installed"
   fi
@@ -54,6 +57,7 @@ if [ ! -e /etc/trellis/node.yaml ] && [ -e /etc/trellis/profile.yaml ]; then
     /usr/bin/meshctl node new --callsign "$CS" --id "$ID" -o /etc/trellis/node.yaml
   fi && echo "-- node configuration made: callsign $CS"
 fi
+drop_node_key
 [ -e /run/reboot-required ] && echo "@@ reboot"
 echo "@@ done"
 `
@@ -73,7 +77,8 @@ echo "@@ done"
 // it.
 const upgradeScript = `#!/bin/sh
 set -u
-D="$1"; MODE="${2:-upgrade}"
+D="$1"; MODE="${2:-upgrade}"; CS="${3:-node}"; ID="${4:-0}"
+` + nodeKeyFunctions + `
 if [ -z "${TD_DETACHED:-}" ] && command -v setsid > /dev/null 2>&1; then
   rm -f "$D/exit"; : > "$D/run.log"
   TD_DETACHED=1 setsid -w sh "$0" "$@" >> "$D/run.log" 2>&1 < /dev/null &
@@ -90,10 +95,7 @@ inst() {
   apt-get install -y --no-install-recommends --allow-downgrades \
     -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef "$@"
 }
-if [ -f "$D/node-key.pub" ]; then
-  install -D -m 0644 "$D/node-key.pub" /etc/trellis/release-keys/deploy-dev.pub
-  echo "-- trusts the deploy's release key (/etc/trellis/release-keys/deploy-dev.pub)"
-fi
+trust_node_key
 if [ -f "$D/dkms.deb" ] && [ "$MODE" != install ]; then
   echo "@@ step the batman-adv package"
   inst "$D/dkms.deb" > "$D/apt.log" 2>&1 ||
@@ -133,9 +135,44 @@ case "$MODE" in
     /usr/bin/meshctl upgrade "$D/trellis.deb" || rc=$?
     ;;
 esac
-if [ "$rc" = 0 ] && [ -f "$D/dkms.deb" ] && [ "$MODE" != install ]; then
-  echo "@@ step loading the new batman-adv"
+# After every upgrade, as after an install: what the new release asks of
+# the system (driver options, regulatory rules, a new batman-adv) applies
+# now; steps already done are skipped.
+if [ "$rc" = 0 ] && [ "$MODE" != install ]; then
+  echo "@@ step preparing the system"
   /usr/bin/meshctl prepare --no-doctor || echo "@@ warn meshctl prepare reported problems (see the log)"
 fi
+# A node waiting in setup mode (Trellis but no mesh profile) gets the
+# run's profile and a configuration, and joins the mesh.
+if [ "$rc" = 0 ] && [ -f "$D/profile.yaml" ] && [ ! -e /etc/trellis/profile.yaml ]; then
+  echo "@@ step joining the mesh"
+  install -D -m 0600 "$D/profile.yaml" /etc/trellis/profile.yaml && echo "-- mesh profile installed"
+  if [ ! -e /etc/trellis/node.yaml ]; then
+    if [ "$ID" = 0 ]; then
+      /usr/bin/meshctl node new --callsign "$CS" -o /etc/trellis/node.yaml
+    else
+      /usr/bin/meshctl node new --callsign "$CS" --id "$ID" -o /etc/trellis/node.yaml
+    fi && echo "-- node configuration made: callsign $CS"
+  fi
+  systemctl restart trellis-meshd 2> /dev/null || echo "@@ warn meshd did not restart: sudo systemctl restart trellis-meshd"
+fi
+rm -f "$D/profile.yaml"
+[ "$rc" = 0 ] && drop_node_key
 finish "$rc"
 `
+
+// nodeKeyFunctions are shared by both scripts. The key a development
+// deploy makes the node trust (--node-key) is the deploy's own file; a run
+// on the built-in release keys alone ($D/drop-node-key) removes it once its
+// install or upgrade succeeded, so a node that takes real releases does not
+// go on trusting development builds.
+const nodeKeyFunctions = `trust_node_key() {
+  [ -f "$D/node-key.pub" ] || return 0
+  install -D -m 0644 "$D/node-key.pub" /etc/trellis/release-keys/deploy-dev.pub
+  echo "-- trusts the deploy's release key (/etc/trellis/release-keys/deploy-dev.pub)"
+}
+drop_node_key() {
+  [ -f "$D/drop-node-key" ] && [ -e /etc/trellis/release-keys/deploy-dev.pub ] || return 0
+  rm -f /etc/trellis/release-keys/deploy-dev.pub
+  echo "@@ warn no longer trusts the development key an earlier deploy gave it"
+}`

@@ -38,6 +38,10 @@ type Runner struct {
 	// NodeKey is a release public key the nodes are made to trust
 	// (/etc/trellis/release-keys/deploy-dev.pub): a development key.
 	NodeKey []byte
+	// DropNodeKey: the run uses the built-in release keys alone, so a
+	// development key an earlier run gave a node is removed once the node
+	// took this release.
+	DropNodeKey bool
 	// Log is where a node's whole output goes.
 	Log func(s Step) io.WriteCloser
 	Out io.Writer // the console
@@ -292,9 +296,7 @@ func (r *Runner) install(ctx context.Context, s Step, w io.Writer) Outcome {
 		files["dkms.deb"] = r.Release.Batman
 	}
 	data := map[string][]byte{"install.sh": []byte(installScript)}
-	if len(r.NodeKey) > 0 {
-		data["node-key.pub"] = r.NodeKey
-	}
+	r.keyFiles(data)
 	if len(r.Profile) > 0 && !s.State.Profile {
 		data["profile.yaml"] = r.Profile
 	}
@@ -457,8 +459,9 @@ func (r *Runner) upgrade(ctx context.Context, s Step, w io.Writer) Outcome {
 		files["dkms.deb"] = r.Release.Batman
 	}
 	data := map[string][]byte{"upgrade.sh": []byte(upgradeScript)}
-	if len(r.NodeKey) > 0 {
-		data["node-key.pub"] = r.NodeKey
+	r.keyFiles(data)
+	if len(r.Profile) > 0 && !s.State.Profile {
+		data["profile.yaml"] = r.Profile // a node waiting in setup mode joins
 	}
 	if err := r.put(ctx, s, files, data); err != nil {
 		o.Result = "failed: " + err.Error()
@@ -473,7 +476,7 @@ func (r *Runner) upgrade(ctx context.Context, s Step, w io.Writer) Outcome {
 	case s.State.Cmp == "newer":
 		mode, done = "downgrade", "installed the older build "
 	}
-	err := r.sudo(ctx, s, fmt.Sprintf("sh %s/upgrade.sh %s %s", remoteDir, remoteDir, mode), "", w)
+	err := r.sudo(ctx, s, fmt.Sprintf("sh %s/upgrade.sh %s %s %s %d", remoteDir, remoteDir, mode, quote(callsignFor(s)), s.Host.NodeID), "", w)
 	switch {
 	case err == nil:
 		o.OK, o.Result = true, done+r.Release.Version
@@ -500,6 +503,9 @@ func (r *Runner) upgrade(ctx context.Context, s Step, w io.Writer) Outcome {
 	r.cleanup(ctx, s)
 	if o.OK {
 		o.Version = r.version(ctx, s)
+		if out, err := r.SSH.Output(ctx, s.State.Route, "test -e /run/reboot-required && echo yes"); err == nil && strings.TrimSpace(out) == "yes" {
+			o.Notes = append(o.Notes, "reboot it to finish (the node asks for one)")
+		}
 		o.Notes = append(o.Notes, r.doctor(ctx, s)...)
 		r.say(s, "%s", o.Result)
 	} else {
@@ -528,10 +534,12 @@ func (r *Runner) readLast(ctx context.Context, s Step) (lastResult, bool, error)
 	return l, pending, err
 }
 
-func describe(l lastResult, want string) (bool, string) {
+// describe reads a node's last.json against the release: its "to" is the
+// package's Debian version (r.Release.Debian), not the Trellis version.
+func (r *Runner) describe(l lastResult) (bool, string) {
 	switch {
-	case l.Result == "upgraded" && l.To == want:
-		return true, "upgraded to " + want
+	case l.Result == "upgraded" && l.To == r.Release.Debian:
+		return true, "upgraded to " + r.Release.Version
 	case l.Result == "rolled-back":
 		return false, "went back to " + l.From + ": " + l.Reason
 	case l.Result == "":
@@ -545,7 +553,7 @@ func (r *Runner) lastUpgrade(ctx context.Context, s Step, w io.Writer) (bool, st
 	if err != nil {
 		return false, "failed: the upgrade did not finish, and its result cannot be read (see its log)"
 	}
-	return describe(l, r.Release.Version)
+	return r.describe(l)
 }
 
 func (r *Runner) awaitUpgrade(ctx context.Context, s Step, w io.Writer) (bool, string) {
@@ -556,12 +564,35 @@ func (r *Runner) awaitUpgrade(ctx context.Context, s Step, w io.Writer) (bool, s
 		}
 		r.SSH.Disconnect(s.State.Route)
 		l, pending, err := r.readLast(ctx, s)
-		if err != nil || pending || (l.To != r.Release.Version && l.Result != "rolled-back") {
+		// A result about another version is an earlier upgrade's.
+		if err != nil || pending || l.To != r.Release.Debian {
 			continue
 		}
-		return describe(l, r.Release.Version)
+		return r.describe(l)
 	}
 	return false, fmt.Sprintf("no result within %s: sudo meshctl upgrade --status on the node", wait)
+}
+
+// keyFiles adds what the scripts need for the development key: the key to
+// trust, or the mark that it goes.
+func (r *Runner) keyFiles(data map[string][]byte) {
+	switch {
+	case len(r.NodeKey) > 0:
+		data["node-key.pub"] = r.NodeKey
+	case r.DropNodeKey:
+		data["drop-node-key"] = []byte("1\n")
+	}
+}
+
+// callsignFor is the callsign a node gets when the run configures it.
+func callsignFor(s Step) string {
+	switch {
+	case s.Callsign != "":
+		return s.Callsign
+	case s.Host.Callsign != "":
+		return s.Host.Callsign
+	}
+	return CallsignFrom(s.State.Hostname)
 }
 
 // awaitExit reads the outcome an apt install left on the node after the
@@ -577,7 +608,9 @@ func (r *Runner) awaitExit(ctx context.Context, s Step, done string) (bool, stri
 		if err != nil {
 			continue
 		}
-		code, rest, _ := strings.Cut(strings.TrimSpace(out), "\n")
+		// Line one is the exit file (empty while the script runs), line two
+		// the last error line of its log.
+		code, rest, _ := strings.Cut(out, "\n")
 		switch strings.TrimSpace(code) {
 		case "":
 			continue // still running

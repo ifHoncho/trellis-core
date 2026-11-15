@@ -128,7 +128,9 @@ package), signed with the development key, and hands them to
 - `--trust dev_key.pub --node-key dev_key.pub`: the tool accepts the
   development key, and every node is made to trust it
   (`/etc/trellis/release-keys/deploy-dev.pub`), so `meshctl upgrade`, the
-  web UI and the API take these builds there too;
+  web UI and the API take these builds there too. A `trellis-deploy` run
+  on the built-in release keys alone (no `--trust`, no `--node-key`: a
+  real release) removes that file again once the node took the release;
 - `--any-version`: development builds do not sort, so a node gets the one
   just built whatever it runs;
 - `--profile mesh-profile.yaml` when that file exists: a node without a

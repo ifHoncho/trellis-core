@@ -57,24 +57,45 @@ type Route struct {
 }
 
 func (s *SSH) args(r Route) []string {
-	a := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=4"}
-	if s.ControlDir != "" {
-		a = append(a, "-o", "ControlMaster=auto", "-o", "ControlPath="+filepath.Join(s.ControlDir, "%C"), "-o", "ControlPersist=120")
-	}
+	// The operator's options first: ssh keeps the first value it is given
+	// for each, so they override the defaults below.
+	var a []string
 	for _, o := range s.Options {
 		a = append(a, "-o", o)
+	}
+	// A device's host key is taken the first time it is seen (a new
+	// device has never been logged in to), and refused if it changes;
+	// StrictHostKeyChecking=yes as an option requires known hosts instead.
+	a = append(a, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=4")
+	if s.ControlDir != "" {
+		a = append(a, "-o", "ControlMaster=auto", "-o", "ControlPath="+filepath.Join(s.ControlDir, "%C"), "-o", "ControlPersist=120")
 	}
 	if r.Port != 0 {
 		a = append(a, "-p", fmt.Sprint(r.Port))
 	}
 	if r.Via != "" {
-		via := r.Via
-		if r.ViaPort != 0 {
-			via += fmt.Sprintf(":%d", r.ViaPort)
-		}
-		a = append(a, "-J", via, "-o", "HostKeyAlias="+r.Alias)
+		a = append(a, "-o", "ProxyCommand="+s.proxy(r), "-o", "HostKeyAlias="+r.Alias)
 	}
 	return append(a, r.Target)
+}
+
+// proxy is the command that carries a connection through the node r goes
+// via. A ProxyCommand rather than -J: ssh gives a -J hop none of the -o
+// options, so the operator's key and the batch settings would not reach
+// it. An operator's own ProxyCommand (--ssh-option) comes first and wins.
+func (s *SSH) proxy(r Route) string {
+	parts := []string{quote(s.Binary)}
+	for _, o := range s.Options {
+		// ssh expands % tokens in a ProxyCommand: the option's own must
+		// reach the inner ssh as they were written.
+		parts = append(parts, "-o", quote(strings.ReplaceAll(o, "%", "%%")))
+	}
+	parts = append(parts, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10")
+	if r.ViaPort != 0 {
+		parts = append(parts, "-p", fmt.Sprint(r.ViaPort))
+	}
+	return strings.Join(append(parts, "-W", "%h:%p", quote(r.Via)), " ")
 }
 
 // Run runs a shell command on the node, with stdin, writing its output to

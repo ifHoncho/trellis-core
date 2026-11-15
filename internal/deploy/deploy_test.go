@@ -302,3 +302,24 @@ func TestSudoRule(t *testing.T) {
 		}
 	}
 }
+
+func TestFirstLine(t *testing.T) {
+	if got := firstLine("", nil); got != "" {
+		t.Errorf("no output, no error: %q", got)
+	}
+	if got := firstLine("Warning: Permanently added '192.0.2.1' to the list of known hosts.\nop@192.0.2.1: Permission denied (publickey).\n", nil); !strings.Contains(got, "Permission denied") {
+		t.Errorf("ssh's warning taken for the answer: %q", got)
+	}
+}
+
+// The operator's ssh options come first, so they win over the defaults.
+func TestSSHOptionsFirst(t *testing.T) {
+	s := &SSH{Binary: "ssh", Options: []string{"ConnectTimeout=30"}}
+	a := strings.Join(s.args(Route{Target: "a@192.0.2.1"}), " ")
+	if i, j := strings.Index(a, "ConnectTimeout=30"), strings.Index(a, "ConnectTimeout=10"); i < 0 || j < 0 || i > j {
+		t.Errorf("%s", a)
+	}
+	if !strings.Contains(a, "StrictHostKeyChecking=accept-new") {
+		t.Errorf("a new device's host key: %s", a)
+	}
+}

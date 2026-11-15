@@ -54,12 +54,9 @@ func (s *SSH) CopyKey(ctx context.Context, r Route, pub string) error {
 	for _, o := range s.Options {
 		args = append(args, "-o", o)
 	}
+	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 	if r.Via != "" {
-		via := r.Via
-		if r.ViaPort != 0 {
-			via += fmt.Sprintf(":%d", r.ViaPort)
-		}
-		args = append(args, "-o", "ProxyJump="+via, "-o", "HostKeyAlias="+r.Alias)
+		args = append(args, "-o", "ProxyCommand="+s.proxy(r), "-o", "HostKeyAlias="+r.Alias)
 	}
 	c := exec.CommandContext(ctx, "ssh-copy-id", append(args, r.Target)...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr

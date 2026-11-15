@@ -31,21 +31,46 @@ type fakeNode struct {
 	last      string
 	webPass   string
 	exit      string // ~/.trellis-deploy/exit, as an apt install leaves it
+	exitAfter int    // polls before the exit file appears
+	errLine   string // the last "error:" line of its run.log
+	lastTo    string // last.json's "to": the package's Debian version
+	rebootReq bool   // /run/reboot-required exists
+	refuse    bool   // ssh reaches it and is refused
 	ran       []string
 }
 
 type fakeRemote struct {
-	mu    sync.Mutex
-	nodes map[string]*fakeNode // by route target
+	mu     sync.Mutex
+	nodes  map[string]*fakeNode // by route target
+	banner map[string]string    // what ssh prints for a target it is refused at
 }
 
 func (f *fakeRemote) node(r Route) *fakeNode { return f.nodes[r.Target] }
+
+func (n *fakeNode) to() string {
+	if n.lastTo != "" {
+		return n.lastTo
+	}
+	return "0.2.0"
+}
 
 func (f *fakeRemote) Run(ctx context.Context, r Route, cmd string, stdin io.Reader, out io.Writer) error {
 	f.mu.Lock()
 	n := f.node(r)
 	f.mu.Unlock()
+	if b, ok := f.banner[r.Target]; ok {
+		io.WriteString(out, b)
+		return codeErr(255)
+	}
+	if n == nil {
+		io.WriteString(out, "ssh: connect to host "+r.Target+" port 22: Connection timed out\n")
+		return codeErr(255)
+	}
 	n.ran = append(n.ran, cmd)
+	if n.refuse {
+		io.WriteString(out, r.Target+": Permission denied (publickey,password).\n")
+		return codeErr(255)
+	}
 	in := bufio.NewReader(orEmpty(stdin))
 	if n.rebooting > 0 {
 		n.rebooting--
@@ -69,21 +94,30 @@ func (f *fakeRemote) Run(ctx context.Context, r Route, cmd string, stdin io.Read
 			io.WriteString(out, "@@ reboot\n")
 		}
 		io.WriteString(out, "@@ done\n")
-	case strings.Contains(cmd, "upgrade.sh") && strings.HasSuffix(cmd, " reinstall"):
+	case strings.Contains(cmd, "upgrade.sh") && strings.Contains(cmd, ".trellis-deploy reinstall "):
 		io.WriteString(out, "@@ step reinstalling\n")
-	case strings.Contains(cmd, "upgrade.sh") && strings.HasSuffix(cmd, " install"):
+	case strings.Contains(cmd, "upgrade.sh") && strings.Contains(cmd, ".trellis-deploy install "):
 		io.WriteString(out, "@@ step installing (no health check)\n")
 		n.exit = "0"
 		if n.upgrade == "drop" {
 			return codeErr(255)
 		}
 	case strings.Contains(cmd, "/exit"):
-		io.WriteString(out, n.exit+"\n\n")
+		exit := n.exit
+		if n.exitAfter > 0 {
+			n.exitAfter--
+			exit = ""
+		}
+		io.WriteString(out, exit+"\n"+n.errLine+"\n")
+	case strings.Contains(cmd, "reboot-required"):
+		if n.rebootReq {
+			io.WriteString(out, "yes\n")
+		}
 	case strings.Contains(cmd, "upgrade.sh"):
 		io.WriteString(out, "@@ step upgrading\n")
 		switch n.upgrade {
 		case "ok":
-			n.last = `{"result":"upgraded","from":"0.1.0","to":"0.2.0"}`
+			n.last = `{"result":"upgraded","from":"0.1.0","to":"` + n.to() + `"}`
 		case "rollback":
 			n.last = `{"result":"rolled-back","from":"0.1.0","to":"0.2.0","reason":"meshd did not come back"}`
 			return codeErr(1)
@@ -91,7 +125,7 @@ func (f *fakeRemote) Run(ctx context.Context, r Route, cmd string, stdin io.Read
 			io.WriteString(out, "error: signed with key 0123456789abcdef, which this node does not trust\n@@ upgrade-exit 1\n")
 			return codeErr(1)
 		case "drop":
-			n.last = `{"result":"upgraded","from":"0.1.0","to":"0.2.0"}`
+			n.last = `{"result":"upgraded","from":"0.1.0","to":"` + n.to() + `"}`
 			return codeErr(255)
 		}
 	case strings.Contains(cmd, "last.json"):
@@ -316,7 +350,7 @@ func TestRunReinstall(t *testing.T) {
 	outs := r.Run(context.Background(), []Step{s})
 	sent := false
 	for _, c := range f.nodes["a"].ran {
-		sent = sent || strings.HasSuffix(c, "upgrade.sh \"$HOME\"/.trellis-deploy reinstall")
+		sent = sent || strings.Contains(c, "upgrade.sh \"$HOME\"/.trellis-deploy reinstall ")
 	}
 	if !outs[0].OK || outs[0].Result != "reinstalled 0.2.0" || !sent {
 		t.Errorf("%+v %v", outs[0], f.nodes["a"].ran)
@@ -340,7 +374,7 @@ func TestRunFast(t *testing.T) {
 		t.Error("the node key was not sent")
 	}
 	for _, c := range f.nodes["a"].ran {
-		if strings.Contains(c, "upgrade.sh") && !strings.HasSuffix(c, " install") {
+		if strings.Contains(c, "upgrade.sh") && !strings.Contains(c, ".trellis-deploy install ") {
 			t.Errorf("not the apt mode: %s", c)
 		}
 	}
@@ -364,7 +398,7 @@ func TestPlanAnyVersion(t *testing.T) {
 	r.Run(context.Background(), []Step{s})
 	found := false
 	for _, c := range f.nodes["a"].ran {
-		found = found || strings.HasSuffix(c, "upgrade.sh \"$HOME\"/.trellis-deploy downgrade")
+		found = found || strings.Contains(c, "upgrade.sh \"$HOME\"/.trellis-deploy downgrade ")
 	}
 	if !found {
 		t.Errorf("downgrade mode not used: %v", f.nodes["a"].ran)
@@ -423,6 +457,129 @@ func TestNewMesh(t *testing.T) {
 	for _, bad := range [][3]string{{"", "US", "2g"}, {"x", "USA", "2g"}, {"x", "US", "60g"}} {
 		if _, err := NewMesh(bad[0], bad[1], bad[2]); err == nil {
 			t.Errorf("accepted %v", bad)
+		}
+	}
+}
+
+// A development build's Debian version is not its Trellis version: an
+// upgrade whose session dropped is still read back as done.
+func TestRunDropDebianVersion(t *testing.T) {
+	f := fake("a")
+	f.nodes["a"].upgrade, f.nodes["a"].lastTo = "drop", "0.2.0+3.gabc.1115.091547"
+	r, _ := newRunner(f)
+	r.Release.Version, r.Release.Debian = "0.2.0-3-gabc+1115.091547", "0.2.0+3.gabc.1115.091547"
+	outs := r.Run(context.Background(), []Step{step("a", Upgrade, false)})
+	if !outs[0].OK || outs[0].Result != "upgraded to 0.2.0-3-gabc+1115.091547" {
+		t.Errorf("%+v", outs[0])
+	}
+}
+
+// While an apt install still runs, its log's error line is not its end.
+func TestAwaitExitStillRunning(t *testing.T) {
+	f := fake("a")
+	n := f.nodes["a"]
+	n.upgrade, n.exitAfter, n.errLine = "drop", 2, "error: 1 step(s) failed: batman-adv"
+	r, _ := newRunner(f)
+	r.Fast = true
+	outs := r.Run(context.Background(), []Step{step("a", Upgrade, false)})
+	if !outs[0].OK {
+		t.Errorf("an error line in the log was taken for the end: %+v", outs[0])
+	}
+}
+
+func TestRebootNoteAfterUpgrade(t *testing.T) {
+	f := fake("a")
+	f.nodes["a"].rebootReq = true
+	r, _ := newRunner(f)
+	outs := r.Run(context.Background(), []Step{step("a", Upgrade, false)})
+	if !outs[0].OK || !strings.Contains(strings.Join(outs[0].Notes, ";"), "reboot it to finish") {
+		t.Errorf("%+v", outs[0])
+	}
+}
+
+// A node reached over the mesh keeps its own SSH port.
+func TestInspectMeshPort(t *testing.T) {
+	f := fake("a@192.0.2.1", "b@10.73.2.1")
+	hosts, _ := ParseHosts(strings.NewReader("a@192.0.2.1 port=2201\nb@192.0.2.2 port=2222 mesh=10.73.2.1\n"))
+	states := Inspect(context.Background(), f, hosts, "0.2.0")
+	if !states[1].Reachable || states[1].Route.Port != 2222 || states[1].Route.ViaPort != 2201 || states[1].Route.Via != "a@192.0.2.1" {
+		t.Errorf("%+v", states[1].Route)
+	}
+}
+
+// A node that runs Trellis but waits in setup mode gets the profile with its
+// upgrade; one that has a profile does not.
+func TestUpgradeSendsProfileToWaitingNode(t *testing.T) {
+	f := fake("a", "b")
+	r, _ := newRunner(f)
+	waiting, configured := step("a", Upgrade, false), step("b", Upgrade, false)
+	configured.State.Profile = true
+	r.Run(context.Background(), []Step{waiting, configured})
+	if f.nodes["a"].files["profile.yaml"] == "" || f.nodes["b"].files["profile.yaml"] != "" {
+		t.Errorf("a: %q, b: %q", f.nodes["a"].files["profile.yaml"], f.nodes["b"].files["profile.yaml"])
+	}
+}
+
+// A node that answered and refused the key is not tried again over the mesh.
+func TestInspectNoMeshRetryAfterRefusal(t *testing.T) {
+	f := fake("a@192.0.2.1", "b@192.0.2.2", "b@10.73.2.1")
+	f.nodes["b@192.0.2.2"].refuse = true
+	hosts, _ := ParseHosts(strings.NewReader("a@192.0.2.1\nb@192.0.2.2 mesh=10.73.2.1\n"))
+	states := Inspect(context.Background(), f, hosts, "0.2.0")
+	if states[1].Reachable || states[1].Route.Via != "" || !strings.Contains(states[1].Err, "Permission denied") {
+		t.Errorf("%+v", states[1])
+	}
+}
+
+// The jump to a node over the mesh carries the operator's options.
+func TestProxyCarriesOptions(t *testing.T) {
+	s := &SSH{Binary: "ssh", Options: []string{"IdentityFile=/home/op/my key"}}
+	a := strings.Join(s.args(Route{Target: "b@10.73.2.1", Via: "a@192.0.2.1", ViaPort: 2201, Alias: "192.0.2.2"}), " ")
+	for _, want := range []string{"ProxyCommand=ssh -o 'IdentityFile=/home/op/my key'", "-p 2201 -W %h:%p a@192.0.2.1", "HostKeyAlias=192.0.2.2"} {
+		if !strings.Contains(a, want) {
+			t.Errorf("%q not in %s", want, a)
+		}
+	}
+	if strings.Contains(a, " -J ") {
+		t.Errorf("-J: %s", a)
+	}
+}
+
+// A changed host key: ssh's banner first, its verdict last. The node is not
+// tried over the mesh, and the reason shown is the verdict.
+func TestInspectHostKeyChanged(t *testing.T) {
+	f := fake("a@192.0.2.1", "b@10.73.2.1")
+	f.banner = map[string]string{"b@192.0.2.2": "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n"}
+	hosts, _ := ParseHosts(strings.NewReader("a@192.0.2.1\nb@192.0.2.2 mesh=10.73.2.1\n"))
+	states := Inspect(context.Background(), f, hosts, "0.2.0")
+	if states[1].Reachable || states[1].Route.Via != "" || states[1].Err != "Host key verification failed." || !states[1].Refused {
+		t.Errorf("%+v", states[1])
+	}
+}
+
+func TestProxyEscapesTokens(t *testing.T) {
+	s := &SSH{Binary: "ssh", Options: []string{"IdentityFile=~/.ssh/id_%u"}}
+	p := s.proxy(Route{Target: "b@10.73.2.1", Via: "a@192.0.2.1"})
+	if !strings.Contains(p, "id_%%u") {
+		t.Errorf("%s", p)
+	}
+}
+
+// The development key goes only with a run on the release keys alone.
+func TestDropNodeKeyMark(t *testing.T) {
+	for _, c := range []struct {
+		drop    bool
+		key     []byte
+		mark, k bool
+	}{{true, nil, true, false}, {false, nil, false, false}, {true, []byte("k"), false, true}} {
+		f := fake("a")
+		r, _ := newRunner(f)
+		r.DropNodeKey, r.NodeKey = c.drop, c.key
+		r.Run(context.Background(), []Step{step("a", Upgrade, false)})
+		_, mark := f.nodes["a"].files["drop-node-key"]
+		_, k := f.nodes["a"].files["node-key.pub"]
+		if mark != c.mark || k != c.k {
+			t.Errorf("drop=%v key=%q: mark %v, key %v", c.drop, c.key, mark, k)
 		}
 	}
 }

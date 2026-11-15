@@ -24,7 +24,7 @@ One device per line; `#` starts a comment.
 ```
 pi@192.0.2.11                            user@address, as ssh takes it
 pi@192.0.2.12  callsign=alpha-2 id=12    the callsign and node ID it gets
-pi@192.0.2.13  port=2222                 its SSH port, when not 22
+pi@192.0.2.13  port=2222                 its SSH port, when not 22 (on its mesh address too)
 pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 ```
 
@@ -76,10 +76,16 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 | `--release X.Y.Z`, `--from DIR` | Another release, or release files you have |
 | `--dry-run`, `--yes` | Only show the plan; do not ask before going ahead |
 | `--web-password`, `--no-web-password` | Ask for the web UI's admin password even with `--yes`; never ask |
-| `--jobs N`, `--no-reboot`, `--keep-going`, `--force` | New installs at once; no reboot after them; go on after an upgrade goes back; reinstall devices that run the release already |
-| `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other` |
+| `--jobs N`, `--no-reboot`, `--keep-going`, `--force` | New installs at once; no reboot after them (the admin password is then set later, on the node, with `sudo meshctl web password`); go on after an upgrade goes back; reinstall devices that run the release already |
+| `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other`; yours override the tool's defaults |
 | `--logs DIR` | Where the logs go |
 | `--trust`, `--node-key`, `--any-version`, `--no-health-check` | For development builds ([building.md](dev/building.md)) |
+
+A device's SSH host key is accepted the first time the tool meets it, and
+refused if it changes later (`StrictHostKeyChecking=accept-new`); pass
+`--ssh-option StrictHostKeyChecking=yes` to require devices already in
+your `known_hosts`. A device that already has a mesh profile keeps it, and
+the run warns if it differs from `--profile`'s.
 
 ## Passwords and sudo
 

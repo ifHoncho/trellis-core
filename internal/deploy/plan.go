@@ -13,6 +13,7 @@ type State struct {
 	Route     Route
 	Reachable bool
 	Err       string // why it is not reachable
+	Refused   bool   // ssh reached it and was turned away (key, host key)
 	Arch      string // Debian architecture
 	OS        string
 	Hostname  string
@@ -98,7 +99,9 @@ func Inspect(ctx context.Context, s Remote, hosts []Host, debVersion string) []S
 		st := ParseState(out)
 		st.Route = r
 		if err != nil {
-			st.Err = firstLine(out, err)
+			// ssh's verdict is its last line; the lines before it (a
+			// banner of @ signs, warnings) are not the reason.
+			st.Err, st.Refused = lastLine(out, err), refused(out)
 		} else {
 			st.Reachable = true
 		}
@@ -136,9 +139,11 @@ func Inspect(ctx context.Context, s Remote, hosts []Host, debVersion string) []S
 			break
 		}
 	}
+	// Only a node that could not be connected to: one that answered and
+	// refused (the key, its host key) is where it should be.
 	var again []int
 	for i, st := range states {
-		if !st.Reachable && hosts[i].Mesh != "" && via != "" {
+		if !st.Reachable && hosts[i].Mesh != "" && via != "" && !st.Refused {
 			again = append(again, i)
 		}
 	}
@@ -148,16 +153,40 @@ func Inspect(ctx context.Context, s Remote, hosts []Host, debVersion string) []S
 		if h.User != "" {
 			t = h.User + "@" + h.Mesh
 		}
-		return Route{Target: t, Via: via, ViaPort: viaPort, Alias: h.Addr}, true
+		return Route{Target: t, Port: h.Port, Via: via, ViaPort: viaPort, Alias: h.Addr}, true
 	})
 	return states
 }
 
+// lastLine is the last non-empty line of out, or err's text.
+func lastLine(out string, err error) string {
+	ls := strings.Split(strings.TrimSpace(out), "\n")
+	if l := strings.TrimSpace(ls[len(ls)-1]); l != "" {
+		return l
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// refused reports whether ssh's output says it reached the node and was
+// turned away: the key, or the node's host key.
+func refused(e string) bool {
+	return strings.Contains(e, "Permission denied") || strings.Contains(e, "Host key verification failed") ||
+		strings.Contains(e, "REMOTE HOST IDENTIFICATION HAS CHANGED") || strings.Contains(e, "host key is known")
+}
+
 func firstLine(out string, err error) string {
 	for _, l := range strings.Split(out, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
+		// ssh's own notes ("Warning: Permanently added …") are not the
+		// answer.
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "Warning: ") {
 			return l
 		}
+	}
+	if err == nil {
+		return ""
 	}
 	return err.Error()
 }
