@@ -395,7 +395,33 @@ until the purge, an edited chrony drop-in survives, the script install is
 taken over, units are enabled, the regulatory rules are handed over and
 given back. The containers have no systemd and no kernel headers for the
 host: no service starts and no module is built, and an install must
-survive both.
+survive both. It also runs `meshctl prepare`, which must go through every
+step and report the ones a container cannot do.
+
+## trellis-deploy in containers
+
+```sh
+make deploy-test
+```
+
+Two containers (Debian 13 and Ubuntu 22.04) run sshd, one with `sudo`
+that takes no password and one with `sudo` that asks for one, and
+`trellis-deploy` on the development machine works on them as on nodes
+(`port=` in its hosts file reaches each), with a third listed node that
+does not answer. Two releases are built and signed with a throwaway key.
+
+| Round | Pass |
+|---|---|
+| 1 | Release 0.9.0 installed on both with a mesh profile: the profile is 0600, `node.yaml` has the callsign and node ID from the hosts file, the copied files are gone, the unreachable node is skipped and the run goes on, the plan names the node whose `sudo` asks, and neither the mesh secret nor the sudo password is in any log |
+| 2 | 0.9.1, signed by a key the nodes do not trust yet: each node refuses it, and the summary gives its reason. With the key in `/etc/trellis/release-keys/`, both upgrade through `meshctl upgrade`, and the summary carries `meshctl doctor`'s findings |
+| 3 | Again: nothing to do |
+| 4 | A wrong sudo password three times: that node is left out, the other is reinstalled (`--force`) |
+| 5 | `make deploy`'s way: the older 0.9.0 over 0.9.1 (`--any-version`), with `apt` (`--no-health-check`), the key sent along (`--node-key`): installed on both, the key in `/etc/trellis/release-keys/deploy-dev.pub` |
+| 6 | `--setup`: the node whose `sudo` asked gets a rule (0440, checked by `visudo`) and asks no more; the other is reported ready; a second `--setup` has nothing to do. (Installing the SSH key needs a person at `ssh-copy-id`'s password prompt, so it is not in the test.) |
+
+There is no systemd in a container, so there is no reboot (`--no-reboot`),
+no meshd to start after an `apt` install, and `meshctl prepare` reports
+the module it cannot build.
 
 ## Real nodes
 

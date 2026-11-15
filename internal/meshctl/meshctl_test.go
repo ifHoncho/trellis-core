@@ -179,7 +179,7 @@ func TestProfileInstall(t *testing.T) {
 	}
 }
 
-// profile same compares what two profiles say: node-update.sh uses it, so
+// profile same compares what two profiles say: deploys use it, so
 // a profile the API rewrote (comments gone, defaults written out, radio2
 // spelled links) is not reported as differing from the deploy's.
 func TestProfileSame(t *testing.T) {

@@ -70,7 +70,7 @@ dpkg-deb --fsys-tarfile "$old" | tar -xO ./etc/chrony/conf.d/trellis.conf > /tmp
 cmp -s /tmp/dropin /etc/chrony/conf.d/trellis.conf || fail "the script install's chrony drop-in was kept instead of the package's"
 grep -q "script install's copy" /etc/chrony/conf.d/trellis.conf.script-install || fail "the script install's drop-in was not kept aside"
 ok "chrony drop-in taken over (the old copy kept aside)"
-for f in deploy.sh node-update.sh release.sh deb-test.sh; do
+for f in deploy.sh deploy-test.sh release.sh release-notes.sh publish.sh deb-test.sh; do
   [ ! -e "/usr/share/trellis/scripts/$f" ] || fail "development script $f is in the package"
 done
 [ -x /usr/share/trellis/scripts/install-regulatory.sh ] && [ -x /usr/share/trellis/scripts/install-batman-adv-dkms.sh ] || fail "node scripts missing"
@@ -80,6 +80,15 @@ grep -q 'trellis crda' /etc/udev/rules.d/85-trellis-regulatory.rules || fail "re
 ok "regulatory rules in Trellis's hands"
 [ -f /usr/src/trellis-batman-adv-2026.3/net/batman-adv/main.c ] && [ -f /usr/src/trellis-batman-adv-2026.3/dkms.conf ] || fail "batman-adv source missing"
 dkms status 2>/dev/null | grep -q '^trellis-batman-adv' && ok "dkms knows trellis-batman-adv: $(dkms status | head -1)" || ok "dkms: nothing added (no headers for the host's kernel here; reported, not fatal)"
+# meshctl prepare runs every step and reports the ones a container cannot
+# do (no headers for the host's kernel, no radios) instead of stopping.
+rc=0
+out="$(/usr/bin/meshctl prepare --no-doctor 2>&1)" || rc=$?
+for h in "== batman-adv 2026.3" "== MT7915/MT7916 driver" "== Radio driver options" "== Regulatory rules" "== Summary"; do
+  printf '%s\n' "$out" | grep -q -F "$h" || { printf '%s\n' "$out" | tail -30; fail "meshctl prepare: no step '$h'"; }
+done
+case "$rc" in 0|1) ;; *) printf '%s\n' "$out" | tail -30; fail "meshctl prepare exited $rc" ;; esac
+ok "meshctl prepare ran every step (exit $rc: $(printf '%s\n' "$out" | tail -1 | cut -c1-90))"
 
 echo "== operator edits the chrony drop-in, then upgrades to $(basename "$new")"
 echo '# operator edit' >> /etc/chrony/conf.d/trellis.conf

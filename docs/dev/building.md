@@ -41,20 +41,52 @@ It prints the public line. Put that line in
 into the version they run, so the key must be in a release before it can
 sign the next one. Keep the secret file off the network.
 
-**A release:**
+**A release**, from start to finish:
 
-```sh
-git tag -s v0.4.0 && TRELLIS_RELEASE_KEY=~/keys/trellis-release.key make release
-```
+1. Write its section in `CHANGELOG.md`, headed `## X.Y.Z: …`, above the
+   previous release's, and commit. The release refuses to build without
+   one: it becomes the notes of the release page.
+2. Tag the commit and push the tag:
 
-writes `dist/release/0.4.0/`: the signed packages, the public key and
-`SHA256SUMS` (also signed with gpg when `GPG_KEY` names a key). It refuses
-an untagged or modified tree and a key that is not in `trusted.keys`;
-`ALLOW_DEV=1` and `UNSIGNED=1` make a trial run. `go run ./tools/mkdeb
-verify --pub KEYS FILE.deb` checks a package by hand.
+   ```sh
+   git tag -s v0.4.0 -m "Trellis 0.4.0"
+   git push origin v0.4.0
+   git describe --tags --dirty      # exactly v0.4.0: tagged, nothing modified
+   ```
+
+3. Build and sign:
+
+   ```sh
+   TRELLIS_RELEASE_KEY=~/keys/trellis-release.key GPG_KEY=<gpg key id> make release
+   ```
+
+   It writes `dist/release/0.4.0/`: the signed packages, `trellis-deploy`
+   for Linux and macOS (`make deploy-tool`), the public key, `SHA256SUMS`
+   over all of them and, with `GPG_KEY`, `SHA256SUMS.asc`. It refuses an
+   untagged or modified tree, a version with no changelog section, and a
+   key that is not in `trusted.keys`; `ALLOW_DEV=1` and `UNSIGNED=1` make
+   a trial run. `go run ./tools/mkdeb verify --pub KEYS FILE.deb` checks a
+   package by hand.
+4. Try it: `sudo meshctl upgrade dist/release/0.4.0/trellis_0.4.0_<arch>.deb`
+   on a test node.
+5. Publish it on GitHub (the GitHub CLI, logged in once with `gh auth
+   login`):
+
+   ```sh
+   DRY_RUN=1 make publish     # the checks, the notes, the command; nothing published
+   make publish
+   ```
+
+   It checks that the tag is on GitHub at this commit, that every package
+   is signed by a key in `trusted.keys`, the checksums and their gpg
+   signature, and that the release is not published already; then it
+   publishes the files with the changelog section as the notes. While the
+   major number is 0 a release is a pre-release titled "(alpha)";
+   `STAGE=beta` names another stage, `STAGE=final` publishes a full
+   release. `scripts/release-notes.sh 0.4.0` prints the notes alone.
 
 A node takes a release with `sudo meshctl upgrade FILE.deb`
-([guide](../guide.md#9-upgrading)). To try one that no built-in key signed,
+([reference](../reference.md#upgrading-a-device-by-itself)). To try one that no built-in key signed,
 put the public line in `/etc/trellis/release-keys/NAME.pub` on the node, or
 pass `--allow-untrusted`.
 
@@ -64,8 +96,13 @@ One command from the development machine, after a one-time setup:
 
 ```sh
 cp deploy.hosts.example deploy.hosts     # one user@host per line (git ignores it)
-scripts/deploy.sh --setup                # once per node: SSH key + no sudo password prompt
-make deploy                              # check, build, update every node, show status
+go run ./tools/mkdeb keygen --out ~/keys/trellis-dev.key --comment dev > dev_key.pub
+export TRELLIS_DEV_KEY=~/keys/trellis-dev.key   # keep it set (shell profile)
+scripts/deploy.sh --setup                # once per node: your SSH key
+scripts/deploy.sh --setup --sudo-nopasswd  # and sudo without a password (see reference.md first)
+make deploy                              # check, build, upgrade every node (health-checked)
+make deploy FAST=1                       # the same with apt, no health check: quicker
+make deploy DRY_RUN=1                    # build and show what it would do; nothing changes
 make nodes                               # just show status from every node
 make deploy HOSTS=user@192.0.2.11      # one node only
 scripts/deploy.sh --no-check             # skip tests when iterating quickly
@@ -82,34 +119,30 @@ blocks Trellis's own), `nftables` and `chrony`; the `trellis` package
 depends on them, so `apt` installs whatever is missing. `meshctl ap` prints the Wi-Fi join QR code in the terminal, and
 `meshctl profile share` the mesh profile's; neither needs another package.
 
-`make deploy` runs gofmt, vet and the unit tests, builds the `trellis`
-package for each node's architecture (asked over SSH), syncs it with
-`scripts/` and `packaging/` to `~/trellis-deploy/` on each node, and runs
-`scripts/node-update.sh` there with sudo. That script does every node-side
-step in the right order and skips what is already done: stop meshd, install
-the package with `apt` (a node set up by earlier versions' install scripts
-is taken over by the package), load (or if needed build) the pinned
-batman-adv and install its package, install the fallback regulatory
-database only if the kernel rejects the current one, start meshd and print
-`meshctl status`. The version string (`git describe` plus a timestamp)
-shows which build a node runs. Development builds are not signed and their
-versions do not sort, so a deploy installs with `apt`, not with
-`meshctl upgrade`.
+`make deploy` runs gofmt, vet and the unit tests, asks each node its
+architecture, builds the `trellis` package for those (and the batman-adv
+package), signed with the development key, and hands them to
+`trellis-deploy`, as a user would deploy a release
+([reference](../reference.md#trellis-deploy)), with:
 
-To try upgrades on test nodes (the web UI, the API, a rollout) with
-packages no built-in key signed, use a development key, never a release
-key:
+- `--trust dev_key.pub --node-key dev_key.pub`: the tool accepts the
+  development key, and every node is made to trust it
+  (`/etc/trellis/release-keys/deploy-dev.pub`), so `meshctl upgrade`, the
+  web UI and the API take these builds there too;
+- `--any-version`: development builds do not sort, so a node gets the one
+  just built whatever it runs;
+- `--profile mesh-profile.yaml` when that file exists: a node without a
+  profile gets it;
+- `--no-health-check` with `FAST=1`: `apt` instead of `meshctl upgrade`,
+  then `meshctl prepare`: no wait for the health check, but nothing goes
+  back on its own if the build is broken;
+- `--dry-run` with `DRY_RUN=1`: build, check, show what would be done.
 
-```sh
-go run ./tools/mkdeb keygen --out ~/keys/trellis-dev.key --comment dev > dev_key.pub
-TRELLIS_DEV_KEY=~/keys/trellis-dev.key make deploy
-```
-
-A deploy with `dev_key.pub` in the repository root (git ignores it) makes
-each node trust it (`/etc/trellis/release-keys/deploy-dev.pub`; a deploy
-without it removes that file again), and `TRELLIS_DEV_KEY` signs the
-deploy's packages with it. The deploy refuses a key that is in
-`trusted.keys`.
+Nodes are upgraded one at a time, nodes reached over the mesh first, and
+the first one that does not come up healthy stops the rest. The version
+string (`git describe` plus a timestamp) shows which build a node runs.
+The deploy refuses a development key that is in `trusted.keys`: every
+node would take its builds.
 
 ### Changing the mesh profile (band, channel)
 
@@ -194,7 +227,9 @@ can check a change as well as picture it.
 
 1. Flash the OS, enable SSH, note the node's address and user.
 2. Add `user@address` to `deploy.hosts`, then `scripts/deploy.sh --setup user@address`
-   (asks for the node's SSH password and sudo password once).
+   (asks for the node's SSH password once; add `--sudo-nopasswd` to stop
+   deploys asking for its sudo password, after reading
+   [reference.md](../reference.md#passwords-and-sudo)).
 3. Once per development machine, fetch the mesh profile from a running node:
    `ssh user@192.0.2.11 sudo meshctl profile show > mesh-profile.yaml`
    (git ignores this file; it holds the mesh secret).

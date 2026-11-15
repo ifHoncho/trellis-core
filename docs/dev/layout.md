@@ -3,8 +3,11 @@
 One Go module (`meridian/trellis`), one binary (`cmd/trellis`) with
 subcommands `meshd`, `meshctl`, `webd` and `crda`. Everything else is
 under `internal/`, except `tools/fakemeshd`, a development stand-in for
-`meshd` that serves the API from made-up data (`make ui-dev`), and
-`tools/mkdeb`, which builds and signs the Debian packages (`make deb`).
+`meshd` that serves the API from made-up data (`make ui-dev`),
+`tools/mkdeb`, which builds and signs the Debian packages (`make deb`), and
+`cmd/trellis-deploy`, the program operators run on their own computer to
+install or upgrade many nodes over SSH (`make deploy-tool`; Linux and
+macOS).
 
 | Package | What it does | Kernel interface |
 |---|---|---|
@@ -41,6 +44,8 @@ under `internal/`, except `tools/fakemeshd`, a development stand-in for
 | `deb` | Writes and reads Debian packages (ar, tar, gzip), and signs them: an Ed25519 signature in a member of the archive that dpkg skips | — |
 | `release` | The release keys a node trusts: built in (`trusted.keys`) and the operator's (`/etc/trellis/release-keys`) | — |
 | `rollout` | A rolling mesh-wide upgrade (being built): the order nodes take a release in, whose turn it is, halting on a rollback; moving packages between nodes, checked by hash | — |
+| `deploy` | `trellis-deploy`: the hosts file, fetching a release from GitHub and checking it (checksums, signatures against the built-in keys), looking at each node, the plan, and the run (installs in parallel, upgrades one at a time, reboots, a dropped connection); the system's `ssh` runs it all | exec `ssh` |
+| `prepare` | `meshctl prepare`: what a node's system needs once the packages are in (the pinned batman-adv, mt7915e, driver options, regulatory rules), through the package's scripts; reports a needed reboot in `/run/reboot-required` | exec `modprobe`, `systemctl`, the scripts |
 | `upgrade` | An upgrade that goes back: check, keep the running version and configuration, install, health check, rollback, resume after a power loss; started detached (`trellis-upgrade-run`) by `meshctl` and by meshd's API alike | exec `dpkg`, `systemctl`, `systemd-run`; meshd's API |
 
 Generated code: `internal/batadv/consts_gen.go` and

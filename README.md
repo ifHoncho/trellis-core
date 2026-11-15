@@ -50,8 +50,10 @@ common single-board computers with standard Wi-Fi adapters
 
 ## Get started
 
-- [User guide](docs/guide.md): install a node, set it up from a phone, add
-  nodes, use the web UI.
+- [Getting started](docs/guide.md): install Trellis on your devices from
+  your computer, in six steps, and join the mesh with a phone.
+- [Reference](docs/reference.md): every option, single-device installs,
+  upgrades, radios, the web UI.
 - [Supported hardware](docs/hardware.md): boards, radios, and how to test
   an adapter.
 - [ATAK](docs/atak.md): settings for phones on the mesh.
@@ -71,7 +73,8 @@ make deb        # dist/deb/ packages for Debian, Ubuntu and Raspberry Pi OS
 
 | Doc | What's in it |
 |---|---|
-| [docs/guide.md](docs/guide.md) | Installing, setting up and running nodes |
+| [docs/guide.md](docs/guide.md) | Getting started: the first-time setup, step by step |
+| [docs/reference.md](docs/reference.md) | Installing, upgrading and running nodes, in detail |
 | [docs/hardware.md](docs/hardware.md) | What a node needs; supported radios |
 | [docs/architecture.md](docs/architecture.md) | Requirements, design, and the reasoning behind each decision |
 | [docs/api.md](docs/api.md) | The HTTP/JSON API behind the web UI and `meshctl` |
@@ -85,10 +88,11 @@ make deb        # dist/deb/ packages for Debian, Ubuntu and Raspberry Pi OS
 
 Working on real hardware and in a 50-node lab: the mesh, the client
 network, gateways and failover, multicast, the web UI, multiple links per
-node, both regulatory modes, and packages with upgrades that go back by
-themselves when a node is not healthy afterwards. Wi-Fi HaLow and field
-testing are in progress, with upgrading a whole mesh from one node;
-images come next. The current release is **0.1.0, the first alpha**
+node, both regulatory modes, packages with upgrades that go back by
+themselves when a node is not healthy afterwards, and deploying to a set
+of devices from one machine. Wi-Fi HaLow and field testing are in
+progress, with upgrading a whole mesh from one node; images come next.
+The current release is **0.2.0, an alpha**
 ([changes](CHANGELOG.md)). See the
 [roadmap](docs/roadmap.md).
 

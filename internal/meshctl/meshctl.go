@@ -45,6 +45,9 @@ Commands:
   radios [--json]                radios, capabilities and roles
   doctor [--json] [--node PATH] [--profile PATH]
                                  host preflight checks; paste the output when asking for help
+  prepare [--no-doctor]          after installing the packages (root): build and load the pinned
+                                 batman-adv, the MT7915/MT7916 driver where the kernel lacks it,
+                                 radio driver options, regulatory rules; says if a reboot is needed
   config validate [node.yaml] [profile.yaml]
                                  validate configuration files without applying them
   profile new --name NAME [--band 5g] [--channel 149] [--country US] [--mode country|unrestricted] [-o FILE [--force]]
@@ -95,6 +98,9 @@ Commands:
 		err = cmdRadios(ctx, client, rest[1:], stdout)
 	case "doctor":
 		err = cmdDoctor(version, client.Socket, rest[1:], stdout)
+	case "prepare":
+		cancel() // it runs far longer than an API call
+		err = cmdPrepare(version, client.Socket, rest[1:], stdout)
 	case "config":
 		err = cmdConfig(rest[1:], stdout)
 	case "profile":
@@ -120,7 +126,7 @@ Commands:
 			fmt.Fprintln(stdout, "configuration reloaded")
 		}
 	case "driver-options":
-		// For node-update.sh: modprobe.d lines from the hardware database.
+		// modprobe.d lines from the hardware database, for scripts.
 		var db *hwdb.DB
 		if db, err = hwdb.Load(); err == nil {
 			for _, l := range db.ModprobeOptions() {

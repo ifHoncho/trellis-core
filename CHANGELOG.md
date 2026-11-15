@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.2.0: deploying from your computer
+
+Trellis now installs on a set of devices from one
+machine: list them, add your SSH key, create a mesh profile, deploy. The
+[guide](docs/guide.md) walks through it.
+
+### trellis-deploy
+
+- **Installs or upgrades every node in a list, over SSH,** from Linux or
+  macOS. Builds for both, on amd64 and arm64, come with each release. It
+  uses the system's `ssh`, so your keys, agent and ssh configuration apply.
+- **Checks the release first:** the checksums, and every package's
+  signature against the release keys built into it. Nothing reaches a node
+  unless all of it checks out.
+- **Shows its plan and asks once:** for each node, a new install, an
+  upgrade, nothing, or why it skips it (unreachable, not Debian-family, no
+  package for its architecture, a newer version). `--dry-run` stops there.
+- **New nodes,** a few at a time: the packages, `meshctl prepare`, the
+  mesh profile (`--profile`), callsign and node ID from the list, the web
+  UI's admin password (asked once), then a reboot, waiting until each is
+  back. The summary ends with each new node's Wi-Fi name and passphrase.
+- **Upgrades,** one node at a time with `meshctl upgrade`: each checks
+  itself and goes back on its own if it is not healthy, and the first that
+  goes back stops the rest (`--keep-going`). Nodes reached over the mesh
+  go first; a node whose connection drops while its mesh restarts is
+  reconnected to and asked how it ended. A node that refuses a package
+  says why.
+- **The devices file:** `user@address`, with optional `callsign=`, `id=`,
+  `port=` (SSH) and `mesh=` (the node's mesh address, to reach it through
+  another listed node when it is off the LAN).
+- **sudo:** each password given is tried on every node that needs one, and
+  a node it does not open is asked for by name; Enter leaves that node
+  out. The passwords and the mesh secret are never written to the logs.
+- **`--setup`** puts your SSH key on the nodes (`ssh-copy-id`).
+  Password-free sudo is a separate, explicit `--sudo-nopasswd`, with its
+  risks set out in the [reference](docs/reference.md#passwords-and-sudo).
+- **`--new-mesh NAME --country CC`** makes a mesh profile with a fresh
+  secret, on 2.4 GHz or `--band 5g`.
+- **The summary** gives each node's result and what `meshctl doctor`
+  finds there; each node's whole log is in `trellis-deploy-logs/`.
+- For development builds: `--trust`, `--node-key` (make the nodes trust a
+  key), `--any-version` (install over a newer build) and
+  `--no-health-check` (apt, no rollback).
+
+### Nodes
+
+- **`sudo meshctl prepare`** does everything a node needs once the packages
+  are in, skipping what is already done: the pinned batman-adv built and
+  loaded, the MediaTek MT7915/MT7916 driver where the kernel lacks it, the
+  radio driver options, the regulatory rules. It ends with `meshctl
+  doctor`'s checks and says when a reboot is needed (also in
+  `/run/reboot-required`). A manual install is now `apt install`, `meshctl
+  prepare`, reboot, and the repair hints in doctor and the alerts point to
+  it.
+
+### Documentation
+
+- The guide is now a short first-time setup with `trellis-deploy`; the
+  details are in the new `docs/reference.md`. The security model covers
+  the deploy tool.
+
+### Development
+
+- `make deploy` builds the packages, signed with the development key
+  (`TRELLIS_DEV_KEY`, now required), and deploys them with
+  `trellis-deploy`, health-checked; `FAST=1` installs with apt and skips
+  the health check, `DRY_RUN=1` only shows the plan. `scripts/node-update.sh`
+  is gone; `deploy.sh --setup` installs the SSH key, and `--sudo-nopasswd`
+  also gives sudo without a password.
+- `make deploy-test`: `trellis-deploy` against Debian and Ubuntu
+  containers running sshd (installs, upgrades, a refused package, a wrong
+  sudo password, the development path, `--setup`). `make deb-test` also
+  runs `meshctl prepare`.
+- Releases: `make publish` checks a release and publishes it on GitHub,
+  with its changelog section as the notes; `make release` builds
+  `trellis-deploy` into it.
+
 ## 0.1.0: first alpha release
 
 The first signed release. It is an alpha: the mesh, the client network,

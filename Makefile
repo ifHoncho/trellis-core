@@ -4,7 +4,10 @@
 #   make cross      build dist/ binaries for arm64, armv7 and amd64
 #   make deb        build dist/deb/ packages: trellis (arm64, armhf, amd64) and trellis-batman-adv-dkms
 #   make deb-test   install, upgrade, remove and purge the packages in Debian and Ubuntu containers
+#   make deploy-test  trellis-deploy against Debian and Ubuntu containers running sshd
 #   make release    dist/release/<version>/: signed packages and checksums (scripts/release.sh)
+#   make publish    the release on GitHub, after checking it (scripts/publish.sh; DRY_RUN=1 to try)
+#   make deploy-tool  dist/trellis-deploy/: trellis-deploy for Linux and macOS (amd64, arm64)
 #   make test       unit tests (no root)
 #   make lab        lab tests in network namespaces (root, or a user namespace)
 #   make check      gofmt, vet and tests
@@ -27,7 +30,7 @@ GOFLAGS  = -trimpath
 PKG      = ./cmd/trellis
 ARCHES   = arm64 arm armv6 amd64
 
-.PHONY: all build cross deb deb-test release fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -74,8 +77,24 @@ deb: cross $(BATADV_TARBALL)
 deb-test:
 	scripts/deb-test.sh
 
+deploy-test:
+	scripts/deploy-test.sh
+
 release:
 	scripts/release.sh
+
+publish:
+	scripts/publish.sh
+
+# trellis-deploy runs on the operator's computer, not on a node.
+DEPLOY_TOOL_OUT ?= dist/trellis-deploy
+deploy-tool:
+	@mkdir -p $(DEPLOY_TOOL_OUT)
+	@for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+	  os=$${t%/*}; arch=$${t#*/}; out=$(DEPLOY_TOOL_OUT)/trellis-deploy_$(VERSION)_$${os}_$${arch}; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(GOFLAGS) -ldflags '-s -w -X main.version=$(VERSION)' -o $$out ./cmd/trellis-deploy || exit 1; \
+	  echo $$out; \
+	done
 
 test:
 	$(GO) test ./...
@@ -128,7 +147,7 @@ clean:
 	rm -rf bin dist
 
 deploy:
-	scripts/deploy.sh $(HOSTS)
+	FAST='$(FAST)' DRY_RUN='$(DRY_RUN)' scripts/deploy.sh $(HOSTS)
 
 nodes:
 	scripts/deploy.sh --status $(HOSTS)

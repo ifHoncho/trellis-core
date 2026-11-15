@@ -63,9 +63,9 @@ type Entry struct {
 	Quirks          []string `yaml:"quirks"`
 	Notes           string   `yaml:"notes"`
 	// ModuleParams are kernel module parameters the driver (Match.Driver)
-	// needs for a working encrypted mesh. node-update.sh writes them to
-	// /etc/modprobe.d and reloads the module; meshd warns while the loaded
-	// module differs.
+	// needs for a working encrypted mesh. The package writes them to
+	// /etc/modprobe.d and meshctl prepare reloads the module; meshd warns
+	// while the loaded module differs.
 	ModuleParams map[string]string `yaml:"module_params"`
 	// MaxMeshMTU, when set, is the largest MTU meshd gives a mesh interface
 	// on this radio, whatever node.yaml's mesh_mtu says: the radio cannot

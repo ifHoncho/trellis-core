@@ -18,6 +18,15 @@ var builtin string
 // files named *.pub, each with one or more public key lines.
 const KeyDir = "/etc/trellis/release-keys"
 
+// Builtin returns the release keys built into this binary.
+func Builtin() ([]deb.PublicKey, error) {
+	keys, err := deb.ParsePublicKeys(builtin)
+	if err != nil {
+		return nil, fmt.Errorf("built-in release keys: %w", err)
+	}
+	return keys, nil
+}
+
 // TrustedKeys returns the built-in keys and those in dir. A file that
 // cannot be read as keys is an error: a node must not quietly trust fewer
 // keys than its operator installed.

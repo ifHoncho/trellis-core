@@ -145,6 +145,13 @@ shared. What limits a buggy or hostile member:
   daemon unpack gigabytes), and the package parser is fuzzed.
 - **An upgrade checks the node afterwards and goes back** when it is not
   healthy, so a broken release does not strand a node.
+- **`trellis-deploy`** checks a release (checksums, and every package's
+  signature against its built-in keys) before anything reaches a device.
+  It logs in with the operator's SSH key and works through `sudo`; the
+  sudo passwords and the mesh secret are never written to its logs. It
+  does not give `sudo` without a password unless asked to
+  (`--setup --sudo-nopasswd`), because that makes the SSH key alone
+  enough for root on the device.
 - **What remains:** the release keys are the keys to every node. Two are
   built in, either of which signs a release, each kept offline and apart.
   A lost or stolen key is dropped by the next release, signed with the

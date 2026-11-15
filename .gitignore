@@ -23,5 +23,7 @@ __pycache__/
 deploy.hosts
 # Development release key the deploy makes test nodes trust (scripts/deploy.sh)
 /dev_key.pub
+# trellis-deploy's per-node logs (they name nodes and addresses)
+/trellis-deploy-logs/
 # Mesh profile carried by scripts/deploy.sh; holds the mesh secret
 mesh-profile.yaml

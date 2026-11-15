@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build a release: dist/release/<version>/ with the signed packages for
-# every architecture, the batman-adv package, and their checksums.
+# every architecture, the batman-adv package, trellis-deploy for Linux and
+# macOS, and the checksums of them all.
 #
 #   TRELLIS_RELEASE_KEY=~/keys/trellis-release.key scripts/release.sh
 #
@@ -14,6 +15,10 @@
 #   ALLOW_DEV=1        build from an untagged or modified tree (a trial run;
 #                      signed only with a key the nodes do not trust)
 #   UNSIGNED=1         build without a release key (a trial run)
+#
+# A release needs its section in CHANGELOG.md ("## X.Y.Z: …"), checked
+# before anything is built: it becomes the notes of the release page that
+# scripts/publish.sh (make publish) makes afterwards.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -23,6 +28,8 @@ VERSION="${desc#v}"
 if ! [[ "$desc" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   [ -n "${ALLOW_DEV:-}" ] || { echo "HEAD is $desc, not a release tag (vX.Y.Z) on a clean tree. Tag it, or set ALLOW_DEV=1 for a trial run." >&2; exit 1; }
   echo "-- trial run: $desc is not a release"
+else
+  scripts/release-notes.sh "$VERSION" > /dev/null
 fi
 KEY="${TRELLIS_RELEASE_KEY:-}"
 if [ -z "$KEY" ]; then
@@ -56,10 +63,17 @@ if [ -n "$KEY" ]; then
   go run ./tools/mkdeb pubkey --key "$KEY" > "$OUT/release-key.pub"
   go run ./tools/mkdeb verify --pub "$OUT/release-key.pub" "$OUT"/*.deb
 fi
-( cd "$OUT" && sha256sum -- *.deb > SHA256SUMS )
+# trellis-deploy, for the operator's computer: covered by the checksums
+# (and their gpg signature), not by the packages' Ed25519 signature.
+make -s deploy-tool VERSION="$VERSION" DEPLOY_TOOL_OUT="$OUT"
+( cd "$OUT" && sha256sum -- *.deb trellis-deploy_* > SHA256SUMS )
 if [ -n "${GPG_KEY:-}" ]; then
   gpg --batch --yes --local-user "$GPG_KEY" --armor --detach-sign --output "$OUT/SHA256SUMS.asc" "$OUT/SHA256SUMS"
 fi
 echo
 echo "== release $VERSION in $OUT"
 ls -l "$OUT"
+if [[ "$desc" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ -n "$KEY" ]; then
+  echo
+  echo "Next: try it on a test node (sudo meshctl upgrade $OUT/trellis_${VERSION}_<arch>.deb), then: make publish"
+fi

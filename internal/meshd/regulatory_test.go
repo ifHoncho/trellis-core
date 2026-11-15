@@ -72,7 +72,7 @@ func TestRegulatoryModes(t *testing.T) {
 	}
 	// Unrestricted asked for, but nothing answers the kernel: say how to get it.
 	profile.Regulatory.Mode = config.RegModeUnrestricted
-	if codes, m = pass(); len(codes) != 1 || codes[0] != "warning:unrestricted-unavailable" || !strings.Contains(m["note"], "install-regulatory.sh") || len(k.asked) != 0 {
+	if codes, m = pass(); len(codes) != 1 || codes[0] != "warning:unrestricted-unavailable" || !strings.Contains(m["note"], "meshctl prepare") || len(k.asked) != 0 {
 		t.Errorf("unrestricted without the path: %v %v asked %v", codes, m, k.asked)
 	}
 	// Installed, not yet rebooted.

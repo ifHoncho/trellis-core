@@ -98,7 +98,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	if v.Less(minV) {
 		if !cfg.AllowOldBatman {
 			d.facts.Update(func(f *Facts) { f.BatPresent = false })
-			return res, fmt.Errorf("batman-adv %s is below the minimum %s required by the mesh profile; install the pinned %s build (sudo /usr/share/trellis/scripts/install-batman-adv-dkms.sh), or set allow_old_batman: true in node.yaml for bench experiments", v, minV, pinV)
+			return res, fmt.Errorf("batman-adv %s is below the minimum %s required by the mesh profile; install the pinned %s build (sudo meshctl prepare), or set allow_old_batman: true in node.yaml for bench experiments", v, minV, pinV)
 		}
 		warn("warning", "batman-old-allowed", "running batman-adv %s below the minimum %s because allow_old_batman is set; this node forces the whole mesh into multicast flooding", v, minV)
 	} else if mismatch {
