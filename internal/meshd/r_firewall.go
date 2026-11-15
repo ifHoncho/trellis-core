@@ -109,7 +109,7 @@ func (f *firewallReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		res.Changed = true
 		counters = nil
 	}
-	set(firewallFacts{State: config.FirewallClosed, Open: in.Ports(), Dropped: counters[nft.RuleWANClosed]})
+	set(firewallFacts{State: config.FirewallClosed, Open: in.Ports(), Dropped: counters[nft.RuleWANClosed] + counters[nft.RuleIntoMesh]})
 	res.RequeueAfter = firewallCheckEvery
 	return res, nil
 }

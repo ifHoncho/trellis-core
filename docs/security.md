@@ -89,9 +89,12 @@ stops the radio.
   Settings → Access): from anything that is not the mesh side (its uplink
   network, any other interface), the node takes only replies to its own
   traffic, ICMP, DHCP replies, SSH (unless turned off), the web UI where
-  it is served beyond the mesh, and the ports its operator lists. The
-  mesh, the node's Wi-Fi and device ports, and the internet it forwards
-  for its clients are not filtered. A node set up by Trellis starts
+  it is served beyond the mesh, and the ports its operator lists. Nor
+  does it forward connections into the mesh from outside: a host on a
+  gateway's uplink network that routes the mesh prefix through it reaches
+  no node or device (replies, ICMP and the operator's own port forwards
+  pass). The mesh, the node's Wi-Fi and device ports, and the internet it
+  forwards for its clients are not filtered. A node set up by Trellis starts
   closed; a node upgraded from an earlier release keeps what it had
   (open) until its operator closes it, and says so under Alerts.
 - **What remains:** an open node takes whatever its system serves.

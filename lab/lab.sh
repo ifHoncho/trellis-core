@@ -1242,12 +1242,16 @@ else
   # F1: firewall.wan closed. Node 1 runs two listeners on every address;
   # from its uplink network only the one listed in firewall.allow answers,
   # the mesh side reaches both, ICMP passes, and the mesh's clients keep
-  # their internet through node 1 (forwarded traffic is not filtered).
-  # Opened again, both answer from the uplink.
+  # their internet through node 1, and a host on the uplink network that
+  # routes the mesh prefix through node 1 cannot open a connection to a
+  # mesh client. Opened again, both answer from the uplink.
   ip netns exec node1 $EUD tcpserve 0.0.0.0 4444 > /dev/null 2>&1 &
   f1a=$!
   ip netns exec node1 $EUD tcpserve 0.0.0.0 5201 > /dev/null 2>&1 &
   f1b=$!
+  ip netns exec eud1 $EUD tcpserve 0.0.0.0 4445 > /dev/null 2>&1 &
+  f1c=$!
+  NS inet ip route add 10.73.0.0/16 via 100.64.1.2
   sleep 0.5
   reach() { if NS "$1" $EUD tcpclient "$2" "$3" 0.2 > /dev/null 2>&1; then echo yes; else echo no; fi; }
   open_before=$(reach inet 100.64.1.2 4444)
@@ -1259,6 +1263,14 @@ else
   mesh=$(reach eud1 10.73.1.1 4444)
   ping_ok=no; NS inet ping -c 1 -W 2 100.64.1.2 > /dev/null 2>&1 && ping_ok=yes
   fwd=no; NS eud1 ping -c 2 -W 2 198.51.100.1 > /dev/null 2>&1 && fwd=yes
+  into=no; [ -n "${eud1_ip:-}" ] && into=$(reach inet "$eud1_ip" 4445)
+  into_drops=$(NS node1 nft -j list chain inet trellis_fw forward 2>/dev/null | python3 -I -c "import json,sys
+n=0
+for it in json.load(sys.stdin)['nftables']:
+    r=it.get('rule')
+    if r and r.get('comment')=='into the mesh from outside':
+        n+=sum(e['counter']['packets'] for e in r['expr'] if 'counter' in e)
+print(n)" 2>/dev/null || echo 0)
   # The firewall reads its counter on its own pass (every 15 s).
   for _ in $(seq 1 20); do
     fw=$(jsonq 1 "s['gateway']['firewall'] + ' ' + str(s['gateway'].get('firewall_dropped', 0))")
@@ -1269,11 +1281,13 @@ else
   ctl 1 reload >> "$RUN/f1.txt" 2>&1
   sleep 3
   open_after=$(reach inet 100.64.1.2 4444)
-  kill "$f1a" "$f1b" 2>/dev/null; wait "$f1a" "$f1b" 2>/dev/null
-  if [ "$open_before $shut $listed $mesh $ping_ok $fwd $open_after" = "yes no yes yes yes yes yes" ] && [ "${fw%% *}" = closed ] && [ "${fw##* }" -gt 0 ] 2>/dev/null; then
-    pass "F1 firewall.wan closed: from the uplink only the listed port and ICMP answer ($fw packets turned away), the mesh side reaches everything, clients keep their internet; opened again, all answer"
+  kill "$f1a" "$f1b" "$f1c" 2>/dev/null; wait "$f1a" "$f1b" "$f1c" 2>/dev/null
+  NS inet ip route del 10.73.0.0/16 via 100.64.1.2 2>/dev/null
+  if [ "$open_before $shut $listed $mesh $ping_ok $fwd $into $open_after" = "yes no yes yes yes yes no yes" ] && [ "${fw%% *}" = closed ] && [ "${fw##* }" -gt 0 ] 2>/dev/null \
+     && { [ -z "${eud1_ip:-}" ] || [ "$into_drops" -gt 0 ] 2>/dev/null; }; then
+    pass "F1 firewall.wan closed: from the uplink only the listed port and ICMP answer ($fw packets turned away), nothing opens a connection into the mesh through it ($into_drops dropped), the mesh side reaches everything, clients keep their internet; opened again, all answer"
   else
-    fail "F1 firewall.wan closed" "open before=$open_before closed: unlisted=$shut listed=$listed mesh-side=$mesh icmp=$ping_ok clients' internet=$fwd status=[$fw] open after=$open_after ($(tr '\n' ' ' < "$RUN/f1.txt"))"
+    fail "F1 firewall.wan closed" "open before=$open_before closed: unlisted=$shut listed=$listed mesh-side=$mesh icmp=$ping_ok clients' internet=$fwd into the mesh=$into ($into_drops dropped) status=[$fw] open after=$open_after ($(tr '\n' ' ' < "$RUN/f1.txt"))"
   fi
 
   # W5: a node with no configuration at all (setup mode), set up through

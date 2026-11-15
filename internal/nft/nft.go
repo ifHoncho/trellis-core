@@ -277,6 +277,11 @@ func (in Input) Ports() []string {
 // RuleWANClosed counts what the input chain drops.
 const RuleWANClosed = "closed from outside the mesh"
 
+// RuleIntoMesh counts what the forward chain drops: connections from
+// outside the mesh to its nodes and devices, which a host on a gateway's
+// uplink network could open by routing the mesh prefix through it.
+const RuleIntoMesh = "into the mesh from outside"
+
 // FirewallTable is the inet-family table of the firewall (Input). A table
 // of its own: it stands whatever else the node does, mesh or no mesh.
 const FirewallTable = "trellis_fw"
@@ -300,6 +305,18 @@ func (in Input) Render() string {
 		fmt.Fprintf(&b, "\t\tudp dport { %s } accept\n", portSet(in.UDP))
 	}
 	fmt.Fprintf(&b, "\t\tcounter drop comment %q\n", RuleWANClosed)
+	b.WriteString("\t}\n")
+	// Forwarded traffic: the mesh's own goes anywhere (clients' internet);
+	// from elsewhere into the mesh only replies, ICMP, and connections a
+	// port forward of the operator's (DNAT) sends there. Traffic between
+	// other interfaces (containers, VPNs on the node) is not touched.
+	b.WriteString("\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tiifname { %s } accept\n", quoteList(in.Inside))
+	fmt.Fprintf(&b, "\t\toifname != { %s } accept\n", quoteList(in.Inside))
+	b.WriteString("\t\tct state established,related accept\n")
+	b.WriteString("\t\tmeta l4proto { icmp, ipv6-icmp } accept\n")
+	b.WriteString("\t\tct status dnat accept\n")
+	fmt.Fprintf(&b, "\t\tcounter drop comment %q\n", RuleIntoMesh)
 	b.WriteString("\t}\n}\n")
 	return b.String()
 }

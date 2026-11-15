@@ -54,7 +54,6 @@ func newBatmanReconciler(d *Daemon) *batmanReconciler { return &batmanReconciler
 func (b *batmanReconciler) Name() string { return "batman" }
 
 func boolp(v bool) *bool    { return &v }
-func u8p(v uint8) *uint8    { return &v }
 func u32p(v uint32) *uint32 { return &v }
 
 func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) {

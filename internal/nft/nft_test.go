@@ -87,6 +87,10 @@ func TestRenderFirewall(t *testing.T) {
 		"tcp dport { 22, 443 } accept",
 		"udp dport { 51820 } accept",
 		`counter drop comment "` + RuleWANClosed + `"`,
+		"type filter hook forward priority filter; policy accept;",
+		`oifname != { "lo", "br-mesh", "anycast0" } accept`,
+		"ct status dnat accept",
+		`counter drop comment "` + RuleIntoMesh + `"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)

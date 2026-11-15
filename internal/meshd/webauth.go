@@ -196,22 +196,46 @@ func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
 }
 
 // writeFileAtomic writes data to path through a temporary file in the same
-// directory, so a reader never sees half a file.
+// directory, so a reader never sees half a file, and a power loss leaves
+// either the old file or the new one: the data reaches the disk before the
+// rename, and the rename before the function returns. A node loses power
+// often, and an empty profile.yaml would keep it off the mesh.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	// A name of its own: two writers of the same file must not share one.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
+	tmp := f.Name()
+	fail := func(err error) error {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return fail(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
 	}
 	return nil
 }

@@ -1,8 +1,21 @@
 # Changelog
 
-## 0.2.1: fixes to trellis-deploy
+## 0.2.1: fixes from a code review
 
-Fixes from a code review of 0.2.0.
+Fixes from a code review of 0.2.0 and the rest of the code.
+
+- **Firewall:** a gateway set to closed (`firewall.wan: closed`, the
+  default for new nodes) still forwarded new connections from its uplink
+  network into the mesh, so a host there that routed the mesh prefix
+  through it reached every node and device. A closed node now forwards
+  only replies, ICMP and your own port forwards into the mesh.
+- **Go 1.27.4:** builds use it, for a fix to a crash in Go's HTTP server
+  (GO-2026-6859) that the web UI runs on.
+- **Configuration files** (profile, node configuration, admin password)
+  are written to the disk before they replace the old ones, so a power
+  loss leaves the old file or the new one, never an empty one.
+
+Fixes to `trellis-deploy`:
 
 - **Upgrades over the mesh:** an upgrade whose SSH session dropped while
   the node restarted its mesh was read back against the wrong version

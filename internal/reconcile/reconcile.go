@@ -71,12 +71,11 @@ type Loop struct {
 	reconcilers []Reconciler
 	kick        chan string
 
-	mu       sync.Mutex
-	stats    map[string]*Stats
-	passes   uint64
-	last     Report
-	inPass   bool
-	stopping bool
+	mu     sync.Mutex
+	stats  map[string]*Stats
+	passes uint64
+	last   Report
+	inPass bool
 }
 
 // NewLoop creates a loop over the reconcilers, which run in the order given.

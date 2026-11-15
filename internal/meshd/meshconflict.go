@@ -84,11 +84,12 @@ func (d *Daemon) reconcileProfiles(mine, theirs *config.Profile, from string) er
 	file := filepath.Join(d.opts.StateDir, meshConflictFile)
 	hdr := fmt.Sprintf("Dropped %s: two parts of the mesh changed the profile while apart.\nThis is the change from %s at %s (revision %d); the one from %s at %s was kept.\nTo use it after all, send it again: Settings → Mesh profile, or meshctl profile push.",
 		stamp(), changeBy(dropped), dropped.Change.At.Format(time.RFC3339), dropped.Revision, changeBy(kept), kept.Change.At.Format(time.RFC3339))
-	if y, err := dropped.YAML(hdr); err == nil {
-		if err := writeFileAtomic(file, y, 0o600); err != nil {
-			d.log.Warn("cannot keep the dropped profile", "err", err)
-			file = ""
-		}
+	if y, err := dropped.YAML(hdr); err != nil {
+		d.log.Warn("cannot keep the dropped profile", "err", err)
+		file = ""
+	} else if err := writeFileAtomic(file, y, 0o600); err != nil {
+		d.log.Warn("cannot keep the dropped profile", "err", err)
+		file = ""
 	}
 	d.log.Warn("two parts of the mesh changed the profile while apart: the later change is kept, as a new revision for every node",
 		"kept_from", changeBy(kept), "kept_at", kept.Change.At.Format(time.RFC3339), "dropped_from", changeBy(dropped), "dropped_at", dropped.Change.At.Format(time.RFC3339),

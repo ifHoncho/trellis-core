@@ -53,7 +53,6 @@ type radioReconciler struct {
 	planKey        string                 // what the last plan was asked for (planKey)
 	created        map[string][]time.Time // interface name -> recent creation times
 	foreign        map[string]int         // foreign interfaces removed from the mesh radio
-	memSaved       time.Time
 }
 
 func newRadioReconciler(d *Daemon) *radioReconciler {

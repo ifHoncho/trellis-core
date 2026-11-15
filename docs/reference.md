@@ -232,8 +232,10 @@ network its uplink is plugged into, it answers only SSH (port 22), ping,
 and the web UI if you let it answer there (Settings → Access → "Also on
 the node's uplink network"). Settings → Access → **From outside the mesh**
 turns SSH off, opens further ports (`tcp/5201`), or opens the node
-altogether. The mesh, the node's Wi-Fi and device ports, and the internet
-it shares are never affected. A node upgraded from a release without this
+altogether. Closed, a gateway also forwards no new connection from its
+uplink network into the mesh (your own port forwards excepted). The mesh,
+the node's Wi-Fi and device ports, and the internet it shares are never
+affected. A node upgraded from a release without this
 firewall stays open until you close it there; Alerts reminds you.
 
 ## Regulatory modes
