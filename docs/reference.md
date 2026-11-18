@@ -13,6 +13,7 @@ behaves. Start with the guide; come here when you need to know more.
 - [Regulatory modes](#regulatory-modes)
 - [Upgrading a device by itself](#upgrading-a-device-by-itself)
 - [The web UI](#the-web-ui)
+- [Push-to-talk voice](#push-to-talk-voice)
 - [When something is wrong](#when-something-is-wrong)
 
 ## trellis-deploy
@@ -76,6 +77,7 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 | `--release X.Y.Z`, `--from DIR` | Another release, or release files you have |
 | `--dry-run`, `--yes` | Only show the plan; do not ask before going ahead |
 | `--web-password`, `--no-web-password` | Ask for the web UI's admin password even with `--yes`; never ask |
+| `--voice` | Also install push-to-talk voice (`trellis-voice`) on every device of arm64 or amd64; a device that has it is upgraded with it either way |
 | `--jobs N`, `--no-reboot`, `--keep-going`, `--force` | New installs at once; no reboot after them (the admin password is then set later, on the node, with `sudo meshctl web password`); go on after an upgrade goes back; reinstall devices that run the release already |
 | `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other`; yours override the tool's defaults |
 | `--logs DIR` | Where the logs go |
@@ -329,6 +331,182 @@ The theme button cycles a dark, a light and a red night theme; Settings →
 Appearance chooses the dark and light ones (Trellis's own, or editor
 themes such as Nord, Gruvbox, Dracula, Catppuccin or Solarized). Everything
 in the UI is also in `meshctl` on the node and in the [HTTP API](api.md).
+
+## Push-to-talk voice
+
+A preview: built and tested in the lab, not yet with headsets on nodes.
+Install `trellis-voice` beside `trellis` (`trellis-deploy --voice`, or
+apt); it needs `libopus0` and `libasound2`. arm64 and amd64 only.
+
+The talk groups are mesh-wide, in the profile:
+
+```yaml
+voice:
+  groups:
+    - {number: 1, name: Command}
+    - {number: 2, name: Alpha}
+    - {number: 3, name: Bravo, address: 239.73.80.3, port: 38805}  # the defaults
+  bitrate: 32000          # Opus, bit/s (6000–128000)
+```
+
+A group is a multicast address and port: by default `239.73.80.n`, port
+`38799 + 2n` (38801, 38803 …); RTCP uses the next port. To talk with the
+ATAK Voice plugin, set its Multicast channel to the group's address and
+port, protocol RTP.
+
+Each node chooses what it hears and how, in node.yaml:
+
+```yaml
+voice:
+  enable: true
+  device: auto            # or usb:0d8c:0012@1-1.3, onboard:<ALSA card id>
+  ptt: auto               # or none, vox, cm108:<pin 1–4>, serial:<tty>:<cts|dsr|dcd>, gpio:<chip>:<line>
+  channels:
+    a: {group: 1, ear: left, volume: 80}
+    b: {group: 2, ear: right, volume: 80}
+  listen: [3]             # heard in both ears, at listen_volume (default 60); a channel's group is not listened to twice
+  tones: true
+```
+
+- **Device `auto`:** an OpenVLM first, then any CM108-family adapter with
+  its HID interface, then any USB audio that records, then onboard audio.
+  Devices are named by USB vendor, product and port, or by ALSA card id,
+  never by card number. `meshctl voice` and the service's log show the one
+  in use.
+- **PTT `auto`:** an OpenVLM's PTT (GPIO3, pressed = high) and its volume
+  buttons; else the adapter's headset button (channel A). Others:
+  - `cm108:<pin>`: a button between that GPIO pin and 3.3 V on any CM108
+    adapter;
+  - `serial:ttyACM0:cts`: a modem-status line of a USB serial port
+    asserted (a serial PTT cable). The service may open USB serial ports
+    (`ttyUSB`, `ttyACM`); another port needs a `DeviceAllow=` in
+    `systemctl edit trellis-voiced`. A cable plugged back in is found
+    again;
+  - `gpio:gpiochip0:17`: a button from that line to ground (its pull-up
+    is turned on). On Raspberry Pi OS add the service to the gpio group:
+    `systemctl edit trellis-voiced`, `[Service]`
+    `SupplementaryGroups=gpio`;
+  - `button`: a plain USB audio adapter's headset button. A phone-style
+    PTT adapter (3.5 mm to a Kenwood PTT) presses it: the adapter reports
+    it as Play/Pause, held as long as the PTT. `auto` takes it when the
+    adapter has no CM108 pins; its volume keys step the channel;
+  - `vox`: speech above -30 dBFS keys channel A, held 0.8 s after. The
+    level is the microphone's after `mic_gain` and before the automatic
+    gain. A VOX talk is released after 60 s, and VOX keys again once the
+    microphone has fallen quiet. It is the node's PTT only
+    (`voice.ptt`), not a channel's.
+
+  `ptt_mode`: `hold` (talk while pressed; the default for every PTT) or
+  `toggle` (press to start, press to stop; released after 60 s).
+
+**PTT adapters.** A CM108 adapter with its PTT on a GPIO pin (an OpenVLM)
+reads the PTT apart from the microphone: hold to talk works. A
+phone-style adapter (3.5 mm to a Kenwood PTT, for Zello and the like)
+keys by shorting the microphone line, as a phone headset's button does:
+while it is held the microphone is silent (measured: about -78 dBFS,
+against -48 for a quiet room). Use it with **press to start, press to
+stop**, or with VOX. Trellis catches the mismatch three ways:
+- a headset-button PTT with hold to talk is flagged in the change's
+  review, on the Voice page and in Alerts, with one-click fixes;
+- with a headset-button PTT in hold to talk, a talk is stopped when the
+  press itself silenced the microphone: a second in, the raw microphone
+  (before any gain) is at least 20 dB below its level at rest and under
+  -65 dBFS. Nothing more is sent, the operator hears a low
+  long-short-long tone (even with tones off), and Alerts and the Voice
+  page say why. A PTT read apart from the microphone (a CM108 pin,
+  GPIO, serial, the browser) is never watched, and a microphone as quiet
+  at rest as when keyed (a gated headset, a silent room) is never cut;
+- **Check my PTT** (Voice page, Headset): hold the PTT, say a sentence,
+  release; you hear what would have been sent, with the microphone's
+  level held and at rest, and a verdict: works, cuts the microphone,
+  too quiet, released at once, or no press. Nothing goes on the air.
+  With press to start, press to stop: press, say the sentence, press
+  again.
+
+  The node's `ptt` keys channel A; `channels.b.ptt` gives channel B one
+  of its own (two CM108 pins, or a second line): dual PTT. With
+  `channels.b.device` naming a second adapter, channel B has its own
+  headset too: its mic, its earpiece, and that adapter's PTT and volume
+  buttons (two OpenVLMs: one channel each).
+- **Priority groups:** while one talks, every other group is 12 dB
+  quieter, and its talk starts with the override tone (three short
+  beeps).
+- **A radio bridged into a group (RoIP):** connect a land-mobile radio's
+  speaker and mic to the node's audio, its carrier-sense output to the
+  channel's PTT input, and its PTT to an output named by
+  `channels.a.key` (`cm108:<pin>`, `serial:<tty>:<rts|dtr>`,
+  `gpio:<chip>:<line>`). What the radio receives goes out on the group;
+  what the group says keys the radio (held 0.3 s through gaps, and let
+  go after 3 minutes in one go until the group is quiet).
+- **Redundancy:** Opus's in-band FEC follows the loss the node hears:
+  planned for 10 % loss on a clean mesh, up to 40 %.
+- **Busy:** a group that carried a packet in the last 250 ms refuses PTT,
+  with the busy tone; release and press again.
+- **Levels:** voiced sets the adapter's own mixer at start: its outputs
+  to 0 dB (many adapters start lower: a KT USB Audio at -20 dB), its
+  microphone raised to 0 dB if below, any path that plays the
+  microphone straight into the earpiece off, and the adapter's own
+  automatic gain off. A control it does not know by name is left as it
+  is. The Headset panel lists what it set. **Automatic microphone gain** (`mic_agc`, on by default) brings
+  speech to about -18 dBFS by up to +30 dB, so a radio speaker-mic is as
+  loud as a headset; `mic_gain` adds a fixed gain before it.
+- **Tones** (local only): PTT granted (two beeps), released, busy, volume.
+- A mono device (OpenVLM's one earpiece) hears both channels.
+
+`meshctl voice` shows each group, who is talking and the packets heard
+and lost, and both channels.
+
+**Console (a TOC):** the Voice page's Console panel lets this browser
+monitor talk groups and talk on one, through the node, for anyone signed
+in to the UI. Start it (the browser needs a click before it plays sound),
+choose the groups to hear, each with its volume, pan and mute, and hold
+the PTT button (or Space or Enter on it) to talk on the chosen group. The
+browser asks for the microphone the first time; it needs the UI over
+HTTPS (accept the node's certificate once). The same rules as a headset:
+a busy group refuses, with three tones; talk stops after 60 s; while you
+talk, what you monitor is muted so the speakers do not feed the
+microphone. A button is released when it is let go, and also when the
+page loses the keyboard or goes out of sight; a press let go while the
+browser asks for the microphone keys nothing. Listeners see you as `<node callsign>/<console name>`.
+
+**All call:** the console's second button talks on every talk group at
+once, for urgent messages. It is not refused where someone is talking:
+Trellis nodes switch to it at once, mark it ALL CALL, sound the override
+tone and duck their other groups; when it ends they go back to whoever
+was talking. It is marked in RTCP (an SDES NOTE, `all-call`), which
+other RTP receivers (the ATAK Voice plugin) do not read: on a busy group
+they hear both at once. It costs a stream per group on the mesh while it
+lasts, and stops after 60 s like any talk. The
+node does the Opus work, so any current browser works (Firefox, Chrome,
+Edge, Safari, phones); each group a console hears takes about 256 kbit/s
+between the node and the browser while someone talks, which suits the
+node's own Wi-Fi or LAN. A node needs voice on (`voice.enable`) to serve
+consoles; it needs no headset.
+
+**Reset to defaults** (Voice page, This node) puts the device, PTT,
+volumes, gain and switches back to their defaults; voice on or off and
+the node's talk groups stay. It takes effect when saved.
+
+**Supported adapters** are an OpenVLM and other CM108 adapters. Other
+audio adapters and onboard jacks may not support every feature: the
+Voice page says when a device shows no microphone or no PTT.
+
+**Plugging in:** voiced looks at the sound cards every second; an
+adapter plugged in, unplugged or replugged restarts its audio, which
+finds it again (a second's gap, no configuration needed).
+
+**Onboard audio jacks** may have no microphone and no button detection
+(some boards' 3.5 mm jack is line out only, or line out and video): such
+a device listens only. The Voice page says so (no PTT found; no signal
+at all from the microphone input), and Alerts lists a node whose device
+offers no PTT. A USB audio adapter adds both.
+
+The web UI's **Voice** page shows the same live (who is on the air on
+each group, each channel's state and level), edits this node's settings
+(saved like any node setting), checks the headset (a tone in either
+channel's ear, or the microphone played back for 10 s; nothing goes on
+the air), and edits the talk groups, which it sends to every node as a
+mesh-wide profile change.
 
 ## When something is wrong
 

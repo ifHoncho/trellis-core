@@ -6,8 +6,8 @@ headers (`/usr/include/linux/nl80211.h`, `batman_adv.h`) plus Python 3.
 ```sh
 make            # bin/trellis, with bin/meshd and bin/meshctl symlinks
 make cross      # dist/trellis-linux-{arm64,armv7,amd64}
-make deb        # dist/deb/: trellis_VERSION_{arm64,armhf,amd64}.deb, trellis-batman-adv-dkms
-make check      # gofmt, go vet, unit tests
+make deb        # dist/deb/: trellis_VERSION_{arm64,armhf,amd64}.deb, trellis-voice_VERSION_{arm64,amd64}.deb, trellis-batman-adv-dkms
+make check      # gofmt, go vet, the static-binary check, unit tests
 ```
 
 Binaries are static (`CGO_ENABLED=0`), stripped, about 12 MB. The version

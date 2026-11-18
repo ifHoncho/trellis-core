@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Push-to-talk voice (preview):** talk groups over the mesh as Opus on
+  multicast RTP, set mesh-wide in the profile (`voice.groups`); each node
+  has two channels, one per ear, and listen-only groups. Half-duplex per
+  group: PTT on a busy group is refused with a tone. The operator's own
+  PTT and headset plug into the node: CM108-family USB adapters (OpenVLM
+  among them, found with no configuration) or any ALSA sound card. A new
+  package, `trellis-voice`, holds the service (`trellis-voiced`); meshd
+  starts it with `voice.enable` in node.yaml, and `meshctl voice` shows
+  who is talking. A **Voice** page in the web UI shows the talk groups
+  live, edits this node's channels and headset, checks the headset, and
+  edits the talk groups for every node. `trellis-deploy --voice` installs
+  it. PTT from a CM108 pin, a plain USB adapter's headset button (phone-style
+  PTT adapters; their PTT silences the microphone while held, so they
+  want "press to start, press to stop", which can be chosen; Trellis
+  flags the mismatch before anyone talks, stops a talk whose microphone
+  is silent with a warning tone, and has a "Check my PTT" test), a serial line, a GPIO line or the voice
+  itself (VOX), and a PTT per channel (dual PTT). Priority talk groups
+  duck the others and sound an override tone; Opus's redundancy follows
+  the loss heard. The adapter's own levels are set at start (some begin
+  20 dB low) and an automatic microphone gain brings speaker-mics up to
+  a headset's level. Voice follows adapters plugged in and out, carries on
+  when the mesh interface is recreated (a meshd restart), and uses an
+  adapter that shows no microphone for listening, saying why. A radio can be bridged into a talk group (its carrier
+  sense as PTT, its PTT keyed while the group talks). A **console** in
+  the Voice page lets a browser (a TOC) monitor talk groups and talk on
+  one through the node, in any current browser, or make an **all call**:
+  every talk group at once, taking over busy groups on Trellis nodes. The
+  voice service runs in a sandbox of its own with no access to meshd's
+  API. Not yet tested with a headset on a node.
+- **batman-adv:** multicast that batman-adv forwards keeps its priority
+  on every hop (a patch in `trellis-batman-adv-dkms`, now 2026.3-2;
+  offered upstream). Before, relays sent it as best effort.
 - **Web UI:** Settings → Access → "From outside the mesh" is now
   **Firewall**. It names the trusted interfaces (`lo`, `br-mesh`,
   `anycast0`) and the filtered ones, says what the input and forward rules

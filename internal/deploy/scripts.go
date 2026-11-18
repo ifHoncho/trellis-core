@@ -18,6 +18,7 @@ inst() {
 }
 set -- "$D/trellis.deb"
 [ -f "$D/dkms.deb" ] && set -- "$@" "$D/dkms.deb"
+[ -f "$D/voice.deb" ] && set -- "$@" "$D/voice.deb"
 trust_node_key
 
 echo "@@ step installing the packages"
@@ -145,6 +146,12 @@ esac
 if [ "$rc" = 0 ] && [ "$MODE" != install ]; then
   echo "@@ step preparing the system"
   /usr/bin/meshctl prepare --no-doctor || echo "@@ warn meshctl prepare reported problems (see the log)"
+fi
+# The voice package follows trellis.
+if [ "$rc" = 0 ] && [ -f "$D/voice.deb" ]; then
+  echo "@@ step the voice package"
+  inst "$D/voice.deb" > "$D/apt.log" 2>&1 ||
+    { tail -n 15 "$D/apt.log"; echo "@@ warn trellis-voice did not install"; }
 fi
 # A node waiting in setup mode (Trellis but no mesh profile) gets the
 # run's profile and a configuration, and joins the mesh.

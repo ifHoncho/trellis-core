@@ -806,3 +806,9 @@ func TestCachedInfoFollowsMeshd(t *testing.T) {
 		t.Errorf("wan_access set on the node is not in webd's answer after %s", refreshEvery+500*time.Millisecond)
 	}
 }
+
+func (n *node) VoiceConfig() api.VoiceConfig { return api.VoiceConfig{Config: []byte("{}")} }
+func (n *node) Voice(context.Context) (*api.VoiceState, error) {
+	return &api.VoiceState{}, nil
+}
+func (n *node) VoiceTest(context.Context, api.VoiceTestInput) error { return nil }

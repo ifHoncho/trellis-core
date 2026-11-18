@@ -4,6 +4,7 @@
 #   scripts/deploy.sh [options] [user@host ...]
 #   FAST=1 scripts/deploy.sh        no health check: quicker iterations
 #   DRY_RUN=1 scripts/deploy.sh     build, and show what would be done
+#   VOICE=1 scripts/deploy.sh       install push-to-talk voice on every node
 #
 # Hosts come from the arguments, or from deploy.hosts in the repo root (one
 # user@host per line, mesh=ADDRESS optional; # comments allowed). The
@@ -302,6 +303,13 @@ for t in arm64:arm64: armhf:arm:6 amd64:amd64:; do
     -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-$a" ./cmd/trellis
   go run ./tools/mkdeb trellis --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-$a" --out "$OUT" --key "$DEVKEY" --sign-dev
 done
+# Voice (trellis-voice), for the architectures it is built for: nodes that
+# have it are upgraded; VOICE=1 installs it everywhere.
+for a in arm64 amd64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
+    -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-voiced-$a" ./cmd/trellis-voiced
+  go run ./tools/mkdeb voice --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-voiced-$a" --out "$OUT" --key "$DEVKEY" --sign-dev
+done
 # The batman-adv package needs the pinned release's tarball, fetched once.
 # Without it (no network here) nodes keep, or fetch, their own copy.
 BATADV_TARBALL="dist/cache/batman-adv-$(sed -n 's/^BATADV_VERSION=//p' packaging/dkms/source).tar.gz"
@@ -320,6 +328,7 @@ deploy_tool
 args=(--from "$OUT" --trust dev_key.pub --node-key dev_key.pub --any-version --yes "${TOOL_ARGS[@]}")
 [ -f mesh-profile.yaml ] && args+=(--profile mesh-profile.yaml)
 [ -n "${FAST:-}" ] && args+=(--no-health-check)
+[ -n "${VOICE:-}" ] && args+=(--voice)
 [ -n "${DRY_RUN:-}" ] && args+=(--dry-run)
 say "Deploy $VERSION"
 rc=0

@@ -1314,7 +1314,18 @@ Validation-first keeps a bad config from ever reaching a running node.
   mesh's own. `positions.share: false` in the profile stops every node at
   once and drops the last known positions (emissions control); in
   `node.yaml` it stops one node.
-- **Voice (later).** Multicast push-to-talk on its own group.
+- **Voice (preview).** Push-to-talk talk groups, Opus over multicast RTP
+  (the format MPU5-class radios and the ATAK Voice plugin use): a group is
+  a multicast address and port (default `239.73.80.n`, port `38799+2n`),
+  RTCP on the next port carries the talker's callsign. `trellis-voiced`,
+  a service of its own without privileges, holds the audio devices; meshd
+  starts it and keeps the profile's groups and the node's settings in a
+  file for it (it takes packets from any device, so it gets nothing of
+  meshd's API).
+  Each node has two channels, one per ear; a group that carried a packet
+  in the last 250 ms is busy and refuses PTT. Packets are marked DSCP EF,
+  which batman-adv carries as 802.11 priority 5 (video); its multicast
+  forwarding keeps it with Trellis's batman-adv patch.
 - **Site linking (later).** WireGuard + VXLAN added to `bat0` as a batman hard
   interface, merging separate meshes into one.
 

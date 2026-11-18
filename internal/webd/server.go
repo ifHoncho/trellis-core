@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+apiPrefix+"/logout", s.handleLogout)
 	mux.HandleFunc("PUT "+apiPrefix+"/password", s.handlePassword)
 	mux.HandleFunc("GET "+apiPrefix+"/events", s.requireAuth(s.handleEvents))
+	mux.HandleFunc("GET "+apiPrefix+"/voice/console", s.requireAuth(s.handleConsole))
 	mux.HandleFunc(apiPrefix+"/", s.requireAuth(s.handleProxy))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this node serves API "+api.Version+" under "+apiPrefix+"/")
@@ -60,11 +61,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		// connect-src names the WebSocket of the voice console: not every
+		// browser counts wss: to this host as 'self'.
+		h.Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' wss://"+cspHost(r.Host)+" ws://"+cspHost(r.Host)+"; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+		h.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 			if r.Header.Get(requestHeader) == "" {
 				writeError(w, http.StatusForbidden, "requests that change something need the "+requestHeader+" header")
@@ -79,6 +82,20 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// cspHost is the request's host as a CSP source: host characters only, so
+// a strange Host header cannot add a source.
+func cspHost(h string) string {
+	for _, r := range h {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-:[]", r)) {
+			return "invalid.invalid"
+		}
+	}
+	if h == "" {
+		return "invalid.invalid"
+	}
+	return h
 }
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {

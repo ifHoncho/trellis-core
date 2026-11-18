@@ -1,6 +1,7 @@
 // The node's API (docs/api.md), as the UI uses it.
 
 const BASE = '/api/v1';
+export const apiBase = BASE;
 
 export class ApiError extends Error {
   constructor(status, body) {

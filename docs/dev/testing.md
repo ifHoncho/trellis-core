@@ -26,7 +26,9 @@ runs their seed inputs every time; `make fuzz` runs each one for
 | `regdb`, `wpa`, `dnsmasq` | `FuzzParse`, `FuzzParseEvent`, `FuzzParseLeases` | the regulatory database, wpa_supplicant's events, DHCP leases (client hostnames) |
 | `version`, `cot` | `FuzzVersion`, `FuzzMarshal` | versions from gossip and packages (the Debian form must stay valid), callsigns and remarks in the XML phones receive |
 | `rollout` | `FuzzDecodeRollout` | rollouts announced by other nodes; what passes `Validate` must be safe to act on |
-| `dhcpc` | `FuzzParse`, `FuzzUDPPayload` | DHCP answers and raw frames from an uplink or client port; a lease that is accepted must stay within bounds (mask /8 or longer, 60 s to a year, T1 < T2 < lease) |
+| `dhcpc` | `FuzzParse`, `FuzzUDPPayload` | DHCP answers and raw frames from an uplink or client port; a lease that is accepted must stay within bounds (mask /8 or longer, 10 s to a year, T1 < T2 < lease) |
+| `webd` | `FuzzWSRead` | WebSocket frames from any browser that reaches the UI (the voice console); a message stays within 64 KB |
+| `rtp`, `voice` | `FuzzParse`, `FuzzParseCompound`, `FuzzDeliver` | voice packets (RTP and RTCP) from any device on the mesh, alone and fed to a playing voice engine; a CNAME stays bounded, the jitter buffer too |
 
 For packages and upgrades:
 
@@ -278,6 +280,36 @@ static), both to a `lap2` namespace:
 |---|---|---|
 | T9d1 | A laptop (no DHCP server) on both ports | `eth4` is taken over (`eth4.released` exists), is a client port in `br-mesh`, and the laptop leases from node 3's pool. `eth6` stays `in-use` (static profile), not bridged, not released |
 | T9d2 | dnsmasq starts on the laptop's side of `eth4`, without the cable moving | within one client-port check (about 25 s) `eth4` leaves the bridge, `eth4.released` is gone, and the port is `in-use` because a DHCP server answered |
+
+### Voice (`make lab-voice`)
+
+`lab/voice.sh`: 4 nodes in a line (the air bridge drops frames between
+non-neighbours), so node 1 and node 4 are 3 batman hops apart. Each runs
+`meshd` and `trellis-voiced` with file audio: node 4 talks a 440 Hz tone
+on group 1, node 3 a 1000 Hz tone on group 2; node 1 has group 1 in its
+left ear and group 2 in its right; node 2 is on group 3 only. Needs
+libopus.
+
+- V1.0 the line: `batctl traceroute` from node 1 to node 4 shows 3 hops;
+- V1.1 two channels at once: node 1's recording has 440 Hz on the left
+  and 1000 Hz on the right (`lab/voicecheck.py`, Goertzel);
+- V1.2 groups apart: node 2 relays both talks and hears nothing;
+- V1.3 PTT on a busy group is refused;
+- V1.4 latency from the first frame sent to the first played (the 60 ms
+  jitter buffer included; one clock for every namespace), and no loss;
+- V1.5 marking: DSCP EF on arrival, and per mesh port the frames sent at
+  priority 261 (batman-adv's mapping of EF) against all batman frames,
+  counted by an nftables `netdev` egress chain;
+- V1.6 meshd runs voice: a channel moved by node.yaml and a reload;
+  `meshctl voice`;
+- V1.7 the browser console: `tools/consoleclient` (a console without a
+  browser) signs in to a webd on node 1, monitors group 1 while node 4
+  talks (3 hops), and keys group 2, which node 3 hears under the
+  console's name.
+
+The console's browser side is checked with `make ui-dev` (fakemeshd serves
+a made-up console socket) and `FF_FAKE_MEDIA=1 tools/uishot.py`, which
+gives headless Firefox a made-up microphone.
 
 ### Scale lab (`make lab-scale`)
 

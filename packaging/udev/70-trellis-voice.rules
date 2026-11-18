@@ -1,0 +1,4 @@
+# Trellis voice: trellis-voiced (group audio) reads PTT and the volume
+# buttons from C-Media CM108-family adapters, OpenVLM among them, through
+# their HID interface. Read-only use; it never writes the chip's EEPROM.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0d8c", GROUP="audio", MODE="0660"

@@ -43,7 +43,7 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: mkdeb trellis|batman-adv|keygen|pubkey|sign|verify [flags]")
+		fmt.Fprintln(os.Stderr, "usage: mkdeb trellis|voice|batman-adv|keygen|pubkey|sign|verify [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -52,6 +52,8 @@ func main() {
 		err = cmdTrellis(os.Args[2:])
 	case "batman-adv":
 		err = cmdBatman(os.Args[2:])
+	case "voice":
+		err = cmdVoice(os.Args[2:])
 	case "keygen":
 		err = cmdKeygen(os.Args[2:])
 	case "pubkey":
@@ -291,6 +293,76 @@ Source: `+homepage+"\n"))
 	})
 }
 
+// cmdVoice builds trellis-voice: trellis-voiced (push-to-talk), its unit
+// and the udev rule for CM108 adapters. A package of its own because the
+// binary loads libopus and libasound, which a node without voice does
+// not need.
+func cmdVoice(args []string) error {
+	fl := flag.NewFlagSet("voice", flag.ExitOnError)
+	var c common
+	c.register(fl)
+	ver := fl.String("version", "", "the version the binary reports")
+	arch := fl.String("arch", "", "Debian architecture: arm64 or amd64")
+	bin := fl.String("binary", "", "the trellis-voiced binary for that architecture")
+	fl.Parse(args)
+	if *ver == "" || *arch == "" || *bin == "" {
+		return errors.New("voice needs --version, --arch and --binary")
+	}
+	switch *arch {
+	case "arm64", "amd64":
+	default:
+		return fmt.Errorf("trellis-voice is built for arm64 and amd64 only (got %q)", *arch)
+	}
+	var files []deb.File
+	if err := file(&files, *bin, "/usr/bin/trellis-voiced", 0o755); err != nil {
+		return err
+	}
+	for _, f := range [][2]string{
+		{"packaging/systemd/trellis-voiced.service", "/usr/lib/systemd/system/trellis-voiced.service"},
+		{"packaging/udev/70-trellis-voice.rules", "/usr/lib/udev/rules.d/70-trellis-voice.rules"},
+	} {
+		if err := file(&files, filepath.Join(c.root, f[0]), f[1], 0o644); err != nil {
+			return err
+		}
+	}
+	files = append(files, copyright("trellis-voice", `Meridian Trellis
+Copyright (C) 2026 Eunoia IT Solutions LLC.
+
+Licensed under the GNU General Public License, version 3 only; on Debian
+systems its text is in /usr/share/common-licenses/GPL-3. A commercial
+licence is also available: see LICENSING.md in the source.
+
+Source: `+homepage+"\n"))
+	sc, err := scripts(c.root, "voice")
+	if err != nil {
+		return err
+	}
+	return c.write(&deb.Package{
+		Control: []deb.Field{
+			{Name: "Package", Value: "trellis-voice"},
+			{Name: "Version", Value: version.Debian(*ver)},
+			{Name: "Architecture", Value: *arch},
+			{Name: "Maintainer", Value: maintainer},
+			{Name: "Section", Value: "net"},
+			{Name: "Priority", Value: "optional"},
+			{Name: "Homepage", Value: homepage},
+			// No version on trellis: meshctl upgrade replaces trellis alone
+			// and may roll it back to an older one, which a constraint
+			// would block. trellis-deploy upgrades this package after it.
+			{Name: "Depends", Value: "trellis, libopus0, libasound2t64 | libasound2, udev"},
+			{Name: "Trellis-Version", Value: *ver},
+			{Name: "Description", Value: "Meridian Trellis push-to-talk voice\n" +
+				" Talk groups over the mesh, from the operator's own PTT and headset on\n" +
+				" the node (a USB adapter such as an OpenVLM, or onboard audio): Opus over\n" +
+				" multicast RTP, two channels at once, one per ear. meshd starts it when\n" +
+				" voice.enable is set in node.yaml."},
+		},
+		Scripts: sc,
+		Files:   files,
+		Time:    c.when(),
+	})
+}
+
 // pin is packaging/dkms/source: the batman-adv release and its checksum.
 type pin struct{ version, url, sha256, revision string }
 
@@ -342,7 +414,10 @@ func cmdBatman(args []string) error {
 	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != p.sha256 {
 		return fmt.Errorf("%s is not the pinned batman-adv %s (SHA-256 %x, want %s)", *src, p.version, sum, p.sha256)
 	}
-	dst := "/usr/src/trellis-batman-adv-" + p.version
+	// The DKMS version carries the packaging revision: a new revision
+	// (new patches) is a new DKMS module, built before the old one goes.
+	dkmsVersion := p.version + "-" + p.revision
+	dst := "/usr/src/trellis-batman-adv-" + dkmsVersion
 	var files []deb.File
 	f, err := os.Open(*src)
 	if err != nil {
@@ -382,9 +457,18 @@ func cmdBatman(args []string) error {
 		return err
 	}
 	files = append(files, deb.File{Path: dst + "/dkms.conf", Mode: 0o644,
-		Body: []byte(strings.ReplaceAll(string(conf), "@VERSION@", p.version))})
+		Body: []byte(strings.ReplaceAll(string(conf), "@VERSION@", dkmsVersion))})
 	if err := file(&files, filepath.Join(c.root, "packaging/dkms/trellis-build.sh"), dst+"/trellis-build.sh", 0o755); err != nil {
 		return err
+	}
+	patches, err := filepath.Glob(filepath.Join(c.root, "packaging/dkms/patches/*.patch"))
+	if err != nil {
+		return err
+	}
+	for _, p := range patches {
+		if err := file(&files, p, dst+"/patches/"+filepath.Base(p), 0o644); err != nil {
+			return err
+		}
 	}
 	files = append(files, copyright("trellis-batman-adv-dkms", `batman-adv `+p.version+`
 Copyright (C) B.A.T.M.A.N. contributors; see the source files.
@@ -400,7 +484,7 @@ Copyright (C) 2026 Eunoia IT Solutions LLC, GPL-3.0-only.
 		return err
 	}
 	for n, body := range sc {
-		sc[n] = []byte(strings.ReplaceAll(string(body), "@BATADV_VERSION@", p.version))
+		sc[n] = []byte(strings.NewReplacer("@BATADV_VERSION@", p.version, "@DKMS_VERSION@", dkmsVersion).Replace(string(body)))
 	}
 	return c.write(&deb.Package{
 		Control: []deb.Field{

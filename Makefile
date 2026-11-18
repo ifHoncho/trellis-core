@@ -29,8 +29,11 @@ LDFLAGS  = -s -w -X main.version=$(VERSION)
 GOFLAGS  = -trimpath
 PKG      = ./cmd/trellis
 ARCHES   = arm64 arm armv6 amd64
+# trellis-voiced loads libopus and libasound at run time (purego): built
+# and tested on these only.
+VOICE_ARCHES = arm64 amd64
 
-.PHONY: all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: static lab-voice all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -39,6 +42,7 @@ build:
 	ln -sf trellis bin/meshd
 	ln -sf trellis bin/meshctl
 	ln -sf trellis bin/webd
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/trellis-voiced ./cmd/trellis-voiced
 
 cross:
 	@mkdir -p dist
@@ -49,6 +53,10 @@ cross:
 	  if [ $$arch = armv6 ]; then export GOARM=6; goarch=arm; fi; \
 	  echo "building $$out"; \
 	  CGO_ENABLED=0 GOOS=linux GOARCH=$$goarch $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $$out $(PKG) || exit 1; \
+	done
+	@for arch in $(VOICE_ARCHES); do \
+	  echo "building dist/trellis-voiced-linux-$$arch"; \
+	  CGO_ENABLED=0 GOOS=linux GOARCH=$$arch $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o dist/trellis-voiced-linux-$$arch ./cmd/trellis-voiced || exit 1; \
 	done
 	@ls -la dist/
 
@@ -71,6 +79,10 @@ deb: cross $(BATADV_TARBALL)
 	@for pair in arm64:arm64 armhf:armv6 amd64:amd64; do \
 	  $(GO) run ./tools/mkdeb trellis --version '$(VERSION)' --arch $${pair%%:*} \
 	    --binary dist/trellis-linux-$${pair##*:} --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
+	done
+	@for arch in $(VOICE_ARCHES); do \
+	  $(GO) run ./tools/mkdeb voice --version '$(VERSION)' --arch $$arch \
+	    --binary dist/trellis-voiced-linux-$$arch --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
 	done
 	@$(GO) run ./tools/mkdeb batman-adv --source $(BATADV_TARBALL) --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS)
 
@@ -106,7 +118,8 @@ FUZZTIME ?= 30s
 FUZZERS = gossip:FuzzOpenRecord gossip:FuzzOpenRaw gossip:FuzzOpenMessages gossip:FuzzParseLinkEntry \
 	deb:FuzzRead deb:FuzzParseKeys config:FuzzParseProfile config:FuzzDecodeProfileCode config:FuzzParseNode \
 	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal \
-	rollout:FuzzDecodeRollout dhcpc:FuzzParse dhcpc:FuzzUDPPayload
+	rollout:FuzzDecodeRollout dhcpc:FuzzParse dhcpc:FuzzUDPPayload \
+	rtp:FuzzParse rtp:FuzzParseCompound voice:FuzzDeliver webd:FuzzWSRead
 fuzz:
 	@for f in $(FUZZERS); do \
 	  echo "== $${f#*:} ($${f%%:*}, $(FUZZTIME))"; \
@@ -121,13 +134,21 @@ lab: build
 lab-scale: build
 	./lab/lab.sh --scale
 
+lab-voice: build
+	./lab/voice.sh
+
 fmt:
 	@test -z "$$(gofmt -l cmd internal lab tools 2>/dev/null)" || { gofmt -l cmd internal lab tools; echo "run gofmt -w"; exit 1; }
 
 vet:
 	$(GO) vet ./...
 
-check: fmt vet test
+# The trellis binary must stay static: libopus (internal/opus) is loaded
+# at run time, which links a binary dynamically.
+static:
+	@! $(GO) list -deps ./cmd/trellis ./cmd/trellis-deploy | grep -q 'ebitengine/purego' || { echo "cmd/trellis or cmd/trellis-deploy imports internal/opus; only the voice service may"; exit 1; }
+
+check: fmt vet static test
 
 gen:
 	python3 -I tools/genconst/genconst.py --header /usr/include/linux/batman_adv.h --package batadv > internal/batadv/consts_gen.go
@@ -149,7 +170,7 @@ clean:
 	rm -rf bin dist
 
 deploy:
-	FAST='$(FAST)' DRY_RUN='$(DRY_RUN)' scripts/deploy.sh $(HOSTS)
+	FAST='$(FAST)' DRY_RUN='$(DRY_RUN)' VOICE='$(VOICE)' scripts/deploy.sh $(HOSTS)
 
 nodes:
 	scripts/deploy.sh --status $(HOSTS)
@@ -181,6 +202,6 @@ ui-dev: build
 	$(GO) build -o bin/fakemeshd ./tools/fakemeshd
 	@mkdir -p $(UI_DEV_DIR)
 	@echo "== http://127.0.0.1:8480  (password: trellis-demo; Ctrl-C stops both)"
-	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) & fake=$$!; \
+	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock --console $(UI_DEV_DIR)/console.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) & fake=$$!; \
 	  trap "kill $$fake 2>/dev/null" EXIT INT TERM; sleep 0.5; \
-	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --listen 127.0.0.1:8480 --plain-http
+	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --voice-console $(UI_DEV_DIR)/console.sock --listen 127.0.0.1:8480 --plain-http

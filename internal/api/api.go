@@ -62,6 +62,11 @@ type Provider interface {
 	// WebSetPassword sets the admin password. privileged callers (root on
 	// the socket) need no current password.
 	WebSetPassword(from, current, new string, privileged bool) error
+
+	// VoiceConfig is trellis-voiced's configuration; Voice its state.
+	VoiceConfig() VoiceConfig
+	Voice(ctx context.Context) (*VoiceState, error)
+	VoiceTest(ctx context.Context, in VoiceTestInput) error
 }
 
 // Server serves the API.
@@ -139,6 +144,15 @@ func (s *Server) Handler() http.Handler {
 	get("/topology", func(r *http.Request) (any, error) { return p.Topology(r.Context()) })
 	get("/profile/export", func(r *http.Request) (any, error) { return p.ProfileExport() })
 	get("/survey", func(r *http.Request) (any, error) { return p.Survey(), nil })
+	get("/voice", func(r *http.Request) (any, error) { return p.Voice(r.Context()) })
+	get("/voice/config", func(r *http.Request) (any, error) { return p.VoiceConfig(), nil })
+	mux.HandleFunc("POST /"+Version+"/voice/test", func(w http.ResponseWriter, r *http.Request) {
+		var in VoiceTestInput
+		if !readJSON(w, r, &in) {
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) { return map[string]bool{"ok": true}, p.VoiceTest(r.Context(), in) }, r)
+	})
 	mux.HandleFunc("POST /"+Version+"/survey", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, func(r *http.Request) (any, error) { return p.StartSurvey(r.Context()) }, r)
 	})

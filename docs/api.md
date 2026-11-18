@@ -57,6 +57,7 @@ These endpoints exist on `webd` only.
 
 | Request | Body | Answer |
 |---|---|---|
+| `GET /voice/console` | | The voice console's WebSocket (signed in, from this UI's own origin). JSON from the browser: `{t:"hello",name}`, `{t:"monitor",groups}`, `{t:"ptt",group,down}` or `{t:"ptt",all:true,down}` (an all-call); binary: 20 ms of microphone, 320 16-bit little-endian samples at 16 kHz. To the browser: `{t:"hello",console,groups}`, `{t:"state",groups,consoles}` four times a second, `{t:"ptt",group,down,granted}`, `{t:"notice",what}` (`busy`, `tx-limit`); binary: a group's number in one byte, then 20 ms as above. webd passes it to `trellis-voiced` unread. |
 | `GET /session` | | `{authenticated, admin_set, setup, callsign, version, meshd_up}`. Needs no login, and tells a stranger nothing else. |
 | `POST /login` | `{"password": "…"}` | `200` and a session cookie; `401` wrong password; `429` with `retry_after_s` after five wrong passwords in a row; `403` when the node has no admin password. |
 | `POST /logout` | | ends the session |
@@ -91,6 +92,9 @@ These endpoints exist on `webd` only.
 | `GET /health` | `{ok, time, api}` |
 | `GET /status` | The node's whole state: identity, profile in force, regulatory mode, radios and plan, mesh links and peers, batman-adv tables and multicast path, bridge, client AP and its stations, DHCP leases, gateway state and candidates, how the node keeps time (`clock`) and its GNSS receiver (`gnss`: fix, position, accuracy, satellites, PPS), ports, the other nodes (from gossip), warnings, the control loop. The types are in `internal/status/status.go`; that file is the reference for every field. |
 | `GET /radios` | `{radios, plan}`: the radio part of the status |
+| `GET /voice` | `{enabled, running, error, status}`: push-to-talk. `status` is `trellis-voiced`'s own: per group `{number, name, addr, listening, busy, talker, sending, received, lost, late}`, per channel `{name, group, ear, volume, ptt, sending}`, and the last events (`talk-sent`, `talk-heard`, `talk-ended`, `ptt-refused`). |
+| `POST /voice/test` | `{kind, channel}`: a headset check on this node only: `tone` (1 kHz for 1 s in channel `a`'s or `b`'s ear), `loopback` (the microphone played back for 10 s), `stop`. 409 when voice is off. |
+| `GET /voice/config` | `{enable, config, problems}`: what `trellis-voiced` runs with, built from the profile's `voice` and node.yaml's `voice`; `problems` names groups the node refers to that the profile lacks. meshd keeps the same in `/run/trellis/voice.json` for `trellis-voiced`, which cannot use this API. |
 | `GET /config` | `{node, profile, setup}`: the configuration in force, secrets redacted. `node` is the document `PUT /config/node` takes. |
 | `GET /channels` | What a mesh link may ask for, the same on every node: `{widths, max_channel, s1g}`. `widths` per band in MHz (`"5g": [20, 40, 80, 160]`); Wi-Fi channel numbers run from 1 to `max_channel[band]`; `s1g` holds the HaLow channels per country and width (`{"US": {"2": [2, 6, …]}, …}`). A radio may still lack a channel, and the regulatory domain forbid one: the node reports that in its warnings, and a link's `running_width_mhz` in `GET /status` is the width it actually runs. |
 | `GET /ap` | How a phone joins this node's Wi-Fi: `{enabled, ssid, passphrase, band, channel, wifi_qr, qr, note}`. `wifi_qr` is the text of the QR code; `qr` is the symbol itself. |

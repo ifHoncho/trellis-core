@@ -128,6 +128,11 @@ func newFake(setup bool, password string, links int, bare bool) *fake {
 	if links >= 3 {
 		p.Links = append(p.Links, config.RadioPlan{Band: config.Band2G, Channel: 6, Width: 20})
 	}
+	p.Voice = config.VoicePlan{Groups: []config.VoiceGroup{{Number: 1, Name: "Command", Priority: true}, {Number: 2, Name: "Alpha"}, {Number: 3, Name: "Bravo"}, {Number: 4, Name: "Medevac"}}}
+	if !bare {
+		vol := 70
+		n.Voice = config.VoiceNode{Enable: true, Channels: config.VoiceChannels{A: config.VoiceChannel{Group: 1, Ear: "left", Volume: &vol}, B: config.VoiceChannel{Group: 2, Ear: "right"}}, Listen: []int{4}}
+	}
 	p.ApplyDefaults()
 	if setup {
 		n.Callsign = "trellis-node"
@@ -870,6 +875,7 @@ func main() {
 	oneRadio := flag.Bool("one-radio", false, "a node with one dual-band adapter in a 2.4 + 5 GHz profile")
 	unrestricted := flag.Bool("unrestricted", false, "a mesh profile in unrestricted regulatory mode")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
+	consoleSock := flag.String("console", "", "also serve a made-up voice console socket here (webd --voice-console)")
 	flag.Parse()
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "usage: fakemeshd --socket PATH [--setup] [--links N] [--bare] [--password PW]")
@@ -886,6 +892,12 @@ func main() {
 	}
 	if *oneRadio {
 		f.oneRadioNode()
+	}
+	if *consoleSock != "" {
+		if err := f.serveConsole(*consoleSock); err != nil {
+			fmt.Fprintln(os.Stderr, "fakemeshd:", err)
+			os.Exit(1)
+		}
 	}
 	srv := &api.Server{Provider: f, Socket: *socket, Log: slog.Default(), Mode: 0o600}
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {

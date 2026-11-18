@@ -20,6 +20,7 @@ type State struct {
 	User      string // the login user
 	Trellis   string // installed trellis package version; empty: none
 	Batman    string // installed trellis-batman-adv-dkms version
+	Voice     string // installed trellis-voice version
 	Profile   bool   // /etc/trellis/profile.yaml exists
 	NodeConf  bool   // /etc/trellis/node.yaml exists
 	NoPass    bool   // sudo works without a password
@@ -43,6 +44,8 @@ case "$v" in ii*) v=${v#*|}; echo "trellis=$v"
 esac
 b=$(dpkg-query -W -f='${db:Status-Abbrev}|${Version}' trellis-batman-adv-dkms 2>/dev/null)
 case "$b" in ii*) echo "batman=${b#*|}" ;; esac
+b=$(dpkg-query -W -f='${db:Status-Abbrev}|${Version}' trellis-voice 2>/dev/null)
+case "$b" in ii*) echo "voice=${b#*|}" ;; esac
 [ -e /etc/trellis/profile.yaml ] && echo profile=yes
 [ -e /etc/trellis/node.yaml ] && echo node=yes
 sudo -n true 2>/dev/null && echo sudo=nopass
@@ -73,6 +76,8 @@ func ParseState(out string) State {
 			s.Cmp = v
 		case "batman":
 			s.Batman = v
+		case "voice":
+			s.Voice = v
 		case "profile":
 			s.Profile = v == "yes"
 		case "node":

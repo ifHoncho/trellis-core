@@ -87,6 +87,8 @@ type Profile struct {
 	// Positions: whether nodes with a GNSS fix put themselves on the
 	// team's ATAK map. Off here stops it on every node (emissions control).
 	Positions Positions `yaml:"positions,omitempty" json:"positions"`
+	// Voice: the mesh's push-to-talk talk groups.
+	Voice VoicePlan `yaml:"voice,omitempty" json:"voice"`
 	// Revision counts mesh-wide changes: a profile sent to every node
 	// (meshd meshchange.go) carries a higher one, and a node takes only a
 	// profile whose revision is higher than its own. 0 for a profile that
@@ -237,6 +239,8 @@ type Node struct {
 	// Positions: whether this node, with a GNSS fix, puts itself on the
 	// team's ATAK map. Off here stops it on this node only.
 	Positions Positions `yaml:"positions,omitempty" json:"positions"`
+	// Voice: this node's push-to-talk (audio device, PTT, channels).
+	Voice VoiceNode `yaml:"voice,omitempty" json:"voice"`
 }
 
 // Positions controls position sharing (in the profile for the whole mesh,
@@ -904,6 +908,7 @@ func (p *Profile) Validate() error {
 	if !reVersion.MatchString(p.Batman.PinnedVersion) {
 		es.add("batman.pinned_version", "must look like 2026.3 (got %q)", p.Batman.PinnedVersion)
 	}
+	p.Voice.validate(&es)
 	if p.Change != nil {
 		p.Change.validate(&es)
 	}
@@ -1033,6 +1038,7 @@ func (n *Node) Validate() error {
 	if n.Gateway.UpMbit < 1 || n.Gateway.UpMbit > 100000 {
 		es.add("gateway.up_mbit", "must be 1–100000 (got %d)", n.Gateway.UpMbit)
 	}
+	n.Voice.validate(&es)
 	return es.orNil()
 }
 

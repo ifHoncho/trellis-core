@@ -11,6 +11,7 @@ import { internet } from './views/internet.js';
 import { devices } from './views/devices.js';
 import { radios } from './views/radios.js';
 import { multicast } from './views/multicast.js';
+import { voice } from './views/voice.js';
 import { alertsView } from './views/alerts.js';
 import { settings } from './views/settings.js';
 import { gate } from './views/gate.js';
@@ -23,6 +24,7 @@ const ROUTES = [
   { id: 'devices', label: 'Devices', icon: 'devices', view: devices, tab: true },
   { id: 'radios', label: 'Radios', icon: 'radios', view: radios },
   { id: 'multicast', label: 'Multicast', icon: 'multicast', view: multicast },
+  { id: 'voice', label: 'Voice', icon: 'voice', view: voice },
   { id: 'alerts', label: 'Alerts', icon: 'alerts', view: alertsView },
   { id: 'settings', label: 'Settings', icon: 'settings', view: settings },
 ];
@@ -40,6 +42,18 @@ function readRoute() {
 
 let stopEvents = null;
 let topoTimer = null;
+let voiceTimer = null;
+
+// pollVoice asks for the voice state every second while the Voice page is
+// open: who is talking changes faster than the status stream.
+async function pollVoice() {
+  clearTimeout(voiceTimer);
+  if (!state.session || !state.session.authenticated) return;
+  if (state.route === 'voice' && !document.hidden) {
+    try { state.voice = await get('/voice'); redraw(); } catch (e) { /* tried again */ }
+  }
+  voiceTimer = setTimeout(pollVoice, state.route === 'voice' ? 1000 : 3000);
+}
 
 function onStatus(st) {
   state.status = st;
@@ -87,12 +101,14 @@ function startLive() {
     state: (up) => { if (!up) { state.live = 'off'; redraw(); } },
   });
   pollTopology();
+  pollVoice();
 }
 
 function stopLive() {
   if (stopEvents) stopEvents();
   stopEvents = null;
   clearTimeout(topoTimer);
+  clearTimeout(voiceTimer);
 }
 
 export async function refreshSession() {
@@ -292,6 +308,7 @@ window.addEventListener('hashchange', () => {
   refreshConfig();
   window.scrollTo(0, 0);
   pollTopology();
+  pollVoice();
   redraw();
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) pollTopology(); });

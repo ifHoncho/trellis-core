@@ -40,7 +40,10 @@ type Options struct {
 	// PlainHTTP serves the UI without TLS on Listen. For development and
 	// tests only: the session cookie then travels in the clear.
 	PlainHTTP bool
-	Log       *slog.Logger
+	// VoiceConsole is trellis-voiced's console socket; default
+	// /run/trellis-voice/console.sock.
+	VoiceConsole string
+	Log          *slog.Logger
 }
 
 // Deadlines for a request (headers and body) and for its answer.

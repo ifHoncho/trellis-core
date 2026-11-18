@@ -1,0 +1,66 @@
+[Unit]
+Description=Trellis push-to-talk voice (trellis-voiced)
+# meshd starts and stops it with voice.enable in node.yaml, and keeps its
+# configuration in /run/trellis/voice.json (architecture §13.1).
+After=trellis-meshd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trellis-voiced run
+Restart=on-failure
+RestartSec=2
+
+# voiced holds the audio devices and parses voice packets from any device
+# on the mesh, so it gets as little as it can do its work with:
+# - a user of its own that exists only while it runs. Its group is
+#   trellis-voice (the trellis package makes it): the group that may read
+#   the configuration meshd keeps for it (/run/trellis/voice.json) and
+#   that webd is in, to reach the console socket. It is NOT in the trellis
+#   group: meshd's API socket is closed to it;
+# - more groups: audio for ALSA and the CM108's HID interface
+#   (70-trellis-voice.rules), dialout for a serial PTT line, input for a
+#   USB adapter's headset button (a phone-style PTT adapter). A GPIO PTT
+#   line needs the board's gpio group, where there is one (Raspberry Pi
+#   OS): systemctl edit trellis-voiced, [Service] SupplementaryGroups=gpio;
+# - no capabilities; unix, IPv4 and netlink sockets only (it joins
+#   multicast groups on br-mesh);
+# - devices: ALSA, hidraw, input, USB serial ports and GPIO chips only (a
+#   PTT line on another serial port needs a DeviceAllow= of its own);
+# - the filesystem read-only; its sockets in /run/trellis-voice.
+DynamicUser=yes
+Group=trellis-voice
+SupplementaryGroups=audio dialout input
+RuntimeDirectory=trellis-voice
+RuntimeDirectoryMode=0750
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+DevicePolicy=closed
+DeviceAllow=char-alsa rw
+DeviceAllow=char-hidraw rw
+DeviceAllow=char-ttyACM rw
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-gpiochip rw
+DeviceAllow=char-input r
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Audio runs in real time: let it ask for a real-time priority later.
+RestrictRealtime=no
+MemoryMax=96M
+Environment=GOMEMLIMIT=64MiB
+TasksMax=64
+Environment=GOTRACEBACK=single

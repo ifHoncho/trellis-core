@@ -1,0 +1,27 @@
+Subject: batman-adv: set the priority of forwarded multicast packets
+
+batadv_skb_set_priority() gives a packet the priority of its payload
+(VLAN PCP or IP DSCP) where a node sends it, forwards it as unicast and
+rebroadcasts it, so that a relay queues it as the sender did. The path
+that forwards the multicast packet type does not call it, and relays send
+those packets at priority 0: voice and other marked multicast lose their
+priority at the first hop.
+
+Set it in batadv_recv_mcast_packet() before the tracker TVLV is processed,
+which makes the forwarded copies.
+
+---
+--- a/net/batman-adv/routing.c
++++ b/net/batman-adv/routing.c
+@@ -1426,6 +1426,11 @@
+ 	if (tvlv_buff_len & 1)
+ 		goto free_skb;
+ 
++	/* forwarded copies keep the priority of the payload, as unicast and
++	 * broadcast packets do
++	 */
++	batadv_skb_set_priority(skb, hdr_size + tvlv_buff_len);
++
+ 	ret = batadv_tvlv_containers_process(bat_priv, BATADV_MCAST, NULL, skb,
+ 					     tvlv_buff, tvlv_buff_len);
+ 	if (ret >= 0) {

@@ -583,3 +583,29 @@ func TestDropNodeKeyMark(t *testing.T) {
 		}
 	}
 }
+
+// The voice package goes to nodes that have it, and with --voice to all,
+// for the node's architecture only.
+func TestRunVoice(t *testing.T) {
+	f := fake("a", "b", "c")
+	r, console := newRunner(f)
+	r.Release.Voice = map[string]string{"arm64": "/r/trellis-voice_0.2.0_arm64.deb"}
+	a, b, c := step("a", Upgrade, false), step("b", Upgrade, false), step("c", Upgrade, false)
+	a.State.Arch, b.State.Arch, c.State.Arch = "arm64", "arm64", "armhf"
+	a.State.Voice, c.State.Voice = "0.1.0", "0.1.0"
+	outs := r.Run(context.Background(), []Step{a, b, c})
+	if Failed(outs) != 0 {
+		t.Fatalf("%+v\n%s", outs, console)
+	}
+	if f.nodes["a"].files["voice.deb"] == "" || f.nodes["b"].files["voice.deb"] != "" || f.nodes["c"].files["voice.deb"] != "" {
+		t.Errorf("without --voice: a %q, b %q, c %q", f.nodes["a"].files["voice.deb"], f.nodes["b"].files["voice.deb"], f.nodes["c"].files["voice.deb"])
+	}
+	f = fake("b")
+	r, _ = newRunner(f)
+	r.Release.Voice = map[string]string{"arm64": "/r/trellis-voice_0.2.0_arm64.deb"}
+	r.Voice = true
+	r.Run(context.Background(), []Step{b})
+	if f.nodes["b"].files["voice.deb"] == "" {
+		t.Error("--voice did not install it")
+	}
+}

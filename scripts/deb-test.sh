@@ -22,6 +22,8 @@ go run ./tools/mkdeb keygen --out "$W/key" --comment "deb-test" > "$W/key.pub" 2
 go run ./tools/mkdeb trellis --version 0.9.0 --arch $arch --binary "$W/trellis" --out "$W/debs/old" >/dev/null
 go run ./tools/mkdeb trellis --version 0.9.1 --arch $arch --binary "$W/trellis" --out "$W/debs/new" --key "$W/key" >/dev/null
 go run ./tools/mkdeb batman-adv --source "$tarball" --out "$W/debs" --key "$W/key" >/dev/null
+CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath -ldflags "-s -w -X main.version=0.9.1" -o "$W/trellis-voiced" ./cmd/trellis-voiced
+go run ./tools/mkdeb voice --version 0.9.1 --arch $arch --binary "$W/trellis-voiced" --out "$W/debs/new" --key "$W/key" >/dev/null
 go run ./tools/mkdeb verify --pub "$W/key.pub" "$W"/debs/new/*.deb "$W"/debs/trellis-batman-adv-dkms_*.deb >/dev/null
 cp packaging/deb/test-in-container.sh "$W/debs/test.sh"
 

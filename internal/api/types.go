@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -279,4 +280,31 @@ func asError(err error) *Error {
 		return out
 	}
 	return &Error{Status: http.StatusInternalServerError, Message: err.Error()}
+}
+
+// VoiceConfig is trellis-voiced's configuration (GET /voice/config): the
+// profile's talk groups and the node's voice settings, as the voice
+// engine reads them (internal/voice Config).
+type VoiceConfig struct {
+	Enable   bool            `json:"enable"`
+	Config   json.RawMessage `json:"config"`
+	Problems []string        `json:"problems,omitempty"`
+}
+
+// VoiceState is GET /voice: whether voice is on, and trellis-voiced's own
+// status when it answers.
+type VoiceState struct {
+	Enabled bool `json:"enabled"`
+	// Installed: the trellis-voice package is on this node.
+	Installed bool            `json:"installed"`
+	Running   bool            `json:"running"`
+	Error     string          `json:"error,omitempty"`
+	Status    json.RawMessage `json:"status,omitempty"`
+}
+
+// VoiceTestInput is POST /voice/test: kind tone (in channel a's or b's
+// ear), loopback (the microphone played back for 10 s) or stop.
+type VoiceTestInput struct {
+	Kind    string `json:"kind"`
+	Channel string `json:"channel,omitempty"`
 }

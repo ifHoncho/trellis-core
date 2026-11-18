@@ -5,6 +5,7 @@ go 1.27.3
 toolchain go1.27.4
 
 require (
+	github.com/ebitengine/purego v0.11.3
 	github.com/mdlayher/genetlink v1.4.0
 	github.com/mdlayher/netlink v1.11.2
 	github.com/vishvananda/netlink v1.3.1

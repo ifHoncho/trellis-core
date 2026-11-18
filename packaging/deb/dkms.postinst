@@ -8,13 +8,14 @@ script=/usr/share/trellis/scripts/install-batman-adv-dkms.sh
 # The release this package carries (mkdeb writes it in), whatever the
 # script's own default is: the two packages are upgraded separately.
 version=@BATADV_VERSION@
-if BATADV_VERSION="$version" TRELLIS_IN_DPKG=1 "$script"; then
+dkms_version=@DKMS_VERSION@
+if BATADV_VERSION="$version" DKMS_VERSION="$dkms_version" TRELLIS_IN_DPKG=1 "$script"; then
   exit 0
 fi
 cat <<MSG
 trellis-batman-adv-dkms: batman-adv was NOT built for kernel $(uname -r).
   Fix what the messages above name (usually: install this kernel's headers),
-  then run:  sudo BATADV_VERSION=$version $script
+  then run:  sudo BATADV_VERSION=$version DKMS_VERSION=$dkms_version $script
   "meshctl doctor" shows whether the pinned batman-adv is in use.
 MSG
 exit 0

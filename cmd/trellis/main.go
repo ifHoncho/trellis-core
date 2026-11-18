@@ -90,6 +90,7 @@ func runMeshd(args []string) int {
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
 	interval := fs.Duration("interval", 15*time.Second, "slow reconcile interval")
+	voiceSocket := fs.String("voice-socket", "", "trellis-voiced's control socket (default /run/trellis-voice/control.sock)")
 	noHostConfig := fs.Bool("no-host-config", false, "don't write NetworkManager or systemd-networkd configuration on the host, or reload them (for labs, where meshd runs in a namespace of a host it doesn't own)")
 	testPortManager := fs.String("test-port-manager", "", "lab only: replace NetworkManager and systemd-networkd with a stand-in driven by files in this directory")
 	if err := fs.Parse(args); err != nil {
@@ -108,7 +109,7 @@ func runMeshd(args []string) int {
 
 	d, err := meshd.New(meshd.Options{
 		Version: version, NodePath: *node, ProfilePath: *profile, StateDir: *stateDir, RunDir: *runDir,
-		Socket: *socket, Log: log, Interval: *interval, NoHostConfig: *noHostConfig,
+		Socket: *socket, Log: log, Interval: *interval, NoHostConfig: *noHostConfig, VoiceSocket: *voiceSocket,
 		TestPortManagerDir: *testPortManager,
 	})
 	if err != nil {
@@ -165,6 +166,7 @@ func runWebd(args []string) int {
 	// systemd sets STATE_DIRECTORY for a unit with StateDirectory=.
 	stateDir := fs.String("state-dir", os.Getenv("STATE_DIRECTORY"), "where the TLS certificate is kept (default: none, a new certificate at every start)")
 	plain := fs.Bool("plain-http", false, "serve the UI without TLS on --listen (development only)")
+	voiceConsole := fs.String("voice-console", "", "trellis-voiced's console socket (default /run/trellis-voice/console.sock)")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	logFormat := fs.String("log-format", "text", "text or json")
 	if err := fs.Parse(args); err != nil {
@@ -181,7 +183,7 @@ func runWebd(args []string) int {
 	}
 	srv, err := webd.New(webd.Options{
 		Version: version, Socket: *socket, Listen: *listen, HTTPListen: *httpListen, StateDir: *stateDir,
-		PlainHTTP: *plain, Log: log.With("component", "webd"),
+		PlainHTTP: *plain, VoiceConsole: *voiceConsole, Log: log.With("component", "webd"),
 	})
 	if err != nil {
 		log.Error("webd cannot start", "err", err)

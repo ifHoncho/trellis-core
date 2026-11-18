@@ -14,6 +14,9 @@ Options (each takes a value):
   --password PW     default trellis-demo; '' to stay signed out
   --out DIR         where the PNGs go (default .)
 
+FF_FAKE_MEDIA=1 gives the browser a made-up microphone (a tone), granted
+without asking: for the voice console.
+
 Steps, run in order:
   go:#/mesh         open a page of the UI
   wait:2.5          seconds
@@ -40,6 +43,10 @@ class FF:
             f.write('user_pref("marionette.port", %d);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n'
                     'user_pref("datareporting.policy.dataSubmissionEnabled", false);\nuser_pref("toolkit.telemetry.reportingpolicy.firstRun", false);\n'
                     'user_pref("browser.aboutwelcome.enabled", false);\nuser_pref("layout.css.devPixelsPerPx", "%s");\n' % (port, os.environ.get('FF_DPR', '1')))
+            # FF_FAKE_MEDIA=1: a made-up microphone (a tone), granted without asking.
+            if os.environ.get('FF_FAKE_MEDIA'):
+                f.write('user_pref("media.navigator.streams.fake", true);\nuser_pref("media.navigator.permission.disabled", true);\n'
+                        'user_pref("media.autoplay.default", 0);\nuser_pref("media.autoplay.blocking_policy", 0);\n')
         self.proc = subprocess.Popen(['firefox', '--headless', '--marionette', '--no-remote', '--profile', self.dir],
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.time() + 40

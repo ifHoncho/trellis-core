@@ -269,3 +269,21 @@ func (c *Client) WebLogin(ctx context.Context, from, password string) error {
 func (c *Client) WebSetPassword(ctx context.Context, from, current, new string) error {
 	return c.do(ctx, http.MethodPut, "/web/password", PasswordInput{Current: current, New: new, From: from}, nil)
 }
+
+// VoiceConfig is trellis-voiced's configuration.
+func (c *Client) VoiceConfig(ctx context.Context) (*VoiceConfig, error) {
+	var out VoiceConfig
+	if err := c.do(ctx, http.MethodGet, "/voice/config", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Voice is trellis-voiced's state, as meshd sees it.
+func (c *Client) Voice(ctx context.Context) (*VoiceState, error) {
+	var out VoiceState
+	if err := c.do(ctx, http.MethodGet, "/voice", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

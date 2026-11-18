@@ -571,6 +571,19 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	if cur.AllowOldBatman != n.AllowOldBatman && n.AllowOldBatman {
 		add("warning", "old-batman", "The node may run an old batman-adv: with one in the mesh, every node falls back to flooding multicast.")
 	}
+	// A headset-button PTT shorts the microphone while it is held: with
+	// hold to talk, talks go out silent (or are stopped as such).
+	if n.Voice.Enable && n.Voice.PTTMode != "toggle" {
+		pttA := n.Voice.Channels.A.PTT
+		if pttA == "" {
+			pttA = n.Voice.PTT
+		}
+		for _, ch := range [][2]string{{"A", pttA}, {"B", n.Voice.Channels.B.PTT}} {
+			if ch[1] == "button" {
+				add("warning", "voice-ptt-cuts-mic", "Channel %s's PTT is the audio adapter's headset button, which silences the microphone while it is held: with hold to talk, nothing you say is sent. Choose press to start, press to stop, or VOX.", ch[0])
+			}
+		}
+	}
 	sortEffects(es)
 	return noNil(es)
 }

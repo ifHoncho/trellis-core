@@ -98,6 +98,7 @@ func release(t *testing.T, dir string, priv ed25519.PrivateKey, version string, 
 		write("trellis", a, version, deb.Field{Name: "Trellis-Version", Value: version})
 	}
 	write("trellis-batman-adv-dkms", "all", "2026.3-1")
+	write("trellis-voice", "arm64", version)
 	writeSums(t, dir)
 }
 
@@ -131,7 +132,7 @@ func TestLoadRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Version != "0.2.0" || len(r.Arches) != 2 || r.Batman == "" || r.BatmanVersion != "2026.3-1" || r.SignedBy != "1" || !r.Checksums {
+	if r.Version != "0.2.0" || len(r.Arches) != 2 || r.Batman == "" || r.BatmanVersion != "2026.3-1" || r.SignedBy != "1" || !r.Checksums || r.Voice["arm64"] == "" {
 		t.Fatalf("%+v", r)
 	}
 

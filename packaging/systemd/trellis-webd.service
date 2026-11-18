@@ -23,7 +23,9 @@ RestartSec=2
 # - The filesystem is read-only except its state directory, which holds
 #   the TLS certificate.
 DynamicUser=yes
-SupplementaryGroups=trellis
+# trellis: meshd's API socket. trellis-voice: the voice console's socket
+# (trellis-voiced's group; the package's postinst makes both).
+SupplementaryGroups=trellis trellis-voice
 StateDirectory=trellis-web
 StateDirectoryMode=0700
 UMask=0077

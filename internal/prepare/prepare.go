@@ -175,8 +175,11 @@ func (r *run) batman() {
 	loaded := r.read("/sys/module/batman_adv/version")
 	avail := r.output("modinfo", "-F", "version", "batman-adv")
 	dkms := strings.Contains(r.output("modinfo", "-n", "batman-adv"), "/updates/")
+	// The same release built with other patches (a new packaging revision)
+	// is another module: the loaded one must be the installed file.
+	current := r.read("/sys/module/batman_adv/srcversion") == r.output("modinfo", "-F", "srcversion", "batman-adv")
 	switch {
-	case loaded == pin && dkms:
+	case loaded == pin && dkms && current:
 		r.say("-- %s (DKMS build) is loaded\n", pin)
 		return
 	case avail == pin && dkms:

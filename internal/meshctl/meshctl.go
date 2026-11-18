@@ -71,6 +71,7 @@ Commands:
   web password [--stdin|--clear] set (or remove) the web UI's admin password
   web wan-access on|off          also serve the web UI on the node's uplink network
   clients [--json]               devices joined to this node: AP clients and DHCP leases
+  voice [--json]                 push-to-talk: talk groups, who is talking, this node's channels
   upgrade FILE.deb               install a release; the node goes back to the old one if it is not healthy after
   upgrade --status|--rollback|--resume
   reconcile                      ask meshd for a pass now
@@ -114,6 +115,8 @@ Commands:
 		err = cmdAP(ctx, client, rest[1:], stdout)
 	case "clients":
 		err = cmdClients(ctx, client, rest[1:], stdout)
+	case "voice":
+		err = cmdVoice(ctx, client, rest[1:], stdout)
 	case "web":
 		err = cmdWeb(ctx, client, rest[1:], stdout, stderr)
 	case "upgrade":

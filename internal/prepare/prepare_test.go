@@ -96,6 +96,8 @@ func ready() *fakeHost {
 	h.answer("dpkg-query -W -f=${Version} trellis-batman-adv-dkms", "2026.3-1", 0)
 	h.answer("modinfo -F version batman-adv", "2026.3", 0)
 	h.answer("modinfo -n batman-adv", "/lib/modules/6.1.0/updates/dkms/batman-adv.ko", 0)
+	h.files["/sys/module/batman_adv/srcversion"] = "AAAA1111\n"
+	h.answer("modinfo -F srcversion batman-adv", "AAAA1111", 0)
 	h.answer("systemctl is-active --quiet trellis-meshd", "", 0)
 	h.answer("install-regulatory.sh", "-- in effect\n", 0)
 	return h
@@ -148,6 +150,24 @@ func TestBatmanReload(t *testing.T) {
 	}
 	if !strings.Contains(out, "loaded: 2026.3") {
 		t.Errorf("output:\n%s", out)
+	}
+}
+
+// The same release, rebuilt with new patches (a new packaging revision):
+// the loaded module is not the installed file, so it is reloaded.
+func TestBatmanNewPatches(t *testing.T) {
+	h := ready()
+	h.files["/sys/module/batman_adv/srcversion"] = "OLD00000"
+	h.answer("systemctl stop trellis-meshd", "", 0)
+	h.answer("systemctl start trellis-meshd", "", 0)
+	h.answer("modprobe -r batman-adv", "", 0)
+	h.cmds["modprobe batman-adv"] = func(h *fakeHost) (string, int) {
+		h.files["/sys/module/batman_adv/srcversion"] = "AAAA1111"
+		return "", 0
+	}
+	res, out := prepare(t, h)
+	if len(res.Problems) > 0 || !h.did("modprobe batman-adv") {
+		t.Fatalf("not reloaded: %+v\n%s", res, out)
 	}
 }
 

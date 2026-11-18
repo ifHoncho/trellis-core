@@ -62,6 +62,9 @@ ok "configuration, profile and identity untouched"
 grep -q '/usr/bin/meshctl' /etc/sudoers.d/trellis-deploy && ! grep -q '/usr/local/bin/meshctl' /etc/sudoers.d/trellis-deploy || fail "sudo rule not moved"
 ok "script install taken over, sudo rule follows"
 getent group trellis >/dev/null || fail "no trellis group"
+# webd's unit names it (the voice console's socket), voice or no voice.
+getent group trellis-voice >/dev/null || fail "no trellis-voice group"
+grep -q '^SupplementaryGroups=trellis trellis-voice$' /usr/lib/systemd/system/trellis-webd.service || fail "webd is not in the trellis-voice group"
 [ -L /etc/systemd/system/multi-user.target.wants/trellis-meshd.service ] || fail "meshd not enabled"
 [ -L /etc/systemd/system/sockets.target.wants/trellis-webd.socket ] || fail "web socket not enabled"
 [ "$(readlink /etc/systemd/system/hostapd.service)" = /dev/null ] || fail "hostapd.service not masked"
@@ -78,7 +81,9 @@ ok "only the node's scripts are packaged"
 grep -q 'trellis crda' /etc/udev/rules.d/85-trellis-regulatory.rules || fail "regulatory udev rule missing"
 /usr/share/trellis/scripts/install-regulatory.sh --status | grep -q 'set aside' || fail "regulatory.db not set aside: $(/usr/share/trellis/scripts/install-regulatory.sh --status)"
 ok "regulatory rules in Trellis's hands"
-[ -f /usr/src/trellis-batman-adv-2026.3/net/batman-adv/main.c ] && [ -f /usr/src/trellis-batman-adv-2026.3/dkms.conf ] || fail "batman-adv source missing"
+[ -f /usr/src/trellis-batman-adv-2026.3-*/net/batman-adv/main.c ] && [ -f /usr/src/trellis-batman-adv-2026.3-*/dkms.conf ] || fail "batman-adv source missing"
+grep -q '^PATCH\[0\]="0001-' /usr/src/trellis-batman-adv-2026.3-*/dkms.conf && [ -f /usr/src/trellis-batman-adv-2026.3-*/patches/0001-set-priority-of-forwarded-multicast-packets.patch ] || fail "Trellis's batman-adv patch is not packaged"
+ok "batman-adv source with Trellis's patch: $(ls -d /usr/src/trellis-batman-adv-*)"
 dkms status 2>/dev/null | grep -q '^trellis-batman-adv' && ok "dkms knows trellis-batman-adv: $(dkms status | head -1)" || ok "dkms: nothing added (no headers for the host's kernel here; reported, not fatal)"
 # meshctl prepare runs every step and reports the ones a container cannot
 # do (no headers for the host's kernel, no radios) instead of stopping.
@@ -101,6 +106,21 @@ dpkg -s trellis | grep -q '^Status: install ok installed' || fail "trellis not c
 [ -n "$(dpkg-query -W -f='${Trellis-Version}' trellis)" ] || fail "Trellis-Version field lost"
 ok "upgrade keeps configuration, identity and the edited drop-in"
 
+echo "== trellis-voice"
+voice="$(ls /debs/new/trellis-voice_*.deb)"
+apt-get install -y --no-install-recommends "$voice" > /tmp/voice.log 2>&1 || { tail -40 /tmp/voice.log; fail "apt-get install trellis-voice"; }
+v="$(/usr/bin/trellis-voiced version)" || fail "trellis-voiced does not run or misses a library: $v"
+[ -f /usr/lib/systemd/system/trellis-voiced.service ] && [ -f /usr/lib/udev/rules.d/70-trellis-voice.rules ] || fail "voice unit or udev rule missing"
+# The voice service takes packets from any device: it must not be in the
+# group that opens meshd's API.
+grep -q '^Group=trellis-voice$' /usr/lib/systemd/system/trellis-voiced.service || fail "trellis-voiced is not in its own group"
+grep -Eq '^(Group|SupplementaryGroups)=(.* )?trellis( |$)' /usr/lib/systemd/system/trellis-voiced.service && fail "trellis-voiced is in the trellis group: meshd's API is open to it"
+ok "trellis-voice installed with its libraries: $v"
+apt-get remove -y trellis-voice > /tmp/voice-rm.log 2>&1 || { tail -20 /tmp/voice-rm.log; fail "remove trellis-voice"; }
+[ ! -e /usr/bin/trellis-voiced ] || fail "trellis-voiced left after remove"
+dpkg -s trellis >/dev/null 2>&1 || fail "removing trellis-voice removed trellis"
+ok "trellis-voice removed, trellis kept"
+
 echo "== downgrade (what a rollback does)"
 apt-get install -y --allow-downgrades --no-install-recommends "$old" > /tmp/down.log 2>&1 || { tail -40 /tmp/down.log; fail "downgrade"; }
 [ "$(dpkg-query -W -f='${Version}' trellis)" = "$(dpkg-deb -f "$old" Version)" ] || fail "version after downgrade"
@@ -114,12 +134,13 @@ apt-get remove -y trellis trellis-batman-adv-dkms > /tmp/remove.log 2>&1 || { ta
 [ ! -e /etc/udev/rules.d/85-trellis-regulatory.rules ] || fail "regulatory udev rule left after remove"
 /usr/share/trellis/scripts/install-regulatory.sh --status 2>/dev/null | grep -q 'set aside' && fail "regulatory.db still set aside after remove"
 [ -e /lib/firmware/regulatory.db ] || [ -L /lib/firmware/regulatory.db ] || fail "the distribution's regulatory.db is not back"
-[ ! -d /usr/src/trellis-batman-adv-2026.3/net ] || fail "batman-adv source left after remove"
+[ ! -d /usr/src/trellis-batman-adv-2026.3-*/net ] || fail "batman-adv source left after remove"
 ok "remove keeps configuration and gives the regulatory rules back"
 
 echo "== purge"
 apt-get purge -y trellis trellis-batman-adv-dkms > /tmp/purge.log 2>&1 || { tail -40 /tmp/purge.log; fail "purge"; }
 [ ! -e /etc/trellis ] && [ ! -e /var/lib/trellis ] || fail "purge left configuration or state"
 getent group trellis >/dev/null && fail "purge left the group"
+getent group trellis-voice >/dev/null && fail "purge left the trellis-voice group"
 ok "purge removes configuration, state and the group"
 echo "== PASS on $PRETTY_NAME"

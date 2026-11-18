@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -64,13 +65,18 @@ type Options struct {
 	// a stand-in driven by files in this directory (r_ports.go,
 	// testManager), so the namespace lab can test port takeover.
 	TestPortManagerDir string
+	// VoiceSocket is trellis-voiced's control socket; default
+	// /run/trellis-voice/control.sock.
+	VoiceSocket string
 }
 
 // Daemon is one meshd instance.
 type Daemon struct {
-	opts    Options
-	log     *slog.Logger
-	started time.Time
+	opts          Options
+	voiceHTTP     *http.Client // voiceClient
+	voiceHTTPOnce sync.Once
+	log           *slog.Logger
+	started       time.Time
 
 	cfg      *config.Node
 	profile  *config.Profile
@@ -386,7 +392,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp)
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d})
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 

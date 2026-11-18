@@ -28,19 +28,33 @@ if [ -z "${BATADV_VERSION:-}" ]; then
   BATADV_VERSION="$(sed -n 's/^BATADV_VERSION=//p' "$HERE/../packaging/dkms/source" 2>/dev/null || true)"
 fi
 [ -n "${BATADV_VERSION:-}" ] || { echo "no batman-adv release to install: set BATADV_VERSION" >&2; exit 2; }
+# The DKMS version: the release and Trellis's packaging revision
+# (2026.3-2), so a new revision (new patches) is built as a new module
+# beside the old one, which goes only once the new one is built. Taken from
+# DKMS_VERSION, the installed package, or packaging/dkms/source for the
+# pinned release; another release is built as it is, unpatched.
+PIN="$(sed -n 's/^BATADV_VERSION=//p' "$HERE/../packaging/dkms/source" 2>/dev/null || true)"
+if [ -z "${DKMS_VERSION:-}" ]; then
+  v="$(dpkg-query -W -f='${db:Status-Abbrev} ${Version}' trellis-batman-adv-dkms 2>/dev/null || true)"
+  case "$v" in "ii "*"$BATADV_VERSION"-*) DKMS_VERSION="${v##* }" ;; esac
+fi
+if [ -z "${DKMS_VERSION:-}" ] && [ "$BATADV_VERSION" = "$PIN" ]; then
+  DKMS_VERSION="$BATADV_VERSION-$(sed -n 's/^REVISION=//p' "$HERE/../packaging/dkms/source")"
+fi
+DKMS_VERSION="${DKMS_VERSION:-$BATADV_VERSION}"
 REPO="${BATADV_REPO:-https://github.com/open-mesh-mirror/batman-adv.git}"
 IN_DPKG="${TRELLIS_IN_DPKG:-}"
 # apt-get, where there is one and this is not running inside dpkg.
 can_apt() { [ -z "$IN_DPKG" ] && command -v apt-get >/dev/null 2>&1; }
 NAME=trellis-batman-adv
-SRC="/usr/src/${NAME}-${BATADV_VERSION}"
+SRC="/usr/src/${NAME}-${DKMS_VERSION}"
 KREL="$(uname -r)"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2; exit 1
 fi
 
-echo "== Trellis: batman-adv ${BATADV_VERSION} via DKMS for kernel ${KREL}"
+echo "== Trellis: batman-adv ${BATADV_VERSION} (DKMS ${DKMS_VERSION}) for kernel ${KREL}"
 
 # A 64-bit kernel under a 32-bit userland (possible on Raspberry Pi) cannot
 # build modules: the native compiler targets the wrong architecture.
@@ -111,7 +125,14 @@ else
   echo "-- fetching v${BATADV_VERSION} from ${REPO}"
   git clone --quiet --branch "v${BATADV_VERSION}" --depth 1 "$REPO" "$SRC"
 fi
-sed "s/@VERSION@/${BATADV_VERSION}/" "$HERE/../packaging/dkms/dkms.conf" > "$SRC/dkms.conf"
+if [ "$DKMS_VERSION" = "$BATADV_VERSION" ]; then
+  # Not the pinned release: Trellis's patches are for that one only.
+  sed -e "s/@VERSION@/${DKMS_VERSION}/" -e '/^PATCH\[/d' "$HERE/../packaging/dkms/dkms.conf" > "$SRC/dkms.conf"
+else
+  sed "s/@VERSION@/${DKMS_VERSION}/" "$HERE/../packaging/dkms/dkms.conf" > "$SRC/dkms.conf"
+  mkdir -p "$SRC/patches"
+  install -m 0644 "$HERE/../packaging/dkms/patches/"*.patch "$SRC/patches/"
+fi
 install -m 0755 "$HERE/../packaging/dkms/trellis-build.sh" "$SRC/trellis-build.sh"
 
 
@@ -151,7 +172,7 @@ if ! headers_runnable; then
 fi
 
 diagnose() {
-  LOG="/var/lib/dkms/${NAME}/${BATADV_VERSION}/build/make.log"
+  LOG="/var/lib/dkms/${NAME}/${DKMS_VERSION}/build/make.log"
   echo "" >&2
   echo "!! DKMS build failed. Last lines of $LOG:" >&2
   tail -n 30 "$LOG" >&2 2>/dev/null || true
@@ -196,7 +217,7 @@ remove_others() {
       [ -d "$d" ] && basename "$d" | sed "s|^${NAME}-||"
     done
   } | sort -u | while read -r v; do
-    if [ -n "$v" ] && [ "$v" != "$BATADV_VERSION" ]; then
+    if [ -n "$v" ] && [ "$v" != "$DKMS_VERSION" ]; then
       if dpkg-query -S "/usr/src/${NAME}-${v}" >/dev/null 2>&1; then
         echo "-- left batman-adv $v alone: the trellis-batman-adv-dkms package owns it" >&2
         continue
@@ -208,31 +229,34 @@ remove_others() {
   done
 }
 
-if dkms_has "$BATADV_VERSION" "$KREL"; then
+if dkms_has "$DKMS_VERSION" "$KREL"; then
   echo "-- already built and installed for ${KREL}"
   # Others left over from an earlier run: removing one may take the module
   # file it shares with this release, so install this one again after.
   if [ -n "$(remove_others)" ]; then
-    dkms install --force "${NAME}/${BATADV_VERSION}" -k "$KREL"
+    dkms install --force "${NAME}/${DKMS_VERSION}" -k "$KREL"
   fi
 else
-  dkms_has "$BATADV_VERSION" || dkms add "${NAME}/${BATADV_VERSION}"
+  dkms_has "$DKMS_VERSION" || dkms add "${NAME}/${DKMS_VERSION}"
   # Built first: a release that fails to build leaves the node with the
   # module it had. The others go before the install, which then puts its
   # own module file in place.
-  dkms build "${NAME}/${BATADV_VERSION}" -k "$KREL" || diagnose
+  dkms build "${NAME}/${DKMS_VERSION}" -k "$KREL" || diagnose
   for v in $(remove_others); do echo "-- removed batman-adv $v"; done
-  dkms install --force "${NAME}/${BATADV_VERSION}" -k "$KREL"
+  dkms install --force "${NAME}/${DKMS_VERSION}" -k "$KREL"
 fi
 depmod -a
 
 # Unloading batman-adv deletes every mesh interface of it. With a mesh
 # running (a package installed on a live node), the new module waits.
+# The same release with other patches is another module: compare the
+# loaded module's source checksum with the installed file's.
 loaded="$(cat /sys/module/batman_adv/version 2>/dev/null || true)"
-if [ "$loaded" = "$BATADV_VERSION" ]; then
+same_src() { [ "$(cat /sys/module/batman_adv/srcversion 2>/dev/null)" = "$(modinfo -F srcversion batman-adv 2>/dev/null)" ]; }
+if [ "$loaded" = "$BATADV_VERSION" ] && same_src; then
   echo "-- batman-adv $loaded is loaded"
 elif ip -o link show type batadv 2>/dev/null | grep -q .; then
-  echo "-- batman-adv ${loaded:-?} carries the running mesh; $BATADV_VERSION loads at the next boot, or now with:"
+  echo "-- batman-adv ${loaded:-?} carries the running mesh; the new build ($DKMS_VERSION) loads at the next boot, or now with:"
   echo "   sudo systemctl stop trellis-meshd && sudo modprobe -r batman-adv && sudo systemctl start trellis-meshd"
 else
   echo "-- loading the new module"

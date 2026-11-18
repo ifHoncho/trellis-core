@@ -273,3 +273,9 @@ func TestClientNotRunning(t *testing.T) {
 		t.Errorf("expected ErrNotRunning, got %v", err)
 	}
 }
+
+func (p *fakeProvider) VoiceConfig() VoiceConfig { return VoiceConfig{Config: []byte("{}")} }
+func (p *fakeProvider) Voice(context.Context) (*VoiceState, error) {
+	return &VoiceState{}, nil
+}
+func (p *fakeProvider) VoiceTest(context.Context, VoiceTestInput) error { return nil }

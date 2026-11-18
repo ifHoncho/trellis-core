@@ -1,13 +1,17 @@
 # Code layout
 
-One Go module (`meridian/trellis`), one binary (`cmd/trellis`) with
-subcommands `meshd`, `meshctl`, `webd` and `crda`. Everything else is
-under `internal/`, except `tools/fakemeshd`, a development stand-in for
-`meshd` that serves the API from made-up data (`make ui-dev`),
-`tools/mkdeb`, which builds and signs the Debian packages (`make deb`), and
-`cmd/trellis-deploy`, the program operators run on their own computer to
-install or upgrade many nodes over SSH (`make deploy-tool`; Linux and
-macOS).
+One Go module (`meridian/trellis`). The main binary (`cmd/trellis`) has
+subcommands `meshd`, `meshctl`, `webd` and `crda`, and is static.
+Everything else is under `internal/`, except:
+- `cmd/trellis-voiced`, push-to-talk voice: a binary of its own, because
+  it loads libopus, which links it dynamically (`make static` checks that
+  nothing pulls that into `trellis`);
+- `cmd/trellis-deploy`, the program operators run on their own computer to
+  install or upgrade many nodes over SSH (`make deploy-tool`; Linux and
+  macOS);
+- `tools/fakemeshd`, a development stand-in for `meshd` that serves the API
+  from made-up data (`make ui-dev`);
+- `tools/mkdeb`, which builds and signs the Debian packages (`make deb`).
 
 | Package | What it does | Kernel interface |
 |---|---|---|
@@ -37,10 +41,13 @@ macOS).
 | `api` | API v1 (docs/api.md): the server meshd runs on its unix socket, the request and answer types, and the client meshctl and webd use | — |
 | `status` | The status JSON types (the contract between meshd, meshctl and webd) | — |
 | `qr` | QR code encoder (byte mode, versions 1–40) for the Wi-Fi join code and the profile code; draws as SVG, as rows for the UI, or in a terminal | — |
-| `webd` | The web UI and network API: listeners from systemd, the mesh-only connection guard, TLS certificate, sessions, the proxy to meshd, the live event stream, and the UI's files (`ui/`, built in) | unix socket to meshd |
+| `webd` | The web UI and network API: listeners from systemd, the mesh-only connection guard, TLS certificate, sessions, the proxy to meshd, the live event stream, the voice console's WebSocket (a server of its own, `websocket.go`) passed to voiced, and the UI's files (`ui/`, built in) | unix socket to meshd |
 | `doctor` | Host preflight checks (architecture §6.1) and the paste-able report | sysfs, nl80211, exec |
 | `meshctl` | The CLI | — |
 | `version` | Version strings: releases, builds between them, development builds; the release series two nodes must share; the Debian form | — |
+| `opus` | Opus voice encoder and decoder over the system's libopus, loaded at run time without cgo. A binary that imports it is dynamically linked, so the `trellis` binary does not (for the planned voice service) | dlopen `libopus.so.0` |
+| `rtp` | RTP packets and the RTCP voice uses (sender reports, CNAME, BYE): writing, and parsing what comes from the network | — |
+| `voice` | The push-to-talk engine of `trellis-voiced`: talk groups, two channels, jitter buffer, half-duplex gate, tones, mixing; the multicast transport. `voice/vopus` is its Opus codec, `voice/alsa` its audio (libasound at run time), `voice/devices` finds sound cards in sysfs by identity, `voice/cm108` reads PTT and buttons from CM108 adapters (OpenVLM), `voice/wav` is file audio for the lab, `voice/pttline` serial and GPIO PTT lines and outputs, `voice/wire` the console's framing between webd and voiced; consoles (`console.go`) serve the browser | UDP multicast |
 | `deb` | Writes and reads Debian packages (ar, tar, gzip), and signs them: an Ed25519 signature in a member of the archive that dpkg skips | — |
 | `release` | The release keys a node trusts: built in (`trusted.keys`) and the operator's (`/etc/trellis/release-keys`) | — |
 | `rollout` | A rolling mesh-wide upgrade (being built): the order nodes take a release in, whose turn it is, halting on a rollback; moving packages between nodes, checked by hash | — |

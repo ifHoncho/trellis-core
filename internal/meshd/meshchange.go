@@ -177,6 +177,21 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s %s a version that cannot follow a mesh-wide change: install the profile there by hand, or %s keep the old one.",
 			listAnd(behind), map[bool]string{true: "runs", false: "run"}[len(behind) == 1], map[bool]string{true: "it will", false: "they will"}[len(behind) == 1]))
 	}
+	// A profile with talk groups is not one a release before voice reads
+	// (profiles are read strictly): those nodes refuse the whole change.
+	if len(p.Voice.Groups) > 0 || p.Voice.Bitrate != 0 {
+		var old []string
+		for _, peer := range d.peers.Peers() {
+			if r := peer.Record; meshChangeFromPeer(r) && beforeVoice(r.Version) {
+				old = append(old, r.Callsign)
+			}
+		}
+		if len(old) > 0 {
+			slices.Sort(old)
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-voice-old", "%s %s a release from before voice (0.3.0), which cannot read a profile with talk groups: %s this change and keep the old profile. Upgrade every node first.",
+				listAnd(old), map[bool]string{true: "runs", false: "run"}[len(old) == 1], map[bool]string{true: "it will refuse", false: "they will refuse"}[len(old) == 1]))
+		}
+	}
 	// Nodes heard in the last day but not now (roster.go) will miss it.
 	live := map[string]bool{}
 	for _, peer := range d.peers.Peers() {
@@ -514,11 +529,15 @@ func (d *Daemon) acceptMeshChange(c *meshChange) error {
 	if c.WaitMS == 0 {
 		c.WaitMS = max(0, time.Until(c.ApplyAt)).Milliseconds()
 	}
-	if err := d.saveMeshChange(c); err != nil {
-		return fmt.Errorf("cannot keep the change: %w", err)
-	}
+	// Kept on disk and made current in one step, so that an older change
+	// that is being installed meanwhile cannot remove this one's file
+	// (applyMeshChange).
 	m := &d.meshChanges
 	m.mu.Lock()
+	if err := d.saveMeshChange(c); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot keep the change: %w", err)
+	}
 	m.cur = c
 	if m.timer != nil {
 		m.timer.Stop()
@@ -545,6 +564,9 @@ func (d *Daemon) applyMeshChange(rev uint64) {
 		if err != nil {
 			c.State, c.Error = "failed", err.Error()
 		}
+		// The file is this change's only while it is the current one: a
+		// newer change accepted meanwhile has put its own there.
+		_ = os.Remove(filepath.Join(d.opts.StateDir, meshChangeFile))
 	}
 	m.mu.Unlock()
 	if err != nil {
@@ -552,7 +574,6 @@ func (d *Daemon) applyMeshChange(rev uint64) {
 	} else {
 		d.log.Info("mesh-wide profile change in force", "revision", rev, "from", c.From)
 	}
-	_ = os.Remove(filepath.Join(d.opts.StateDir, meshChangeFile))
 	d.Kick("mesh-wide profile change")
 }
 
