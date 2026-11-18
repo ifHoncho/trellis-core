@@ -206,6 +206,49 @@ type UpgradeCheck struct {
 	Started bool `json:"started"`
 }
 
+// RolloutPackage is a release package kept on this node for a mesh-wide
+// upgrade (POST /upgrade/mesh/package).
+type RolloutPackage struct {
+	SHA256   string `json:"sha256"`
+	Arch     string `json:"arch"`
+	Version  string `json:"version"`
+	Size     int64  `json:"size"`
+	SignedBy string `json:"signed_by"`
+}
+
+// RolloutRequest starts a mesh-wide upgrade with packages kept on this
+// node, named by their SHA-256: one per architecture, all of one version.
+type RolloutRequest struct {
+	Packages []string `json:"packages"`
+	DryRun   bool     `json:"-"`
+}
+
+// RolloutPlan is what a mesh-wide upgrade would do, or does.
+type RolloutPlan struct {
+	Version  string           `json:"version"`
+	Packages []RolloutPackage `json:"packages"`
+	// Nodes: those that take the release, in the order they do, then
+	// those that do not, with why.
+	Nodes []RolloutPlanNode `json:"nodes"`
+	// Warnings: nodes that will miss it, and the like.
+	Warnings []string `json:"warnings,omitempty"`
+	// Started, with the rollout's ID, when not a dry run.
+	Started bool   `json:"started"`
+	ID      string `json:"id,omitempty"`
+}
+
+// RolloutPlanNode is one node in a plan.
+type RolloutPlanNode struct {
+	Position int    `json:"position,omitempty"` // 0: skipped
+	Callsign string `json:"callsign"`
+	NodeID   int    `json:"node_id"`
+	Self     bool   `json:"self,omitempty"`
+	Arch     string `json:"arch,omitempty"`
+	Version  string `json:"version,omitempty"` // what it runs
+	Hops     int    `json:"hops"`              // from this node; -1 unknown
+	Skip     string `json:"skip,omitempty"`    // why it does not take it
+}
+
 // LoginInput is a password to check.
 type LoginInput struct {
 	Password string `json:"password"`

@@ -31,6 +31,19 @@
   every talk group at once, taking over busy groups on Trellis nodes. The
   voice service runs in a sandbox of its own with no access to meshd's
   API. Not yet tested with a headset on a node.
+- **Upgrading the whole mesh from one node:** `meshctl upgrade --mesh
+  FILE.deb…` (one release file per architecture) and Settings → System →
+  Software → "Every node" in the web UI. The plan comes first: the order
+  (farthest node first, this node last) and the nodes left out, with the
+  reason. Each node fetches its package over the mesh, checks it against
+  its own release keys, waits its turn and upgrades with the usual health
+  check and rollback. A node that rolls back halts the rest; `meshctl
+  upgrade --mesh --cancel` stops the nodes that have not started. Nodes
+  with `trellis-voice` are left out for now. The package transfer uses TCP
+  port 7373 on the mesh, which client ports drop like gossip.
+- **trellis-deploy on Windows:** builds for Windows (amd64 and arm64).
+  Password entry, `--setup` (no `ssh-copy-id` needed) and nodes reached
+  through another node work there.
 - **batman-adv:** multicast that batman-adv forwards keeps its priority
   on every hop (a patch in `trellis-batman-adv-dkms`, now 2026.3-2;
   offered upstream). Before, relays sent it as best effort.

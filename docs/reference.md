@@ -70,7 +70,7 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 
 | Option | |
 |---|---|
-| `--setup` | Only put your SSH key on each device it does not log in to yet (`ssh-copy-id` asks for that device's login password); `--ssh-key FILE.pub` chooses the key |
+| `--setup` | Only put your SSH key on each device it does not log in to yet (`ssh-copy-id` asks for that device's login password; on Windows, which has none, `trellis-deploy` sends the key over `ssh` itself); `--ssh-key FILE.pub` chooses the key (default without `ssh-copy-id`: `id_ed25519.pub`, `id_ecdsa.pub` or `id_rsa.pub`) |
 | `--setup --sudo-nopasswd` | Also let the login user use `sudo` without a password: see [below](#passwords-and-sudo) |
 | `--new-mesh NAME --country CC` | Make a new mesh's profile with a fresh secret, in `mesh.yaml` (`--out` for another file; an existing one is never overwritten). `--band 5g` for 5 GHz instead of 2.4 GHz |
 | `--profile FILE` | The mesh profile for devices that have none |
@@ -300,6 +300,38 @@ sudo meshctl upgrade trellis_0.4.0_arm64.deb
   upgrade ended; **Go back** there, or `meshctl upgrade --rollback`,
   returns to the version before (`--restore-config` also puts back the
   configuration from before the upgrade).
+
+## Upgrading the whole mesh from one node
+
+A node can send a release through the mesh: every node that can takes
+it, one at a time, farthest from that node first and that node last. In
+its web UI, Settings → System → **Every node**, choose the `trellis`
+package for each architecture in the mesh; or on the node:
+
+```sh
+meshctl upgrade --mesh trellis_0.4.0_arm64.deb trellis_0.4.0_armhf.deb
+meshctl upgrade --mesh --yes --follow trellis_0.4.0_arm64.deb trellis_0.4.0_armhf.deb
+```
+
+- Without `--yes`, nothing starts: it shows the order, and which nodes are
+  left out and why (no package for their architecture, not installed
+  from the package, a release too old to take part).
+- Each node fetches its package from the sending node over the mesh,
+  checks the signature with its own release keys, then waits for its
+  turn. On its turn it upgrades as `meshctl upgrade` does: health check,
+  and back to the old version by itself if it is not healthy.
+- **The first node that goes back halts the rest,** as does a node that
+  does not move on its turn for 15 minutes. The others keep the release
+  they run.
+- The sending node may go away, or restart: the nodes go on by
+  themselves. A node that was out of reach when it was sent asks another
+  node for it.
+- `meshctl upgrade --mesh` shows the progress, `meshctl status` a line;
+  the overview shows it while it runs. `meshctl upgrade --mesh --cancel`,
+  or **Cancel the upgrade**, on the sending node, stops the nodes that
+  have not begun.
+- A node with `trellis-voice` installed is left out: upgrade it with
+  `trellis-deploy`, which upgrades both packages.
 
 Upgrade every node of a mesh to the same release. Nodes say so under
 Alerts while they differ, with a warning when one is a release series

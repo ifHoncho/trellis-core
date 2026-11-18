@@ -7,7 +7,7 @@
 #   make deploy-test  trellis-deploy against Debian and Ubuntu containers running sshd
 #   make release    dist/release/<version>/: signed packages and checksums (scripts/release.sh)
 #   make publish    the release on GitHub, after checking it (scripts/publish.sh; DRY_RUN=1 to try)
-#   make deploy-tool  dist/trellis-deploy/: trellis-deploy for Linux and macOS (amd64, arm64)
+#   make deploy-tool  dist/trellis-deploy/: trellis-deploy for Linux, macOS and Windows (amd64, arm64)
 #   make test       unit tests (no root)
 #   make lab        lab tests in network namespaces (root, or a user namespace)
 #   make check      gofmt, vet and tests
@@ -15,6 +15,7 @@
 #   make gen        regenerate netlink constants from the kernel headers
 #   make deploy     check, build and update every node in deploy.hosts
 #   make lab-scale  scale lab: 50 nodes, ID convergence and gossip volume (~6 min)
+#   make lab-rollout  rollout lab: a mesh-wide upgrade through 4 nodes (~2 min)
 #   make nodes      show meshctl status from every node in deploy.hosts
 #   make band BAND=2g [CHANNEL=6]   switch mesh-profile.yaml to a band and push it to every node
 #   make profile    push mesh-profile.yaml to every node and apply it live
@@ -33,7 +34,7 @@ ARCHES   = arm64 arm armv6 amd64
 # and tested on these only.
 VOICE_ARCHES = arm64 amd64
 
-.PHONY: static lab-voice all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: static lab-voice lab-rollout all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -102,8 +103,9 @@ publish:
 DEPLOY_TOOL_OUT ?= dist/trellis-deploy
 deploy-tool:
 	@mkdir -p $(DEPLOY_TOOL_OUT)
-	@for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+	@for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
 	  os=$${t%/*}; arch=$${t#*/}; out=$(DEPLOY_TOOL_OUT)/trellis-deploy_$(VERSION)_$${os}_$${arch}; \
+	  if [ $$os = windows ]; then out=$$out.exe; fi; \
 	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(GOFLAGS) -ldflags '-s -w -X main.version=$(VERSION)' -o $$out ./cmd/trellis-deploy || exit 1; \
 	  echo $$out; \
 	done
@@ -136,6 +138,9 @@ lab-scale: build
 
 lab-voice: build
 	./lab/voice.sh
+
+lab-rollout: build
+	./lab/rollout.sh
 
 fmt:
 	@test -z "$$(gofmt -l cmd internal lab tools 2>/dev/null)" || { gofmt -l cmd internal lab tools; echo "run gofmt -w"; exit 1; }

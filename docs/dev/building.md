@@ -61,7 +61,7 @@ sign the next one. Keep the secret file off the network.
    ```
 
    It writes `dist/release/0.4.0/`: the signed packages, `trellis-deploy`
-   for Linux and macOS (`make deploy-tool`), the public key, `SHA256SUMS`
+   for Linux, macOS and Windows (`make deploy-tool`), the public key, `SHA256SUMS`
    over all of them and, with `GPG_KEY`, `SHA256SUMS.asc`. It refuses an
    untagged or modified tree, a version with no changelog section, and a
    key that is not in `trusted.keys`; `ALLOW_DEV=1` and `UNSIGNED=1` make

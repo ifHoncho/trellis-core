@@ -241,6 +241,34 @@ func (c *Client) ProfileExport(ctx context.Context) (*ProfileExport, error) {
 	return &out, nil
 }
 
+// RolloutPackage sends a release package to keep for a mesh-wide upgrade.
+func (c *Client) RolloutPackage(ctx context.Context, pkg []byte) (*RolloutPackage, error) {
+	var out RolloutPackage
+	if err := c.do(ctx, http.MethodPost, "/upgrade/mesh/package", json.RawMessage(pkg), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Rollout plans a mesh-wide upgrade with packages kept before, or starts
+// it.
+func (c *Client) Rollout(ctx context.Context, packages []string, dryRun bool) (*RolloutPlan, error) {
+	var out RolloutPlan
+	path := "/upgrade/mesh"
+	if dryRun {
+		path += "?dry_run=1"
+	}
+	if err := c.do(ctx, http.MethodPost, path, RolloutRequest{Packages: packages}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelRollout calls off the mesh-wide upgrade this node started.
+func (c *Client) CancelRollout(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/upgrade/mesh/cancel", nil, nil)
+}
+
 // Topology fetches the mesh graph.
 func (c *Client) Topology(ctx context.Context) (*status.Topology, error) {
 	var out status.Topology

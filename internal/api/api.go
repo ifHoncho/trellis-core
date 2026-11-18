@@ -54,6 +54,12 @@ type Provider interface {
 	UpgradeState(ctx context.Context) (*UpgradeState, error)
 	Upgrade(ctx context.Context, in UpgradeRequest) (*UpgradeCheck, error)
 	UpgradeRollback(ctx context.Context) error
+	// A mesh-wide upgrade: RolloutPackage keeps a package for one; Rollout
+	// plans one (dry run) or starts it; CancelRollout calls the one this
+	// node started off. Its progress is in the status (rollout).
+	RolloutPackage(ctx context.Context, pkg []byte) (*RolloutPackage, error)
+	Rollout(ctx context.Context, in RolloutRequest) (*RolloutPlan, error)
+	CancelRollout(ctx context.Context) error
 
 	WebInfo() WebInfo
 	// WebLogin checks the admin password. from is where the attempt comes
@@ -181,6 +187,30 @@ func (s *Server) Handler() http.Handler {
 			in.Package = nil // the package kept from the dry run
 		}
 		reply(w, func(r *http.Request) (any, error) { return p.Upgrade(r.Context(), in) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/upgrade/mesh/package", func(w http.ResponseWriter, r *http.Request) {
+		pkg, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxPackage))
+		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeError(w, Errorf(http.StatusRequestEntityTooLarge, "the package is larger than %d MB", MaxPackage>>20))
+			} else {
+				writeError(w, Errorf(http.StatusBadRequest, "the upload did not arrive whole (%v): try again", err))
+			}
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) { return p.RolloutPackage(r.Context(), pkg) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/upgrade/mesh", func(w http.ResponseWriter, r *http.Request) {
+		var in RolloutRequest
+		if !readJSON(w, r, &in) {
+			return
+		}
+		in.DryRun = dryRun(r)
+		reply(w, func(r *http.Request) (any, error) { return p.Rollout(r.Context(), in) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/upgrade/mesh/cancel", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, func(r *http.Request) (any, error) { return map[string]any{"ok": true}, p.CancelRollout(r.Context()) }, r)
 	})
 	mux.HandleFunc("POST /"+Version+"/upgrade/rollback", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, func(r *http.Request) (any, error) { return map[string]any{"ok": true}, p.UpgradeRollback(r.Context()) }, r)

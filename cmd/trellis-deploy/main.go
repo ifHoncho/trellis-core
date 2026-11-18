@@ -73,7 +73,7 @@ func run() int {
 	repo := fs.String("repo", deploy.DefaultRepo, "the GitHub repository releases come from")
 	setup := fs.Bool("setup", false, "only ready the devices for later runs: your SSH key on each one it does not log in to yet (ssh-copy-id asks for that device's password)")
 	sudoNoPass := fs.Bool("sudo-nopasswd", false, "with --setup: also let the login user use sudo without a password, so runs stop asking. Whoever logs in as that user with your key is then root on the device: see docs/reference.md before using it")
-	sshKey := fs.String("ssh-key", "", "with --setup: the public key to install (default: ssh-copy-id's choice)")
+	sshKey := fs.String("ssh-key", "", "with --setup: the public key to install (default: ssh-copy-id's choice; where there is none, as on Windows, id_ed25519.pub, id_ecdsa.pub or id_rsa.pub)")
 	var sshOpts multi
 	fs.Var(&sshOpts, "ssh-option", "an ssh option for every connection, as Name=value (repeatable)")
 	showVersion := fs.Bool("version", false, "print the version")
@@ -504,16 +504,6 @@ func readLine(ctx context.Context) (string, error) {
 	}
 }
 
-func echo(on bool) bool {
-	arg := "-echo"
-	if on {
-		arg = "echo"
-	}
-	c := exec.Command("stty", arg)
-	c.Stdin = os.Stdin
-	return c.Run() == nil
-}
-
 func confirm(ctx context.Context, q string) bool {
 	fmt.Print(q)
 	line, _ := readLine(ctx)
@@ -521,7 +511,7 @@ func confirm(ctx context.Context, q string) bool {
 	return a == "y" || a == "yes"
 }
 
-// secret reads a line without echoing it (stty, on Linux and macOS).
+// secret reads a line without echoing it (echo_*.go).
 func secret(ctx context.Context, prompt string) (string, error) {
 	fmt.Print(prompt)
 	quiet := echo(false)

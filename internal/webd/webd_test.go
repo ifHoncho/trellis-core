@@ -48,6 +48,16 @@ func (n *node) Upgrade(ctx context.Context, in api.UpgradeRequest) (*api.Upgrade
 	return &api.UpgradeCheck{From: "0.3.0", To: "0.3.1"}, nil
 }
 func (n *node) UpgradeRollback(ctx context.Context) error { return nil }
+func (n *node) RolloutPackage(ctx context.Context, pkg []byte) (*api.RolloutPackage, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.pkgLen = len(pkg)
+	return &api.RolloutPackage{SHA256: "ab", Arch: "arm64", Version: "0.3.1"}, nil
+}
+func (n *node) Rollout(ctx context.Context, in api.RolloutRequest) (*api.RolloutPlan, error) {
+	return &api.RolloutPlan{Version: "0.3.1"}, nil
+}
+func (n *node) CancelRollout(ctx context.Context) error { return nil }
 
 func (n *node) Status(ctx context.Context) (*status.Status, error) {
 	return &status.Status{Version: "test", Node: status.Node{Callsign: "n1", NodeID: 7}}, nil

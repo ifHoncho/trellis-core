@@ -311,6 +311,31 @@ The console's browser side is checked with `make ui-dev` (fakemeshd serves
 a made-up console socket) and `FF_FAKE_MEDIA=1 tools/uishot.py`, which
 gives headless Firefox a made-up microphone.
 
+### Rollout (`make lab-rollout`)
+
+`lab/rollout.sh`: 4 nodes in a line, each with `meshd --test-upgrader`
+(a stand-in for the upgrade, driven by files: trusted keys, the version
+installed, how an upgrade ends, how long it takes, whether the node takes
+rollouts). The packages are real, built and signed by `tools/mkdeb` with
+a key made for the run. Node 4 sends them. About 2 min.
+
+- R0 the line forms;
+- R1.1 the plan: farthest first, node 4 last; a node that does not take
+  rollouts left out, with why; nothing starts; R1.2 an unsigned package
+  is refused at the origin;
+- R2 a good release: every node done, every node on it, one at a time in
+  the order (each began after the one before finished), packages
+  fetched over the mesh, node 1 (the origin's rollout messages dropped by
+  nft) asked another node for it, node 2 restarted while it waited and
+  went on from disk;
+- R3 a release that rolls back on node 2 halts nodes 3 and 4;
+- R4 cancel while node 1 upgrades: it finishes, the rest halt; every
+  node shows the same outcome.
+
+The air side's veth ends are set to MTU 1600: meshd raises a mesh port's
+MTU for batman-adv's header, and full-size frames (a package over HTTP)
+would otherwise be dropped there.
+
 ### Scale lab (`make lab-scale`)
 
 `lab/lab.sh --scale` starts 50 nodes (`-n` for another count) with

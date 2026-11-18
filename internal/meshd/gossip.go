@@ -153,6 +153,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 	r.Pos, r.NoPos = d.gossipPosition(time.Now())
 	r.Arch, r.Rollouts, _ = d.rolloutSelfCheck(ctx)
+	r.Rollout = d.rolloutGossip()
 	if d.time != nil {
 		r.Time = d.time.Role()
 	}
@@ -198,7 +199,8 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	for _, p := range d.peers.Peers() {
 		others[p.Record.Callsign] = p.Record.Version
 	}
-	if level, code, msg := releaseDifferences(d.opts.Version, others); code != "" {
+	// While a mesh-wide upgrade is on, its progress says the same.
+	if level, code, msg := releaseDifferences(d.opts.Version, others); code != "" && !d.rolloutActive() {
 		warn(level, code, "%s", msg)
 	}
 
@@ -326,7 +328,8 @@ func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
 		// Link queries and their answers (topology.go), and mesh-wide
 		// profile changes (meshchange.go), share the socket.
 		switch kind := gossip.Kind(buf[:n]); kind {
-		case gossip.QueryMagic, gossip.LinksMagic, gossip.OfferMagic, gossip.AckMagic, gossip.RequestMagic, gossip.SurveyQueryMagic, gossip.SurveyReplyMagic:
+		case gossip.QueryMagic, gossip.LinksMagic, gossip.OfferMagic, gossip.AckMagic, gossip.RequestMagic, gossip.SurveyQueryMagic, gossip.SurveyReplyMagic,
+			gossip.RolloutMagic, gossip.RolloutAskMagic:
 			var err error
 			switch kind {
 			case gossip.QueryMagic:
@@ -343,6 +346,10 @@ func (g *gossipReconciler) receive(c *gossip.Conn, stop chan struct{}) {
 				err = g.d.handleSurveyQuery(key, buf[:n], from)
 			case gossip.SurveyReplyMagic:
 				err = g.d.handleSurveyReply(key, buf[:n])
+			case gossip.RolloutMagic:
+				err = g.d.handleRollout(key, buf[:n])
+			case gossip.RolloutAskMagic:
+				err = g.d.handleRolloutAsk(key, buf[:n], from)
 			}
 			if err != nil {
 				g.mu.Lock()

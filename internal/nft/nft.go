@@ -111,11 +111,15 @@ func (r Ruleset) Render() string {
 	fmt.Fprintf(&b, "\t\ticmpv6 type mld-listener-query counter drop comment %q\n", RuleRogueQuerier)
 	if r.GossipPort != 0 {
 		fmt.Fprintf(&b, "\t\tudp dport %d counter drop comment %q\n", r.GossipPort, RuleGossip)
+		// The same port over TCP serves mesh-wide upgrades' packages.
+		fmt.Fprintf(&b, "\t\ttcp dport %d counter drop comment %q\n", r.GossipPort, RuleGossip)
 	}
 	b.WriteString("\t}\n")
 	if r.GossipPort != 0 && len(r.ClientPorts) > 0 {
 		fmt.Fprintf(&b, "\tchain %s {\n", chainToClient)
 		fmt.Fprintf(&b, "\t\tudp dport %d counter drop comment %q\n", r.GossipPort, RuleGossip)
+		// The same port over TCP serves mesh-wide upgrades' packages.
+		fmt.Fprintf(&b, "\t\ttcp dport %d counter drop comment %q\n", r.GossipPort, RuleGossip)
 		b.WriteString("\t}\n")
 	}
 

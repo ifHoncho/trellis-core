@@ -93,6 +93,7 @@ func runMeshd(args []string) int {
 	voiceSocket := fs.String("voice-socket", "", "trellis-voiced's control socket (default /run/trellis-voice/control.sock)")
 	noHostConfig := fs.Bool("no-host-config", false, "don't write NetworkManager or systemd-networkd configuration on the host, or reload them (for labs, where meshd runs in a namespace of a host it doesn't own)")
 	testPortManager := fs.String("test-port-manager", "", "lab only: replace NetworkManager and systemd-networkd with a stand-in driven by files in this directory")
+	testUpgrader := fs.String("test-upgrader", "", "lab only: replace the upgrade a mesh-wide rollout makes with a stand-in driven by files in this directory")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -110,7 +111,7 @@ func runMeshd(args []string) int {
 	d, err := meshd.New(meshd.Options{
 		Version: version, NodePath: *node, ProfilePath: *profile, StateDir: *stateDir, RunDir: *runDir,
 		Socket: *socket, Log: log, Interval: *interval, NoHostConfig: *noHostConfig, VoiceSocket: *voiceSocket,
-		TestPortManagerDir: *testPortManager,
+		TestPortManagerDir: *testPortManager, TestUpgraderDir: *testUpgrader,
 	})
 	if err != nil {
 		log.Error("meshd cannot start", "err", err)

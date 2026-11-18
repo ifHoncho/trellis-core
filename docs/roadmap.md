@@ -50,7 +50,8 @@ runs and is tested, not a layer of half-built parts.
   if it is not healthy, even when it loses power in the middle. Nodes warn
   when a mesh runs mixed releases.
 - **Deploying from your computer** (0.2.0). `trellis-deploy` installs or
-  upgrades every node in a list over SSH, from Linux or macOS: the release
+  upgrades every node in a list over SSH, from Linux or macOS (Windows
+  next): the release
   checked first, a plan shown before anything is done, new nodes joining
   the mesh at once, upgrades one at a time that stop at the first that
   goes back.

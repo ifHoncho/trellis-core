@@ -106,6 +106,9 @@ type fake struct {
 	// upg is a made-up upgrade (upgrade.go).
 	upg  *fakeUpgrade
 	kept []byte // the package of the last dry run
+	// A made-up mesh-wide upgrade (rollout.go).
+	rollout     *fakeRollout
+	rolloutPkgs map[string]api.RolloutPackage
 }
 
 func newFake(setup bool, password string, links int, bare bool) *fake {
@@ -308,6 +311,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			st.MoreLinks[i].ChannelBusyPct = 30 + rand.IntN(6)
 		}
 	}
+	st.Rollout = f.rolloutStatus(now)
 	if mc := f.meshChange; mc != nil {
 		// The other nodes answer one by one; every node switches at the
 		// moment.

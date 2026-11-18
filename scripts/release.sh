@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a release: dist/release/<version>/ with the signed packages for
-# every architecture, the batman-adv package, trellis-deploy for Linux and
-# macOS, and the checksums of them all.
+# every architecture, the batman-adv package, trellis-deploy for Linux,
+# macOS and Windows, and the checksums of them all.
 #
 #   TRELLIS_RELEASE_KEY=~/keys/trellis-release.key scripts/release.sh
 #

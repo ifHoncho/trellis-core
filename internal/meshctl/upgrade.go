@@ -33,14 +33,24 @@ func cmdUpgrade(client *api.Client, args []string, stdout io.Writer) error {
 	showStatus := fs.Bool("status", false, "show the upgrade under way and how the last one ended")
 	restoreConfig := fs.Bool("restore-config", false, "with --rollback: also put back the configuration and state from before the upgrade, undoing every change made since")
 	dir := fs.String("dir", upgrade.DefaultDir, "where the upgrade keeps its files")
+	mesh := fs.Bool("mesh", false, "upgrade every node of the mesh, one at a time (one package per architecture); without files, show the upgrade under way")
+	yes := fs.Bool("yes", false, "with --mesh: start it (without: only show the plan)")
+	follow := fs.Bool("follow", false, "with --mesh: follow its progress until it is over")
+	cancelMesh := fs.Bool("cancel", false, "with --mesh: call off the mesh-wide upgrade started on this node")
 	fs.Usage = func() {
 		fmt.Fprint(stdout, `usage: meshctl upgrade [flags] FILE.deb
        meshctl upgrade --resume | --rollback [--restore-config] | --status
+       meshctl upgrade --mesh [--yes] [--follow] FILE.deb...
+       meshctl upgrade --mesh [--follow] | --mesh --cancel
 
 Installs a Trellis release and checks the node afterwards: meshd on the new
 version, nothing failing that worked before, a mesh peer back if there was
 one. A node that is not healthy in time goes back to the version and
 configuration it had.
+
+With --mesh, every node of the mesh that can takes the release from this
+node, one at a time: farthest first, this node last. Each checks its own
+health; the first that goes back halts the rest.
 
 `)
 		fs.PrintDefaults()
@@ -53,6 +63,9 @@ configuration it had.
 	}
 	if *showStatus {
 		return upgradeStatus(*dir, stdout)
+	}
+	if *mesh || *cancelMesh {
+		return cmdUpgradeMesh(client, fs.Args(), *yes, *follow, *cancelMesh, stdout)
 	}
 	// Checking a package changes nothing, and needs no root.
 	if os.Geteuid() != 0 && !*check {

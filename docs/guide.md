@@ -10,19 +10,25 @@ Deploy Trellis to a set of devices on your LAN from one machine.
   build on the 32-bit one. Wire the nodes to your LAN: Trellis takes over
   their Wi-Fi radios.
 - **SSH access** to each node as a user with `sudo`.
-- **A Linux or macOS machine** on the same LAN to run `trellis-deploy`
-  from.
+- **A Linux, macOS or Windows machine** on the same LAN to run
+  `trellis-deploy` from (on Windows, with its OpenSSH client, built into
+  Windows 10 and 11).
 
 ## 1. Download trellis-deploy
 
 From the newest [release](https://github.com/ifHoncho/trellis-core/releases),
 download the build for your machine (`linux_amd64`, `linux_arm64`,
-`darwin_arm64` for Apple silicon, `darwin_amd64` for Intel Macs):
+`darwin_arm64` for Apple silicon, `darwin_amd64` for Intel Macs,
+`windows_amd64.exe`, `windows_arm64.exe`):
 
 ```sh
 mv trellis-deploy_* trellis-deploy && chmod +x trellis-deploy
 xattr -d com.apple.quarantine trellis-deploy   # macOS, if downloaded with a browser
 ```
+
+On Windows, rename it `trellis-deploy.exe` and run the steps below in
+PowerShell or a command prompt. Runs are slower there: Windows' OpenSSH
+cannot share one connection between commands.
 
 ## 2. List the nodes
 
@@ -44,8 +50,8 @@ the [reference](reference.md#the-devices-file).
 ./trellis-deploy --setup nodes.txt
 ```
 
-Runs `ssh-copy-id` for each node your key does not log in to yet (each
-asks for that node's password). No key yet: `ssh-keygen -t ed25519`.
+Puts your SSH key on each node it does not log in to yet (with
+`ssh-copy-id` where there is one; each asks for that node's password). No key yet: `ssh-keygen -t ed25519`.
 `sudo` is left as it is: deployments ask for the sudo password where a
 node needs one. To make it password-free instead, see
 [Passwords and sudo](reference.md#passwords-and-sudo) first.
@@ -92,7 +98,9 @@ and use whichever node has an internet uplink. For ATAK, see
   already on the release are left alone.
 - **Upgrade:** run step 5 again when a new release is out. Nodes are
   upgraded one at a time; each checks itself and rolls back on its own if
-  it is not healthy, and the first rollback stops the rest.
+  it is not healthy, and the first rollback stops the rest. From one node
+  instead: Settings → System → **Every node** sends a release through
+  the mesh the same way ([reference.md](reference.md#upgrading-the-whole-mesh-from-one-node)).
 - **Change the mesh** (channels, bands, links): web UI, Settings → Mesh
   profile → **Every node**. Make changes while every node is up.
 - **Firewall:** from your LAN, new nodes answer only SSH and ping (the

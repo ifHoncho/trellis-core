@@ -24,6 +24,7 @@ type fakeProvider struct {
 	identified string
 	pkg        []byte
 	pkgDry     bool
+	rollout    RolloutRequest
 	from       string
 }
 
@@ -37,6 +38,15 @@ func (f *fakeProvider) Upgrade(ctx context.Context, in UpgradeRequest) (*Upgrade
 func (f *fakeProvider) UpgradeRollback(ctx context.Context) error {
 	return Errorf(http.StatusConflict, "there is no upgrade to go back from")
 }
+func (f *fakeProvider) RolloutPackage(ctx context.Context, pkg []byte) (*RolloutPackage, error) {
+	f.pkg = pkg
+	return &RolloutPackage{SHA256: "ab", Arch: "arm64", Version: "0.3.1", Size: int64(len(pkg))}, nil
+}
+func (f *fakeProvider) Rollout(ctx context.Context, in RolloutRequest) (*RolloutPlan, error) {
+	f.rollout = in
+	return &RolloutPlan{Version: "0.3.1", Started: !in.DryRun}, nil
+}
+func (f *fakeProvider) CancelRollout(ctx context.Context) error { return nil }
 
 func (f *fakeProvider) Status(ctx context.Context) (*status.Status, error) {
 	return &status.Status{Version: "test", Node: status.Node{Callsign: "n1", NodeID: 7}}, nil

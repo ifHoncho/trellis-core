@@ -4,6 +4,7 @@ import { state, history, alerts, nameOf, shownWarnings } from '../state.js';
 import { panel, stat, dot, pill, spark, notice, bars } from '../ui.js';
 import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried, clockShort, gnssShort } from '../fmt.js';
 import { topology } from '../topo.js';
+import { rolloutSummary } from './software.js';
 
 // headline is one sentence on the node's state, most serious first.
 export function headline(st) {
@@ -41,6 +42,9 @@ export function overview() {
   const mch = st.mesh_change && st.mesh_change.state === 'pending' ? st.mesh_change : null;
   const change = mch ? [{ level: 'warning', source: 'mesh', code: 'profile change',
     message: `Revision ${mch.revision} of the mesh profile from ${mch.sender ? 'this node' : mch.from}${mch.summary ? ` (${mch.summary})` : ''}: every node switches at ${new Date(mch.apply_at).toLocaleTimeString()}.` }] : [];
+  // So does a mesh-wide upgrade under way.
+  const ro = st.rollout && !st.rollout.ended ? st.rollout : null;
+  if (ro) { const sum = rolloutSummary(ro); change.push({ level: sum.tone, source: 'mesh', code: 'upgrade', message: sum.text }); }
   const notes = [...change, ...alerts(st), ...shownWarnings(st).filter((w) => w.level === 'info')].slice(0, 4);
   const links = meshLinks(st);
 

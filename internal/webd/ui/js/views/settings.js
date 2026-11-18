@@ -7,7 +7,7 @@ import { bandName, since, duration, count, plural, meshLinks, meshRadios, carrie
 import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
 import { channelsSection } from './channels.js';
 import { appearanceSection } from './appearance.js';
-import { softwarePanel } from './software.js';
+import { softwarePanel, meshUpgradePanel } from './software.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
 
 const SECTIONS = [
@@ -394,6 +394,7 @@ function systemSection(d, st) {
         ['meshd', `pid ${st.process.pid} · ${st.process.open_files} files · ${st.process.goroutines} goroutines`],
       ])),
     softwarePanel(st),
+    meshUpgradePanel(st),
     timePanel(st),
     panel('Control loop', { flush: true, meta: st.reconcile.converged ? `settled · pass ${count(st.reconcile.passes)} took ${st.reconcile.last_duration}` : 'still applying changes',
       },

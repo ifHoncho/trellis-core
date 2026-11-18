@@ -33,13 +33,16 @@ type Status struct {
 	// MeshChange is a mesh-wide profile change on its way, or the last one
 	// for a while after it is in force (meshd meshchange.go); nil when none.
 	MeshChange *MeshChange `json:"mesh_change,omitempty"`
-	Ports      []Port      `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
-	Nodes      []MeshNode  `json:"nodes"` // other nodes, from gossip
-	Gossip     Gossip      `json:"gossip"`
-	Reconcile  Reconcile   `json:"reconcile"`
-	Process    Process     `json:"process"`
-	Warnings   []Warning   `json:"warnings"`
-	Setup      Setup       `json:"setup"`
+	// Rollout is a mesh-wide upgrade under way, or the last one for a
+	// while after it ended (meshd rollout.go); nil when none.
+	Rollout   *Rollout   `json:"rollout,omitempty"`
+	Ports     []Port     `json:"ports"` // Ethernet ports and their roles (architecture §7.1)
+	Nodes     []MeshNode `json:"nodes"` // other nodes, from gossip
+	Gossip    Gossip     `json:"gossip"`
+	Reconcile Reconcile  `json:"reconcile"`
+	Process   Process    `json:"process"`
+	Warnings  []Warning  `json:"warnings"`
+	Setup     Setup      `json:"setup"`
 }
 
 // Setup says whether the node still waits to be provisioned. A node with
@@ -706,6 +709,54 @@ type MeshChange struct {
 	// Nodes is where it stands on each other node, on the node that sent
 	// it: "sent" (no answer yet), "has it", or "refused: why".
 	Nodes []MeshChangeNode `json:"nodes,omitempty"`
+}
+
+// Rollout is a mesh-wide upgrade: a release on its way through the mesh,
+// one node at a time.
+type Rollout struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	// Origin is the node the operator gave the release to; Sender: this
+	// node.
+	Origin    string           `json:"origin"`
+	Sender    bool             `json:"sender,omitempty"`
+	Started   time.Time        `json:"started"`
+	Cancelled bool             `json:"cancelled,omitempty"`
+	Ended     *time.Time       `json:"ended,omitempty"`
+	Packages  []RolloutPackage `json:"packages"`
+	// Phase is this node's: fetching, ready, upgrading, done, skipped,
+	// rolled-back, failed or halted; Reason why it skipped, failed or
+	// halted; To the version it installs.
+	Phase  string `json:"phase"`
+	Reason string `json:"reason,omitempty"`
+	To     string `json:"to,omitempty"`
+	// Waiting: whose turn it is while this node is ready, or why it does
+	// not have its package yet while it fetches.
+	Waiting string `json:"waiting,omitempty"`
+	// Nodes in the order they upgrade.
+	Nodes []RolloutNode `json:"nodes"`
+}
+
+// RolloutPackage is the release for one architecture.
+type RolloutPackage struct {
+	Arch   string `json:"arch"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+// RolloutNode is one node's progress in a rollout, as this node last heard
+// it.
+type RolloutNode struct {
+	Position int       `json:"position"`
+	MAC      string    `json:"mac"`
+	Callsign string    `json:"callsign"`
+	NodeID   int       `json:"node_id,omitempty"`
+	Self     bool      `json:"self,omitempty"`
+	Arch     string    `json:"arch,omitempty"`
+	Version  string    `json:"version,omitempty"`
+	Phase    string    `json:"phase,omitempty"` // empty: not heard on it yet
+	Reason   string    `json:"reason,omitempty"`
+	Since    time.Time `json:"since,omitzero"`
 }
 
 // MeshLinkVisit is a channel a mesh link visits to look for the rest of

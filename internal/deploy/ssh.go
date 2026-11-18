@@ -85,17 +85,55 @@ func (s *SSH) args(r Route) []string {
 // options, so the operator's key and the batch settings would not reach
 // it. An operator's own ProxyCommand (--ssh-option) comes first and wins.
 func (s *SSH) proxy(r Route) string {
-	parts := []string{quote(s.Binary)}
+	// ssh runs a ProxyCommand with the system's shell: sh, or cmd.exe on
+	// Windows.
+	q := quote
+	if proxyCmdExe {
+		q = quoteCmd
+	}
+	parts := []string{q(s.Binary)}
 	for _, o := range s.Options {
 		// ssh expands % tokens in a ProxyCommand: the option's own must
 		// reach the inner ssh as they were written.
-		parts = append(parts, "-o", quote(strings.ReplaceAll(o, "%", "%%")))
+		parts = append(parts, "-o", q(strings.ReplaceAll(o, "%", "%%")))
 	}
 	parts = append(parts, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10")
 	if r.ViaPort != 0 {
 		parts = append(parts, "-p", fmt.Sprint(r.ViaPort))
 	}
-	return strings.Join(append(parts, "-W", "%h:%p", quote(r.Via)), " ")
+	return strings.Join(append(parts, "-W", "%h:%p", q(r.Via)), " ")
+}
+
+// proxyCmdExe: ssh runs a ProxyCommand with cmd.exe (Windows' OpenSSH).
+var proxyCmdExe = runtime.GOOS == "windows"
+
+// quoteCmd makes s one argument on a cmd.exe command line, as Windows
+// programs split it: in double quotes, a quote inside escaped with a
+// backslash.
+func quoteCmd(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\"&|<>^()") {
+		return s
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	slashes := 0
+	for _, c := range s {
+		switch c {
+		case '\\':
+			slashes++
+			continue
+		case '"':
+			b.WriteString(strings.Repeat(`\`, 2*slashes+1))
+			b.WriteByte('"')
+		default:
+			b.WriteString(strings.Repeat(`\`, slashes))
+			b.WriteRune(c)
+		}
+		slashes = 0
+	}
+	b.WriteString(strings.Repeat(`\`, 2*slashes))
+	b.WriteByte('"')
+	return b.String()
 }
 
 // Run runs a shell command on the node, with stdin, writing its output to

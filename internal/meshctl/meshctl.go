@@ -204,6 +204,9 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	if mc := st.MeshChange; mc != nil {
 		fmt.Fprintf(w, "mesh change: %s\n", meshChangeLine(mc, time.Now()))
 	}
+	if r := st.Rollout; r != nil {
+		fmt.Fprintf(w, "mesh upgrade: %s\n", rolloutLine(r))
+	}
 	if st.GNSS.Receiver {
 		fmt.Fprintf(w, "gnss: %s\n", gnssLine(st.GNSS))
 	}

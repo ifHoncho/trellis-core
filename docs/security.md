@@ -58,6 +58,10 @@ stops the radio.
   mesh prefix). meshd's own sockets (gossip, link queries) are on the
   mesh bridge, and **client ports drop the gossip port in both
   directions**, so a device can neither read nor inject control data.
+  The same port over TCP serves a mesh-wide upgrade's packages while one
+  is on (to node addresses known in gossip only); client ports drop it
+  too. A package is named by its SHA-256 and checked against it, and
+  each node checks its signature with its own release keys.
 - **Rogue services** from a device are contained to its port: DHCP-server
   replies, router advertisements and IGMP queries arriving from client
   ports are dropped.
@@ -125,6 +129,13 @@ shared. What limits a buggy or hostile member:
   When two parts of a mesh changed it apart, the change that took effect
   later is kept; a member can date its change ahead to win, which gives it
   nothing it could not already do by sending a change.
+- **Mesh-wide upgrades** come from any member too, but carry nothing a
+  node trusts on the member's word: each node installs a package only if
+  it is signed by a release key that node trusts and is newer than the
+  one installed, as `meshctl upgrade` does. A hostile member can start,
+  stall (a node that does not move on its turn halts the rest after 15
+  minutes) or cancel one, and send a node an older signed release that is
+  still newer than what it runs.
 - **What remains:** a captured node holds the mesh secret, and with it
   everything above: it can join, route, read the traffic it routes, and
   push mesh-wide changes (other links, other channels, unrestricted

@@ -47,7 +47,7 @@ func TestParseCounters(t *testing.T) {
 
 func TestGossipFilterAndRouting(t *testing.T) {
 	out := Ruleset{MeshPort: "bat0", ClientPorts: []string{"ap0"}, AnycastIP: "10.73.0.1", AnycastMAC: "02:74:72:65:6c:01", GossipPort: 7373}.Render()
-	for _, want := range []string{`udp dport 7373 counter drop comment "gossip-to-from-clients"`, `oifname { "ap0" } jump to_clients`} {
+	for _, want := range []string{`udp dport 7373 counter drop comment "gossip-to-from-clients"`, `tcp dport 7373 counter drop comment "gossip-to-from-clients"`, `oifname { "ap0" } jump to_clients`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
 		}

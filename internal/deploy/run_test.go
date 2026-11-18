@@ -609,3 +609,22 @@ func TestRunVoice(t *testing.T) {
 		t.Error("--voice did not install it")
 	}
 }
+
+// On Windows, ssh runs the jump through cmd.exe: arguments in double
+// quotes, as Windows programs split them.
+func TestProxyOnWindows(t *testing.T) {
+	was := proxyCmdExe
+	proxyCmdExe = true
+	defer func() { proxyCmdExe = was }()
+	s := &SSH{Binary: "ssh", Options: []string{`IdentityFile=C:\Users\op\.ssh\my key`, "ProxyJump=none"}}
+	a := strings.Join(s.args(Route{Target: "b@10.73.2.1", Via: "a@192.0.2.1", Alias: "192.0.2.2"}), " ")
+	want := `ProxyCommand=ssh -o "IdentityFile=C:\Users\op\.ssh\my key" -o ProxyJump=none -o BatchMode=yes`
+	if !strings.Contains(a, want) {
+		t.Errorf("%q not in %s", want, a)
+	}
+	for in, out := range map[string]string{`a"b`: `"a\"b"`, `C:\x y\`: `"C:\x y\\"`, "plain": "plain", "": `""`} {
+		if got := quoteCmd(in); got != out {
+			t.Errorf("quoteCmd(%q) = %s, want %s", in, got, out)
+		}
+	}
+}

@@ -7,8 +7,8 @@ Everything else is under `internal/`, except:
   it loads libopus, which links it dynamically (`make static` checks that
   nothing pulls that into `trellis`);
 - `cmd/trellis-deploy`, the program operators run on their own computer to
-  install or upgrade many nodes over SSH (`make deploy-tool`; Linux and
-  macOS);
+  install or upgrade many nodes over SSH (`make deploy-tool`; Linux, macOS
+  and Windows);
 - `tools/fakemeshd`, a development stand-in for `meshd` that serves the API
   from made-up data (`make ui-dev`);
 - `tools/mkdeb`, which builds and signs the Debian packages (`make deb`).
@@ -50,7 +50,7 @@ Everything else is under `internal/`, except:
 | `voice` | The push-to-talk engine of `trellis-voiced`: talk groups, two channels, jitter buffer, half-duplex gate, tones, mixing; the multicast transport. `voice/vopus` is its Opus codec, `voice/alsa` its audio (libasound at run time), `voice/devices` finds sound cards in sysfs by identity, `voice/cm108` reads PTT and buttons from CM108 adapters (OpenVLM), `voice/wav` is file audio for the lab, `voice/pttline` serial and GPIO PTT lines and outputs, `voice/wire` the console's framing between webd and voiced; consoles (`console.go`) serve the browser | UDP multicast |
 | `deb` | Writes and reads Debian packages (ar, tar, gzip), and signs them: an Ed25519 signature in a member of the archive that dpkg skips | — |
 | `release` | The release keys a node trusts: built in (`trusted.keys`) and the operator's (`/etc/trellis/release-keys`) | — |
-| `rollout` | A rolling mesh-wide upgrade (being built): the order nodes take a release in, whose turn it is, halting on a rollback; moving packages between nodes, checked by hash | — |
+| `rollout` | A rolling mesh-wide upgrade: the order nodes take a release in, whose turn it is, halting on a rollback; moving packages between nodes, checked by hash. meshd's side: `rollout.go` (this node's part, sending and asking, the package server), `rollout_api.go` (the origin), `rollout_upgrader.go` (the real upgrade and the lab's stand-in) | — |
 | `deploy` | `trellis-deploy`: the hosts file, fetching a release from GitHub and checking it (checksums, signatures against the built-in keys), looking at each node, the plan, and the run (installs in parallel, upgrades one at a time, reboots, a dropped connection); the system's `ssh` runs it all | exec `ssh` |
 | `prepare` | `meshctl prepare`: what a node's system needs once the packages are in (the pinned batman-adv, mt7915e, driver options, regulatory rules), through the package's scripts; reports a needed reboot in `/run/reboot-required` | exec `modprobe`, `systemctl`, the scripts |
 | `upgrade` | An upgrade that goes back: check, keep the running version and configuration, install, health check, rollback, resume after a power loss; started detached (`trellis-upgrade-run`) by `meshctl` and by meshd's API alike | exec `dpkg`, `systemctl`, `systemd-run`; meshd's API |
@@ -126,6 +126,8 @@ restoring the kernel's wlan interface on radios Trellis took over.
 | `/run/trellis/dnsmasq.conf` | generated dnsmasq config |
 | `/var/lib/trellis/radios.yaml` | radio memory: kernel interface names, last roles |
 | `/var/lib/trellis/mesh-change.json` | a mesh-wide profile change waiting for its moment (0600: it holds the mesh secret) |
+| `/var/lib/trellis/rollout.json` | the mesh-wide upgrade this node takes part in, and its phase (kept across the restart its own upgrade makes) |
+| `/var/lib/trellis/upgrade/releases/` | a mesh-wide upgrade's packages, by SHA-256, until it is over (0700) |
 | `/var/lib/trellis/known-nodes.json` | the other nodes heard in the last day, with ages (finding the mesh again) |
 | `/var/lib/trellis/profile-dropped.yaml` | the profile dropped when two parts of the mesh had changed it apart (0600) |
 | `/run/trellis/meshd.sock` | API socket |

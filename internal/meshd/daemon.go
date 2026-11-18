@@ -68,6 +68,10 @@ type Options struct {
 	// VoiceSocket is trellis-voiced's control socket; default
 	// /run/trellis-voice/control.sock.
 	VoiceSocket string
+	// TestUpgraderDir replaces the upgrade a mesh-wide rollout makes with a
+	// stand-in driven by files in this directory (rollout_upgrader.go,
+	// labUpgrader), so the namespace lab can test rollouts.
+	TestUpgraderDir string
 }
 
 // Daemon is one meshd instance.
@@ -129,6 +133,7 @@ type Daemon struct {
 	positions   positionsState // node positions on the ATAK map (positions.go)
 	peers       *gossip.Table
 	rolloutSelf rolloutSelf
+	rollouts    rolloutState // mesh-wide upgrades (rollout.go)
 }
 
 // New loads configuration and prepares the daemon. It does not touch the
@@ -392,7 +397,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d})
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d})
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -403,6 +408,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	go d.handleSignals(ctx, cancel)
 	go d.gnss.Run(ctx)
 	d.loadMeshChange()
+	d.loadRollout()
 	d.loadRoster()
 
 	serveErr := make(chan error, 1)
@@ -590,6 +596,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	st.GNSS = gnssStatus(d.gnss, time.Now())
 	st.Positions = d.positions.status()
 	st.MeshChange = d.meshChangeStatus()
+	st.Rollout = d.rolloutStatus()
 	for i := range 1 + len(st.MoreLinks) {
 		ml := &st.MeshLink
 		if i > 0 {

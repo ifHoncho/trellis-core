@@ -263,7 +263,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// A release package is the one large request (megabytes, slow over a
 	// mesh): it may be bigger, and take longer.
 	limit, wait := int64(maxRequest), 25*time.Second
-	if r.Method == http.MethodPost && path == "/upgrade" {
+	if r.Method == http.MethodPost && (path == "/upgrade" || path == "/upgrade/mesh/package") {
 		limit, wait = api.MaxPackage, 2*time.Minute
 		// Past the server's read and write timeouts: megabytes over a slow
 		// mesh link, then meshd's check of the package.

@@ -7,7 +7,7 @@
 import { h } from '../dom.js';
 import { get, post, upload } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
-import { panel, button, kv, notice, icon } from '../ui.js';
+import { panel, button, kv, notice, icon, table, pill } from '../ui.js';
 import { since } from '../fmt.js';
 
 const POLL_MS = 2000;
@@ -177,4 +177,151 @@ export function softwarePanel(st) {
   }
   tools.push(button('', () => { s.error = null; refresh(); }, 'small', { icon: 'refresh', title: 'Ask again' }));
   return panel('Software', { meta: u && u.package ? 'from a package' : '', tools }, body);
+}
+
+// Every node: a mesh-wide upgrade from this node. The operator gives it
+// one release file per architecture in the mesh; the node shows the plan
+// (the order, farthest first and itself last, and who is left out and
+// why), then sends the release through the mesh. Each node upgrades in
+// turn and checks its own health; the first that goes back halts the
+// rest. Progress comes with the live status (st.rollout).
+
+function msw() {
+  return (state.ui.meshUpgrade ||= { pkgs: [], plan: null, busy: '', error: null });
+}
+
+async function addFiles(files) {
+  const m = msw();
+  m.error = null; m.plan = null;
+  for (const f of files) {
+    m.busy = `Sending ${f.name} to this node…`; redraw();
+    try {
+      const p = await upload('/upgrade/mesh/package', f);
+      m.pkgs = m.pkgs.filter((k) => k.arch !== p.arch).concat([{ ...p, name: f.name }]);
+    } catch (e) {
+      m.error = `${f.name}: ${e.message}`;
+    }
+  }
+  await plan();
+}
+
+async function plan() {
+  const m = msw();
+  if (!m.pkgs.length) { m.busy = ''; redraw(); return; }
+  m.busy = 'Asking the mesh…'; redraw();
+  try {
+    m.plan = await post('/upgrade/mesh?dry_run=1', { packages: m.pkgs.map((p) => p.sha256) });
+  } catch (e) {
+    m.plan = null;
+    m.error = e.message;
+  }
+  m.busy = ''; redraw();
+}
+
+async function startRollout() {
+  const m = msw();
+  m.busy = 'Starting…'; m.error = null; redraw();
+  try {
+    await post('/upgrade/mesh', { packages: m.pkgs.map((p) => p.sha256) });
+    m.pkgs = []; m.plan = null;
+    toast('The mesh-wide upgrade has started.', 'ok', 6000);
+  } catch (e) {
+    m.error = e.message;
+  }
+  m.busy = ''; redraw();
+}
+
+function cancelRollout(r) {
+  openDialog({
+    title: `Cancel the upgrade to ${r.version}?`,
+    body: () => [h('p', 'Nodes that have not begun upgrading stop and keep the release they run. A node upgrading now finishes, and goes back by itself if it is not healthy.')],
+    actions: [
+      { label: 'Keep going', run: closeDialog },
+      { label: 'Cancel the upgrade', kind: 'danger', run: async () => {
+        closeDialog();
+        try { await post('/upgrade/mesh/cancel'); toast('Cancelled.', 'ok', 5000); } catch (e) { toast(e.message, 'bad', 8000); }
+      } },
+    ],
+  });
+}
+
+const PHASE_TONE = { done: 'ok', upgrading: 'solid', 'rolled-back': 'bad', failed: 'bad', halted: 'warn', skipped: 'plain', ready: 'plain', fetching: 'plain' };
+const PHASE_TEXT = { fetching: 'getting its package', ready: 'ready', upgrading: 'upgrading', done: 'done', skipped: 'skipped', 'rolled-back': 'went back', failed: 'failed', halted: 'halted' };
+
+// rolloutSummary says where a rollout stands, in one line, with a tone.
+export function rolloutSummary(r) {
+  const nodes = r.nodes || [];
+  const done = nodes.filter((n) => n.phase === 'done').length;
+  const stop = nodes.find((n) => n.phase === 'rolled-back' || n.phase === 'failed');
+  const up = nodes.find((n) => n.phase === 'upgrading');
+  const from = r.sender ? 'this node' : r.origin;
+  if (stop) return { tone: 'error', text: `Upgrade to ${r.version} from ${from} halted: ${stop.callsign} ${stop.phase === 'failed' ? 'failed' : 'went back'}${stop.reason ? ` (${stop.reason})` : ''}. ${done} of ${nodes.length} upgraded.` };
+  if (r.cancelled) return { tone: 'warning', text: `Upgrade to ${r.version} from ${from} cancelled. ${done} of ${nodes.length} upgraded${up ? `; ${up.callsign} is finishing` : ''}.` };
+  if (r.ended) return { tone: 'ok', text: `Upgrade to ${r.version} from ${from} is over: ${done} of ${nodes.length} upgraded.` };
+  return { tone: 'warning', text: `Upgrading the mesh to ${r.version} from ${from}: ${done} of ${nodes.length} done${up ? `; ${up.callsign} upgrading now` : ''}.` };
+}
+
+function progress(r) {
+  const sum = rolloutSummary(r);
+  return [
+    notice({ level: sum.tone, message: sum.text }),
+    h('div', { style: { marginTop: '12px' } }, table({ stack: true, key: (n) => n.mac + n.position }, [
+      { title: '#', cls: 'num', cell: (n) => String(n.position) },
+      { title: 'Node', cell: (n) => h('span', { style: { whiteSpace: 'nowrap' } }, h('span.mono', n.callsign), n.self ? h('span.faint', ' · this node') : null) },
+      { title: 'State', cell: (n) => n.phase ? pill(PHASE_TEXT[n.phase] || n.phase, PHASE_TONE[n.phase] || 'plain') : h('span.faint', 'not heard yet') },
+      { title: 'Detail', cell: (n) => {
+        if (n.reason) return h('span.dim', n.reason);
+        if (n.self && r.waiting && (n.phase === 'ready' || n.phase === 'fetching')) return h('span.faint', r.waiting);
+        if (n.phase && n.since) return h('span.faint', `for ${since(n.since)}`);
+        return null;
+      } },
+    ], r.nodes || [])),
+  ];
+}
+
+function planView(m) {
+  const p = m.plan;
+  const order = p.nodes.filter((n) => n.position);
+  const out = order.length;
+  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' } },
+    h('p', h('strong', `Release ${p.version}`), h('span.faint', '  ·  ' + p.packages.map((k) => `${k.arch}, signed by ${k.signed_by}`).join('  ·  '))),
+    table({ stack: true, key: (n) => `${n.node_id}-${n.callsign}` }, [
+      { title: '#', cls: 'num', cell: (n) => (n.position ? String(n.position) : '–') },
+      { title: 'Node', cell: (n) => h('span', { style: { whiteSpace: 'nowrap' } }, h('span.mono', n.callsign), n.self ? h('span.faint', ' · this node') : null) },
+      { title: 'Runs', cell: (n) => h('span.mono', n.version || '–') },
+      { title: 'Arch', cell: (n) => n.arch || '–' },
+      { title: 'Hops', cls: 'num', cell: (n) => (n.hops >= 0 ? String(n.hops) : '?') },
+      { title: '', cell: (n) => (n.skip ? h('span.dim', 'left out: ' + n.skip) : pill('upgrades', 'plain')) },
+    ], p.nodes),
+    ...(p.warnings || []).map((w) => notice({ level: 'warning', message: w })),
+    h('p.dim', { style: { fontSize: '14px' } },
+      'One node at a time, farthest from this one first and this node last: each installs the release, restarts on it and checks its own health, and goes back by itself if it is not healthy. The first node that goes back halts the rest. A node’s links drop for a minute while it restarts.'),
+    h('div.row',
+      button(m.busy || `Upgrade ${out} ${out === 1 ? 'node' : 'nodes'} to ${p.version}`, startRollout, 'primary', { disabled: !!m.busy || !out }),
+      button('Cancel', () => { m.pkgs = []; m.plan = null; m.error = null; redraw(); }, '', { disabled: !!m.busy })));
+}
+
+export function meshUpgradePanel(st) {
+  const m = msw();
+  const r = st.rollout;
+  const running = r && !r.ended && !r.cancelled;
+  const body = [];
+  const tools = [];
+  if (r) body.push(...progress(r));
+  if (r && r.sender && !r.ended && !r.cancelled) tools.push(button('Cancel the upgrade', () => cancelRollout(r), 'small'));
+  if (m.error) body.push(h('div', { style: { marginTop: '12px' } }, notice({ level: 'error', message: sentence(m.error) })));
+  if (!running) {
+    if (m.plan) {
+      body.push(planView(m));
+    } else {
+      const others = (st.nodes || []).length;
+      body.push(h('div.row', { style: { marginTop: '12px', alignItems: 'center' } },
+        h('label.btn', { class: m.busy ? 'disabled' : '' }, icon('download'), m.busy || 'Choose release files',
+          h('input', { type: 'file', multiple: true, accept: '.deb,application/vnd.debian.binary-package', hidden: true, disabled: !!m.busy,
+            onchange: (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) addFiles(fs); } })),
+        h('span.faint', { style: { fontSize: '14px' } },
+          `The trellis package for each architecture in the mesh (${others} other ${others === 1 ? 'node' : 'nodes'} known), signed by a release key this node trusts. Nothing starts before you see the plan and confirm.`)));
+    }
+  }
+  return panel('Every node', { meta: r ? `rollout ${r.id}` : 'upgrade the whole mesh', tools }, body);
 }
