@@ -210,3 +210,47 @@ func TestRequestNak(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNak", err)
 	}
 }
+
+// A server on the uplink is not trusted: its lease must make sense before
+// it becomes an address and routes.
+func TestLeaseBounds(t *testing.T) {
+	c := &Client{MAC: clientMAC}
+	ack := func(ip net.IP, mask []byte, secs time.Duration) *Packet {
+		p := c.base(Ack, 1)
+		p.YIAddr = ip.To4()
+		if mask != nil {
+			p.Options[optSubnetMask] = mask
+		}
+		if secs > 0 {
+			p.Options[optLeaseTime] = leaseSeconds(secs)
+		}
+		return p
+	}
+	now := time.Unix(1e9, 0)
+	for name, p := range map[string]*Packet{
+		"mask /0":           ack(net.IPv4(192, 168, 1, 5), []byte{0, 0, 0, 0}, time.Hour),
+		"mask /4":           ack(net.IPv4(192, 168, 1, 5), []byte{240, 0, 0, 0}, time.Hour),
+		"non-contiguous":    ack(net.IPv4(192, 168, 1, 5), []byte{255, 0, 255, 0}, time.Hour),
+		"multicast address": ack(net.IPv4(224, 0, 0, 5), []byte{255, 255, 255, 0}, time.Hour),
+		"broadcast address": ack(net.IPv4bcast, []byte{255, 255, 255, 0}, time.Hour),
+		"loopback address":  ack(net.IPv4(127, 0, 0, 2), []byte{255, 0, 0, 0}, time.Hour),
+	} {
+		if l, err := leaseFrom(p, clientMAC, now); err == nil {
+			t.Errorf("%s accepted: %+v", name, l)
+		}
+	}
+	// A short lease is kept as granted (renewed at half), never stretched
+	// past what the server gave; one too short to keep is refused.
+	if l, err := leaseFrom(ack(net.IPv4(192, 168, 1, 5), []byte{255, 255, 255, 0}, 30*time.Second), clientMAC, now); err != nil || l.Duration != 30*time.Second || l.T1 != 15*time.Second {
+		t.Errorf("a 30 s lease: %+v %v", l, err)
+	}
+	if l, err := leaseFrom(ack(net.IPv4(192, 168, 1, 5), []byte{255, 255, 255, 0}, time.Second), clientMAC, now); err == nil {
+		t.Errorf("a 1 s lease accepted: %+v", l)
+	}
+	if l, err := leaseFrom(ack(net.IPv4(10, 1, 2, 3), []byte{255, 0, 0, 0}, time.Hour), clientMAC, now); err != nil || l.Duration != time.Hour {
+		t.Errorf("an ordinary /8 lease refused: %v", err)
+	}
+	if l, err := leaseFrom(ack(net.IPv4(100, 64, 0, 9), nil, 0), clientMAC, now); err != nil || l.Duration != time.Hour {
+		t.Errorf("a lease with no mask or time: %+v %v", l, err)
+	}
+}

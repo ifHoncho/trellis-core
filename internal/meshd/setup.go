@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/nodestate"
 )
 
@@ -54,7 +55,7 @@ func setupProfile(stateDir string) (*config.Profile, error) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := fsutil.WriteFile(path, data, 0o600); err != nil {
 		return nil, err
 	}
 	return p, nil

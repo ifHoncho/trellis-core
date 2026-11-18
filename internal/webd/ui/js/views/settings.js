@@ -292,7 +292,10 @@ function accessSection(d, st) {
   ];
 }
 
-// firewallPanel: what the node takes from outside the mesh (firewall.*).
+// firewallPanel: the node's firewall towards everything that is not the
+// mesh (firewall.*; nft.Input in internal/nft, table inet trellis_fw).
+// Trusted interfaces are never filtered; the rules apply to the rest.
+const FW_TRUSTED = 'lo, br-mesh, anycast0';
 function firewallPanel(d, st) {
   const fw = (d.firewall ||= { wan: 'open' });
   const closed = fw.wan === 'closed';
@@ -303,18 +306,37 @@ function firewallPanel(d, st) {
     fw.allow = list.length ? list : null;
     redraw();
   };
-  const now = g.firewall === 'closed'
-    ? h('span', h('span.ok', 'closed'), h('span.faint', `  ·  open: ${(g.firewall_open || []).join(' ') || 'nothing but replies, ICMP and DHCP'}  ·  ${count(g.firewall_dropped || 0)} packets turned away`))
-    : h('span.warn', 'open: every service the system runs answers from outside the mesh');
-  return panel('From outside the mesh', { meta: 'firewall' },
+  // What the rules accept as the form stands (inputPolicy in r_firewall.go).
+  const accepts = [...new Set([
+    ...(fw.ssh !== false ? ['tcp/22'] : []),
+    ...(d.web.wan_access ? ['tcp/80', 'tcp/443'] : []),
+    ...(fw.allow || []),
+  ])];
+  const now = {
+    closed: h('span', h('span.ok', 'closed'),
+      h('span.faint', `  ·  accepting ${(g.firewall_open || []).join(' ') || 'no ports'}  ·  ${count(g.firewall_dropped || 0)} dropped`)),
+    failed: h('span.bad', 'set to closed, but the rules could not be applied: the node is open (see Alerts)'),
+  }[g.firewall] || h('span', h('span.warn', 'open'), h('span.faint', '  ·  no Trellis rules; the host’s own firewall, if any, applies'));
+  return panel('Firewall', { meta: 'nftables · inet trellis_fw' },
     h('div.form',
-      kv([['Now', now]]),
-      toggle('Closed to everything but the mesh', 'On: from the uplink network and any other interface that is not the mesh, the node takes only replies to its own traffic, ICMP, DHCP, and the ports below. The mesh, this node’s Wi-Fi and device ports, and the internet it shares are not affected.',
+      kv([
+        ['Now', now],
+        ['Trusted', h('span', h('span.mono', FW_TRUSTED), h('span.faint', '  ·  the mesh, this node’s Wi-Fi and device ports: never filtered'))],
+        ['Filtered', h('span.faint', 'every other interface: the uplink, and any VPN, container or other link on the host')],
+      ]),
+      toggle('Drop new connections from filtered interfaces', [
+        ['Input', 'accept established and related, ICMP and ICMPv6, DHCP replies (udp/68, udp/546) and the ports below; drop the rest.'],
+        ['Forward', 'drop new connections from filtered interfaces into the mesh; your own DNAT port forwards still pass. Traffic leaving the mesh, including the internet this node shares, is not touched.'],
+        ['Off', 'Trellis installs no rules.'],
+      ].map(([k, v]) => h('span', { style: { display: 'block' } }, h('b', k), ': ', v)),
         closed, (v) => { fw.wan = v ? 'closed' : 'open'; redraw(); }),
-      closed ? toggle('SSH stays open', 'Port 22, for whoever manages the node from its uplink network.', fw.ssh !== false,
+      closed ? toggle('Accept SSH (tcp/22)', 'For managing the node from its uplink network.', fw.ssh !== false,
         (v) => { fw.ssh = v ? null : false; redraw(); }) : null,
-      closed ? field('Further open ports', h('input.input', { value: ports, placeholder: 'tcp/5201 udp/51820', spellcheck: false,
-        onchange: (e) => setPorts(e.target.value) }), { hint: 'tcp/PORT or udp/PORT, separated by spaces. The web UI’s ports open by themselves when it answers on the uplink network.' }) : null));
+      closed ? field('Also accept', h('input.input', { value: ports, placeholder: 'tcp/5201 udp/51820', spellcheck: false,
+        onchange: (e) => setPorts(e.target.value) }), { hint: 'tcp/PORT or udp/PORT, separated by spaces. tcp/80 and tcp/443 are added while “Also on the node’s uplink network” is on, above.' }) : null,
+      closed ? kv([['Will accept', accepts.length
+        ? h('span', h('span.mono', accepts.join(' ')), h('span.faint', '  ·  plus replies, ICMP, DHCP'))
+        : h('span.faint', 'replies, ICMP and DHCP only')]]) : null));
 }
 
 // timePanel: how the node keeps time, and its GNSS receiver.

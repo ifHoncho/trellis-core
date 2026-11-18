@@ -19,6 +19,7 @@ import (
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/gossip"
 	"meridian/trellis/internal/nft"
+	"meridian/trellis/internal/nodestate"
 	"meridian/trellis/internal/probe"
 	"meridian/trellis/internal/proc"
 	"meridian/trellis/internal/reconcile"
@@ -98,6 +99,8 @@ type gwChoice struct {
 	Callsign string
 	Addr     string
 	Tput     float64 // Mbit/s, batman-adv's path estimate
+	idSource string  // how it got its node ID (gossip), for sharing conflicts
+	cand     int     // its index in the candidate list
 }
 
 func (c *gwChoice) key() string {
@@ -140,6 +143,7 @@ type gatewayReconciler struct {
 	gwModeSet string
 	fwdOrig   string
 	monStop   chan struct{}
+	monWG     sync.WaitGroup // the monitor and watchReach goroutines
 	stdWarned bool
 
 	reachMu   sync.Mutex
@@ -216,8 +220,6 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	// batman-adv gateway mode: announce while healthy, else be a client.
 	if err := g.ensureGWMode(batIndex, healthy, cfg); err != nil {
 		warn("warning", "gateway-mode", "cannot set the batman-adv gateway mode: %v", err)
-	} else {
-		res.Changed = res.Changed || false
 	}
 
 	// Choose, then apply.
@@ -562,10 +564,11 @@ func (g *gatewayReconciler) candidates(batIndex int) ([]status.GatewayCandidate,
 		if c.Why == "" {
 			c.Usable = true
 			usable = append(usable, &gwChoice{MAC: strings.ToLower(peer.Record.MAC), Orig: orig, ID: peer.Record.ID, Callsign: peer.Record.Callsign,
-				Addr: peer.Record.Addr, Tput: c.ThroughputMbps})
+				Addr: peer.Record.Addr, Tput: c.ThroughputMbps, idSource: peer.Record.IDSource, cand: len(out)})
 		}
 		out = append(out, c)
 	}
+	usable = dropSharedIDs(usable, out, d.identity())
 	sort.SliceStable(usable, func(i, j int) bool {
 		if usable[i].Tput != usable[j].Tput {
 			return usable[i].Tput > usable[j].Tput
@@ -573,6 +576,45 @@ func (g *gatewayReconciler) candidates(batIndex int) ([]status.GatewayCandidate,
 		return usable[i].ID < usable[j].ID
 	})
 	return out, usable
+}
+
+// dropSharedIDs keeps one gateway per node ID. A gateway's routing table
+// and connection mark come from its node ID, so two that share one (before
+// gossip settles the conflict, architecture §7.3) would take turns in one
+// table and pin each other's connections. The one that keeps the ID, by
+// the rule both nodes apply, stays usable; a gateway with this node's own
+// ID is left out while the conflict lasts. The candidates say why.
+func dropSharedIDs(usable []*gwChoice, cands []status.GatewayCandidate, me *nodestate.Identity) []*gwChoice {
+	byID := map[int]*gwChoice{}
+	drop := map[*gwChoice]string{}
+	for _, u := range usable {
+		if me != nil && u.ID == me.NodeID {
+			drop[u] = fmt.Sprintf("it uses this node's ID %d; not used until the conflict is settled", u.ID)
+			continue
+		}
+		other := byID[u.ID]
+		switch {
+		case other == nil:
+			byID[u.ID] = u
+		case nodestate.KeepsID(u.idSource, u.MAC, other.idSource, other.MAC):
+			drop[other] = fmt.Sprintf("it shares node ID %d with %s; not used until the conflict is settled", u.ID, u.Callsign)
+			byID[u.ID] = u
+		default:
+			drop[u] = fmt.Sprintf("it shares node ID %d with %s; not used until the conflict is settled", u.ID, other.Callsign)
+		}
+	}
+	if len(drop) == 0 {
+		return usable
+	}
+	kept := usable[:0:0]
+	for _, u := range usable {
+		if why, ok := drop[u]; ok {
+			cands[u.cand].Usable, cands[u.cand].Why = false, why
+			continue
+		}
+		kept = append(kept, u)
+	}
+	return kept
 }
 
 // ensureMonitor starts the fast evaluation loop: batman-adv tables are read
@@ -584,8 +626,13 @@ func (g *gatewayReconciler) ensureMonitor() {
 	}
 	g.monStop = make(chan struct{})
 	stop := g.monStop
-	go g.watchReach(stop)
+	g.monWG.Add(2)
 	go func() {
+		defer g.monWG.Done()
+		g.watchReach(stop)
+	}()
+	go func() {
+		defer g.monWG.Done()
 		t := time.NewTicker(monitorEvery)
 		defer t.Stop()
 		for {
@@ -676,6 +723,9 @@ func (g *gatewayReconciler) watchReach(stop chan struct{}) {
 		}
 		g.reachMu.Unlock()
 		for _, r := range due {
+			if stopped(stop) {
+				return // Teardown waits for at most the ping in flight
+			}
 			if !probe.Ping(BridgeIfname, r.addr, reachTimeout) {
 				continue
 			}
@@ -989,6 +1039,9 @@ func (g *gatewayReconciler) Teardown(ctx context.Context) error {
 	if g.monStop != nil {
 		close(g.monStop)
 		g.monStop = nil
+		// Neither may evaluate, ping or kick once routing is gone: a ping
+		// in flight takes at most reachTimeout.
+		g.monWG.Wait()
 	}
 	g.stopProber()
 	g.applyHostDNS(ctx, false, "", func(string, string, string, ...any) {})
@@ -1058,4 +1111,14 @@ func forwardsToMesh(upstreams []string) bool {
 		}
 	}
 	return true
+}
+
+// stopped reports whether stop is closed.
+func stopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
 }

@@ -53,6 +53,7 @@ func OpenRollout(key, pkt []byte) (*RolloutMsg, error) {
 	case len(m.Rollout) == 0:
 		return nil, fmt.Errorf("%w: rollout message without a rollout", ErrInvalid)
 	}
+	m.MAC = canonMAC(m.MAC)
 	return &m, nil
 }
 
@@ -70,5 +71,6 @@ func OpenRolloutAsk(key, pkt []byte) (*RolloutAsk, error) {
 	if !validMAC(a.MAC) || a.ID == "" || !printable(a.ID, 32) {
 		return nil, fmt.Errorf("%w: bad rollout request", ErrInvalid)
 	}
+	a.MAC = canonMAC(a.MAC)
 	return &a, nil
 }

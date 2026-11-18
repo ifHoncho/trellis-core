@@ -53,5 +53,13 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 Environment=GOTRACEBACK=single
 
+# Every client of the node's Wi-Fi can reach webd: it must not be able to
+# take the node's memory or processes. A release package upload is held in
+# memory whole (some 5 MB; the API takes up to 64 MB); the Go runtime
+# collects harder as it nears GOMEMLIMIT, before the kernel's limit.
+MemoryMax=160M
+Environment=GOMEMLIMIT=128MiB
+TasksMax=128
+
 [Install]
 WantedBy=multi-user.target

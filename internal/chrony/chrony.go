@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"meridian/trellis/internal/fsutil"
 )
 
 // SourceDir is where meshd keeps the mesh's servers for chronyd (a
@@ -170,9 +172,5 @@ func WriteSources(dir string, addrs []string) (bool, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, want, 0o644); err != nil {
-		return false, err
-	}
-	return true, os.Rename(tmp, path)
+	return true, fsutil.WriteFile(path, want, 0o644)
 }

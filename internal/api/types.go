@@ -208,12 +208,17 @@ type UpgradeCheck struct {
 // LoginInput is a password to check.
 type LoginInput struct {
 	Password string `json:"password"`
+	// From is where the attempt comes from (webd: the browser's address),
+	// so that wrong guesses lock out that source only. webd sets it; what a
+	// browser sends is ignored. Empty: a local caller on the socket.
+	From string `json:"from,omitempty"`
 }
 
 // PasswordInput sets the admin password.
 type PasswordInput struct {
 	Current string `json:"current,omitempty"`
 	New     string `json:"new"`
+	From    string `json:"from,omitempty"` // as LoginInput.From
 }
 
 // Error is an API failure: an HTTP status, a message, and for rejected

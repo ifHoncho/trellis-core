@@ -66,8 +66,13 @@ stops the radio.
   is dropped before the mesh, and link-local multicast is rate-limited.
   A device can still send unicast as fast as its link allows.
 - **The web UI:** a signed-in admin only; password stored as a salted
-  PBKDF2-SHA256 hash readable by root; five wrong passwords start a lockout
-  that doubles up to a minute; session cookies are `SameSite=Strict`,
+  PBKDF2-SHA256 hash readable by root; five wrong passwords from one
+  address (an IPv6 /64) lock that address out, doubling up to a minute,
+  while other addresses can still sign in; password checks run one at a
+  time, each checking the lockout first, so parallel guesses gain nothing
+  (about half a second each on a Cortex-A53); webd bounds each request's time,
+  the connections per address (32) and its own memory; session cookies are
+  `SameSite=Strict`,
   `HttpOnly`, `Secure`, and every change needs a header no other site can
   set. The certificate is the node's own, self-signed: a browser has to be
   told once to trust it, and nothing stops a man in the middle on the
@@ -197,6 +202,6 @@ is either fixed, or planned with its reason.
 | R4 | Setup mode's Wi-Fi passphrase is public, and the first visitor sets the admin password. | By design for self-installs; images may carry a per-device passphrase. |
 | R5 | The web UI's certificate is trusted on first use. | Accepted for now; a certificate fingerprint in the node's QR code would close it. |
 | R6 | Secrets are not encrypted at rest. | Accepted: a node's own storage; image-level encryption planned. |
-| R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, DHCP leases, versions and the CoT writer: parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. One finding fixed (a link entry with a negative channel was accepted). |
+| R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, dnsmasq's lease file, DHCP answers from the uplink, versions, rollouts from other nodes and the CoT writer: parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. Findings fixed: a link entry with a negative channel was accepted; a DHCP lease time near 2³² s overflowed the rebinding time. Leases are also bounded (a mask of /8 or longer, at least 10 s; a short lease is kept as granted, never stretched). |
 | R8 | A release could be signed with the production key during a trial build, and would then be accepted everywhere. | **Fixed:** development builds are refused a release key unless forced, and trial releases refuse a trusted key. |
 | R9 | Client devices are not isolated from each other. | By design (R2); a per-port option to isolate a client could come later. |

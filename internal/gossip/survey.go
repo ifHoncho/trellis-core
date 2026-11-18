@@ -68,6 +68,7 @@ func OpenSurveyQuery(key, pkt []byte) (*SurveyQuery, error) {
 	if !validMAC(q.MAC) {
 		return nil, fmt.Errorf("%w: bad mac %q", ErrInvalid, q.MAC)
 	}
+	q.MAC = canonMAC(q.MAC)
 	return &q, nil
 }
 
@@ -96,5 +97,6 @@ func OpenSurveyReply(key, pkt []byte) (*SurveyReply, error) {
 			}
 		}
 	}
+	r.MAC = canonMAC(r.MAC)
 	return &r, nil
 }

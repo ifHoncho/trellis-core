@@ -266,6 +266,10 @@ func Open(key []byte, pkt []byte) (*Record, error) {
 	if err := r.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	r.MAC = canonMAC(r.MAC)
+	for i := range r.Orig {
+		r.Orig[i] = canonMAC(r.Orig[i])
+	}
 	return &r, nil
 }
 
@@ -288,7 +292,9 @@ func (r *Record) validate() error {
 			return fmt.Errorf("bad originator mac %q", o)
 		}
 	}
-	if r.ID < 0 || r.ID > 254 {
+	// 1–254, as everywhere else: ID 0 would be the mesh's anycast address
+	// (10.73.0.1), routing table 7400 and mark 0x7300.
+	if r.ID < 1 || r.ID > 254 {
 		return fmt.Errorf("node id %d out of range", r.ID)
 	}
 	if r.Callsign != "" && !reCallsign.MatchString(r.Callsign) {

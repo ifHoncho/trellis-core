@@ -400,17 +400,17 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	openList := func(in *nft.Input) string {
 		ps := in.Ports()
 		if len(ps) == 0 {
-			return "nothing but replies to its own traffic, ICMP and DHCP"
+			return "no ports, only replies, ICMP and DHCP"
 		}
-		return strings.Join(ps, " ") + ", besides replies to its own traffic, ICMP and DHCP"
+		return strings.Join(ps, " ") + ", plus replies, ICMP and DHCP"
 	}
 	switch {
 	case was == nil && will != nil:
-		add("warning", "firewall-closes", "The node closes to everything outside the mesh: from its uplink network it takes %s. Anything there that used this node's other services loses them; the mesh, its Wi-Fi and device ports, and the internet it shares are not affected.", openList(will))
+		add("warning", "firewall-closes", "Firewall on: from every interface but lo, br-mesh and anycast0 (the uplink, VPNs, containers) the node accepts %s, and drops new connections into the mesh except your DNAT port forwards. Services reached that way before stop answering; the mesh, this node's Wi-Fi and device ports, and the internet it shares are not affected.", openList(will))
 	case was != nil && will == nil:
-		add("info", "firewall-opens", "The node opens to everything outside the mesh: every service its system runs answers on its uplink network.")
+		add("info", "firewall-opens", "Firewall off: Trellis removes its rules (table inet trellis_fw). The host's own firewall, if any, decides what the uplink network reaches.")
 	case was != nil && will != nil && openList(was) != openList(will):
-		add("info", "firewall-ports", "From outside the mesh the node will take %s.", openList(will))
+		add("info", "firewall-ports", "Firewall: from filtered interfaces the node will accept %s.", openList(will))
 	}
 
 	// Radios: compare the plan in force with the one this configuration gives.

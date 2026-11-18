@@ -25,6 +25,7 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/doctor"
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/qr"
 	"meridian/trellis/internal/status"
@@ -570,18 +571,12 @@ func emit(stdout io.Writer, path string, force bool, mode os.FileMode, content s
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
+	// Durable before it replaces anything: deploys write node.yaml this
+	// way, and a node may lose power soon after.
+	if err := fsutil.WriteFile(path, []byte(content), mode); err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("%w (run with sudo)", err)
 		}
-		return err
-	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	fmt.Fprintf(stdout, "wrote %s\n", path)
@@ -1353,13 +1348,15 @@ func printGateway(w io.Writer, st *status.Status) {
 	fmt.Fprintln(w)
 	switch g.Firewall {
 	case "closed":
-		open := "nothing but replies, ICMP and DHCP"
+		open := "no ports"
 		if len(g.FirewallOpen) > 0 {
 			open = strings.Join(g.FirewallOpen, " ")
 		}
-		fmt.Fprintf(w, "Firewall: closed from outside the mesh (open: %s), %d packets turned away\n", open, g.FirewallDrop)
+		fmt.Fprintf(w, "Firewall: closed on non-mesh interfaces (accepting %s, plus replies, ICMP, DHCP), %d dropped\n", open, g.FirewallDrop)
 	case "open":
-		fmt.Fprintln(w, "Firewall: open from outside the mesh (firewall.wan)")
+		fmt.Fprintln(w, "Firewall: off, no Trellis rules on non-mesh interfaces (firewall.wan)")
+	case "failed":
+		fmt.Fprintln(w, "Firewall: set to closed, but the rules could not be applied: open (see warnings)")
 	}
 	if len(g.Candidates) > 0 {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)

@@ -370,3 +370,27 @@ func TestRolloutFields(t *testing.T) {
 		}
 	}
 }
+
+// One node is one MAC string: whatever form a sender writes, what Open
+// returns is lower case with colons, as this node writes its own.
+func TestOpenCanonicalMACs(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	r := rec("EA:67:61:6F:BC:8B", 7, 1)
+	r.Orig = []string{"02-00-00-00-00-0A"}
+	pkt, err := Seal(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(k, pkt)
+	if err != nil || got.MAC != "ea:67:61:6f:bc:8b" || got.Orig[0] != "02:00:00:00:00:0a" {
+		t.Fatalf("record: %+v %v", got, err)
+	}
+	q, _ := SealMessage(k, SurveyQueryMagic, &SurveyQuery{V: 1, MAC: "0200.0000.0001", Nonce: 3})
+	if got, err := OpenSurveyQuery(k, q); err != nil || got.MAC != "02:00:00:00:00:01" {
+		t.Errorf("survey query: %+v %v", got, err)
+	}
+	l, _ := SealMessage(k, LinksMagic, &Links{V: 1, MAC: "02:00:00:00:00:0B", Nonce: 3, Links: []Link{{Local: "02:00:00:00:00:0C", Remote: "02:00:00:00:00:0D"}}})
+	if got, err := OpenLinks(k, l); err != nil || got.MAC != "02:00:00:00:00:0b" || got.Links[0].Local != "02:00:00:00:00:0c" || got.Links[0].Remote != "02:00:00:00:00:0d" {
+		t.Errorf("links: %+v %v", got, err)
+	}
+}

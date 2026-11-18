@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"sync"
@@ -42,6 +43,12 @@ type Options struct {
 	Log       *slog.Logger
 }
 
+// Deadlines for a request (headers and body) and for its answer.
+const (
+	readTimeout  = 30 * time.Second
+	writeTimeout = time.Minute
+)
+
 // Server is one webd instance.
 type Server struct {
 	opts     Options
@@ -55,7 +62,11 @@ type Server struct {
 	info     api.WebInfo // the last answer from meshd
 	infoAt   time.Time
 	infoOK   bool
-	infoSeen bool // info holds an answer, if an old one
+	infoSeen bool       // info holds an answer, if an old one
+	fetchMu  sync.Mutex // one question to meshd at a time
+
+	connMu sync.Mutex
+	conns  map[netip.Addr]int // open connections by remote address (guard.go)
 }
 
 // New prepares a server.
@@ -72,17 +83,40 @@ func New(opts Options) (*Server, error) {
 	return s, nil
 }
 
-// webInfo asks meshd what webd needs to know, at most every few seconds.
-// When meshd does not answer, the last answer stands.
-func (s *Server) webInfo(ctx context.Context) (api.WebInfo, bool) {
+// infoFor is how long an answer from meshd stands.
+const infoFor = 3 * time.Second
+
+// webInfo asks meshd what webd needs to know, at most every infoFor. When
+// meshd does not answer, the last answer stands. The question is asked
+// without holding infoMu, one at a time: readers of the cached answer
+// (cachedInfo) never wait on meshd.
+func (s *Server) webInfo(ctx context.Context) (api.WebInfo, bool) { return s.askInfo(ctx, false) }
+
+// askInfo is webInfo; with force it asks meshd however fresh the answer.
+func (s *Server) askInfo(ctx context.Context, force bool) (api.WebInfo, bool) {
+	fresh := func() bool { return !force && time.Since(s.infoAt) < infoFor }
 	s.infoMu.Lock()
-	defer s.infoMu.Unlock()
-	if time.Since(s.infoAt) < 3*time.Second {
+	if fresh() {
+		defer s.infoMu.Unlock()
 		return s.info, s.infoOK
 	}
+	s.infoMu.Unlock()
+
+	s.fetchMu.Lock()
+	defer s.fetchMu.Unlock()
+	s.infoMu.Lock()
+	if fresh() { // answered while this one waited
+		defer s.infoMu.Unlock()
+		return s.info, s.infoOK
+	}
+	s.infoMu.Unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	wi, err := s.meshd.WebInfo(ctx)
+
+	s.infoMu.Lock()
+	defer s.infoMu.Unlock()
 	s.infoAt = time.Now()
 	if err != nil {
 		s.infoOK = false
@@ -95,6 +129,32 @@ func (s *Server) webInfo(ctx context.Context) (api.WebInfo, bool) {
 	}
 	s.info, s.infoOK, s.infoSeen = *wi, true, true
 	return s.info, true
+}
+
+// refreshEvery is how often refreshInfo asks meshd: an answer the guard
+// uses is never older than this, and the time meshd takes to answer.
+const refreshEvery = 2 * time.Second
+
+// refreshInfo asks meshd every refreshEvery until ctx ends.
+func (s *Server) refreshInfo(ctx context.Context) {
+	t := time.NewTicker(refreshEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.askInfo(ctx, true)
+		}
+	}
+}
+
+// cachedInfo is the last answer from meshd, without waiting for it: for
+// every connection. refreshInfo keeps it fresh.
+func (s *Server) cachedInfo() (api.WebInfo, bool) {
+	s.infoMu.Lock()
+	defer s.infoMu.Unlock()
+	return s.info, s.infoOK
 }
 
 // forgetInfo makes the next webInfo call ask meshd again: after a change
@@ -128,8 +188,19 @@ func (s *Server) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Every client of the node's Wi-Fi can reach this server: a request
+	// must arrive, and its answer leave, in bounded time. The two that take
+	// longer (a release package upload, the event stream) extend their own
+	// deadlines.
+	// The guard decides from meshd's last answer (prefix, wan_access):
+	// have one before the first connection, and keep it fresh whether or
+	// not anyone connects, so that a change made with meshctl applies to
+	// the next connection, not the one after.
+	s.webInfo(ctx)
+	go s.refreshInfo(ctx)
 	main := &http.Server{
-		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
+		Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: readTimeout,
+		WriteTimeout: writeTimeout, IdleTimeout: 2 * time.Minute,
 		ErrorLog: slog.NewLogLogger(s.log.Handler(), slog.LevelDebug),
 	}
 	if s.opts.PlainHTTP {

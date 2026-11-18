@@ -29,6 +29,10 @@ import (
 // recomputed, so a flaky USB connection does not thrash (architecture §5.2).
 const removalGrace = 3 * time.Second
 
+// lastSeenEvery is how stale a radio's stored LastSeen may get while it is
+// present.
+const lastSeenEvery = 6 * time.Hour
+
 // Churn guard: if an interface meshd created has to be recreated this many
 // times within the window, something else is reconfiguring it; meshd stops
 // fighting and reports it.
@@ -248,7 +252,10 @@ func (r *radioReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 			rec.Port, rec.Driver = rd.Device.Port, rd.Device.Driver
 			memChanged = true
 		}
-		if now.Sub(rec.LastSeen) > time.Minute {
+		// When a radio was last seen is for people reading the file: it is
+		// kept coarse, so the memory is not rewritten every minute on an SD
+		// card. Teardown records the last time.
+		if now.Sub(rec.LastSeen) > lastSeenEvery {
 			rec.LastSeen = now.UTC().Truncate(time.Second)
 			memChanged = true
 		}
@@ -353,13 +360,15 @@ func (r *radioReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 	// The mesh radio is Trellis's: any other interface that appears on it
 	// later (some images add a p2p or wlan interface to every new radio, and
 	// a network manager then scans on it) takes the radio off the mesh
-	// channel. Remove it, and say so if it keeps coming back.
+	// channel. Remove it, and say so if it keeps coming back. A monitor
+	// interface stays: it listens on the channel the mesh holds, and it is
+	// how a link is captured while it is debugged.
 	for _, meshRadio := range plan.Links {
 		if meshRadio == nil {
 			continue
 		}
 		for _, in := range meshRadio.Interfaces {
-			if isTrellisIfname(in.Name) || in.Ifindex == 0 {
+			if isTrellisIfname(in.Name) || in.Ifindex == 0 || in.Type == nl80211.NL80211_IFTYPE_MONITOR {
 				continue
 			}
 			if err := d.nl.DelInterface(in.Ifindex); err != nil {
@@ -766,6 +775,18 @@ func (r *radioReconciler) Teardown(ctx context.Context) error {
 	ifaces, err := d.nl.Interfaces()
 	if err != nil {
 		return err
+	}
+	// The radios present until now were seen until now (see lastSeenEvery).
+	if d.radioMem != nil && len(r.active) > 0 {
+		now := time.Now().UTC().Truncate(time.Second)
+		for fp := range r.active {
+			if rec := d.radioMem.Radios[fp]; rec != nil {
+				rec.LastSeen = now
+			}
+		}
+		if err := d.radioMem.Save(d.opts.StateDir); err != nil {
+			d.log.Warn("cannot save radio memory", "err", err)
+		}
 	}
 	var errs []error
 	touched := map[uint32]bool{}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/nl80211"
 )
 
@@ -109,11 +110,7 @@ func WriteState(dir string, s State) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, StateFile+".tmp")
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(dir, StateFile))
+	return fsutil.WriteFile(filepath.Join(dir, StateFile), append(data, '\n'), 0o644)
 }
 
 // ReadState reads the last answer recorded in dir.

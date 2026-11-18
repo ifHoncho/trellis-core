@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **Web UI:** Settings → Access → "From outside the mesh" is now
+  **Firewall**. It names the trusted interfaces (`lo`, `br-mesh`,
+  `anycast0`) and the filtered ones, says what the input and forward rules
+  accept and drop, shows the ports the node will accept as you edit them,
+  and reports a firewall that failed to apply instead of showing it as
+  open. `meshctl status` and the change preview use the same terms.
+- **Web UI sign-in:** wrong passwords lock out the address they come
+  from, not everyone: before, any device on the node's Wi-Fi could keep
+  the admin from signing in for as long as it kept guessing. An IPv6
+  device is locked out by its /64, so a new address does not start it
+  afresh. The web
+  server also limits how long a request may take, how many connections
+  one address may hold open, and its own memory.
+- **Node identity:** a damaged `identity.yaml` (a power loss while it was
+  written) no longer gives the node a new MAC, node ID and Wi-Fi
+  passphrase without a word. meshd restores it from `identity.yaml.bak`,
+  kept with every save, or refuses to start and says what to do. An empty
+  file with no backup (a node upgraded from 0.2.1) still gets a new
+  identity, as before. Remove both files to give a node a new identity.
+- **Files written durably:** the node configuration and profile that
+  `meshctl` and `trellis-deploy` write, the identity, the radio memory,
+  the time sources, the regulatory state and the web certificate now reach
+  the disk before they replace the old ones. A damaged radio memory is
+  started afresh instead of keeping meshd from starting. Temporary files
+  left by a write a power loss cut short are removed at the next start or
+  upgrade.
+- **Uplink DHCP:** a lease with a subnet mask wider than /8 or not a
+  prefix, or an unusable address, is refused, and so is a lease shorter
+  than 10 s; a lease time near the 32-bit limit no longer overflows
+  the rebinding time. An uplink whose subnet overlaps the mesh prefix is
+  reported.
+- **Radios:** a monitor interface added to a radio that carries a mesh
+  link is left alone, so a link can be captured with tcpdump.
+- **`meshctl doctor`** and the web UI's report no longer wait without end
+  on a slow command (`dkms status` while a module builds).
+- **Web UI:** a meshd that does not answer no longer holds up every new
+  connection to the UI.
+
 ## 0.2.1: fixes from a code review
 
 Fixes from a code review of 0.2.0 and the rest of the code.

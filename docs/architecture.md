@@ -1013,8 +1013,10 @@ same on any node anyway.
       address a node's mesh address, but cannot have one itself.
       `web.wan_access` in the node config lifts the restriction.
     - `meshd` keeps the admin password, as a salted PBKDF2-SHA256 hash
-      readable by root only. Five wrong passwords in a row start a lockout
-      that doubles up to a minute.
+      readable by root only. Five wrong passwords in a row from one
+      address (an IPv6 /64) lock that address out, doubling up to a
+      minute; other addresses are not held up (webd names the address).
+      Checks run one at a time, each after the lockout check.
     - The first password comes from whoever sets the node up (the setup
       wizard, §12.6). A node that is already part of a mesh takes its
       first password only on the node itself (`meshctl web password`), so

@@ -100,11 +100,13 @@ test:
 	$(GO) test ./...
 
 # The parsers of untrusted input: gossip from the air, packages and
-# configuration from browsers and files, profile codes from QR codes.
+# configuration from browsers and files, profile codes from QR codes, DHCP
+# from whatever is on the other end of a cable.
 FUZZTIME ?= 30s
 FUZZERS = gossip:FuzzOpenRecord gossip:FuzzOpenRaw gossip:FuzzOpenMessages gossip:FuzzParseLinkEntry \
 	deb:FuzzRead deb:FuzzParseKeys config:FuzzParseProfile config:FuzzDecodeProfileCode config:FuzzParseNode \
-	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal
+	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal \
+	rollout:FuzzDecodeRollout dhcpc:FuzzParse dhcpc:FuzzUDPPayload
 fuzz:
 	@for f in $(FUZZERS); do \
 	  echo "== $${f#*:} ($${f%%:*}, $(FUZZTIME))"; \

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"meridian/trellis/internal/deb"
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/status"
 )
 
@@ -421,11 +422,7 @@ func Run(ctx context.Context, pkg []byte, o Options, sys System) (*Result, error
 		return nil, err
 	}
 	// Half-written files of a run that lost power before it began.
-	if stale, _ := filepath.Glob(u.path("*.tmp")); len(stale) > 0 {
-		for _, f := range stale {
-			_ = os.Remove(f)
-		}
-	}
+	fsutil.RemoveStale(u.o.Dir)
 	u.logf("upgrade %s -> %s", c.Current.Version, c.Version)
 	if c.SignedBy != "" {
 		u.logf("signature good: key %s", c.SignedBy)
@@ -1068,32 +1065,9 @@ func copyTree(src, dst, skip string) error {
 }
 
 // writeFileSync writes a file so that it is whole on disk before anything
-// depends on it: to a temporary name, synced, then renamed.
+// depends on it (fsutil.WriteFile).
 func writeFileSync(name string, b []byte, mode fs.FileMode) error {
-	tmp := name + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Chmod(mode); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, name); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(name))
+	return fsutil.WriteFile(name, b, mode)
 }
 
 func syncDir(dir string) error {

@@ -35,6 +35,7 @@ type node struct {
 	wan      bool
 	changes  int
 	pkgLen   int
+	from     string // the source of the last password check
 }
 
 func (n *node) UpgradeState(ctx context.Context) (*api.UpgradeState, error) {
@@ -91,9 +92,10 @@ func (n *node) WebInfo() api.WebInfo {
 	defer n.mu.Unlock()
 	return api.WebInfo{Callsign: "n1", AdminSet: n.password != "", AdminSince: n.since, Setup: n.setup, WANAccess: n.wan, Prefix: "10.73.0.0/16"}
 }
-func (n *node) WebLogin(pw string) error {
+func (n *node) WebLogin(from, pw string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.from = from
 	if n.password == "" {
 		return api.Forbidden("no admin password is set on this node")
 	}
@@ -102,9 +104,10 @@ func (n *node) WebLogin(pw string) error {
 	}
 	return nil
 }
-func (n *node) WebSetPassword(current, new string, privileged bool) error {
+func (n *node) WebSetPassword(from, current, new string, privileged bool) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.from = from
 	if n.password != "" && current != n.password {
 		return api.Errorf(401, "the current password is wrong")
 	}
@@ -206,8 +209,13 @@ func TestLoginAndProxy(t *testing.T) {
 		t.Errorf("session before login: %d %+v", res.StatusCode, si)
 	}
 
-	if res, _ := call(t, ts, "POST", "/api/v1/login", `{"password":"wrong"}`, ""); res.StatusCode != 401 || sessionOf(res) != nil {
+	// meshd's lockout is per source: webd names the connection's address,
+	// whatever the browser claims.
+	if res, _ := call(t, ts, "POST", "/api/v1/login", `{"password":"wrong","from":"10.73.1.1"}`, ""); res.StatusCode != 401 || sessionOf(res) != nil {
 		t.Errorf("wrong password: %d", res.StatusCode)
+	}
+	if n.from != "127.0.0.1" {
+		t.Errorf("meshd was told the attempt came from %q, not the connection's address", n.from)
 	}
 	res, _ = call(t, ts, "POST", "/api/v1/login", `{"password":"correct-horse"}`, "")
 	c := sessionOf(res)
@@ -234,6 +242,24 @@ func TestLoginAndProxy(t *testing.T) {
 			t.Errorf("%s through the proxy: %d", p, res.StatusCode)
 		}
 	}
+	// Nor written another way: escapes are decoded once by webd, and must
+	// not be decoded again into a /web path on meshd's side.
+	n.mu.Lock()
+	n.from = "untouched"
+	n.mu.Unlock()
+	for _, p := range []string{"/api/v1/web%2Flogin", "/api/v1/web%252Flogin", "/api/v1/%77eb/login", "/api/v1/x/..%2Fweb/login",
+		"/api/v1/web%252fpassword", "/api/v1/status%3Fx", "/api/v1/.%2Fweb/login", "/api/v1/%2Fweb/login"} {
+		for _, m := range []string{"POST", "PUT"} {
+			if res, body := call(t, ts, m, p, `{"password":"x","new":"xxxxxxxxxx"}`, c.Value); res.StatusCode < 300 {
+				t.Errorf("%s %s through the proxy: %d %s", m, p, res.StatusCode, body)
+			}
+		}
+	}
+	n.mu.Lock()
+	if n.from != "untouched" {
+		t.Errorf("a password endpoint was reached through the proxy (from %q)", n.from)
+	}
+	n.mu.Unlock()
 	// A release package passes the proxy whole; nothing else may be large.
 	big := strings.Repeat("x", 3<<20)
 	if res, body := call(t, ts, "POST", "/api/v1/upgrade?dry_run=1", big, c.Value); res.StatusCode != 200 || n.pkgLen != len(big) {
@@ -366,6 +392,72 @@ func TestEvents(t *testing.T) {
 	t.Fatalf("no status event arrived: %v", sc.Err())
 }
 
+// The server's read and write timeouts bound ordinary requests; an event
+// stream must outlive them.
+func TestEventsOutliveServerTimeouts(t *testing.T) {
+	_, s := start(t, &node{password: "correct-horse"})
+	ts := httptest.NewUnstartedServer(s.Handler())
+	ts.Config.ReadTimeout, ts.Config.WriteTimeout = 300*time.Millisecond, 300*time.Millisecond
+	ts.Start()
+	defer ts.Close()
+	cookie := login(t, ts, "correct-horse")
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/events", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: cookie})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := http.DefaultTransport.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	sc := bufio.NewScanner(res.Body)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	began, events := time.Now(), 0
+	for sc.Scan() {
+		if sc.Text() == "event: status" {
+			events++
+		}
+		if events >= 2 && time.Since(began) > time.Second {
+			return
+		}
+	}
+	t.Fatalf("the stream ended after %s with %d status events: %v", time.Since(began).Round(time.Millisecond), events, sc.Err())
+}
+
+// A release package may arrive slowly over the mesh: its upload outlives
+// the server's read timeout, which still bounds every other request.
+func TestSlowUploadOutlivesReadTimeout(t *testing.T) {
+	n := &node{password: "correct-horse"}
+	_, s := start(t, n)
+	ts := httptest.NewUnstartedServer(s.Handler())
+	ts.Config.ReadTimeout, ts.Config.WriteTimeout = 300*time.Millisecond, 300*time.Millisecond
+	ts.Start()
+	defer ts.Close()
+	cookie := login(t, ts, "correct-horse")
+	slow := func(path string) (*http.Response, error) {
+		pr, pw := io.Pipe()
+		go func() {
+			for i := 0; i < 8; i++ {
+				time.Sleep(100 * time.Millisecond)
+				pw.Write(make([]byte, 1000))
+			}
+			pw.Close()
+		}()
+		req, _ := http.NewRequest("POST", ts.URL+path, pr)
+		req.Header.Set(requestHeader, "1")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: cookie})
+		return http.DefaultClient.Do(req)
+	}
+	res, err := slow("/api/v1/upgrade?dry_run=1")
+	if err != nil || res.StatusCode != 200 || n.pkgLen != 8000 {
+		t.Fatalf("slow upload: %v %v, %d bytes arrived", err, res, n.pkgLen)
+	}
+	res.Body.Close()
+	if res, err := slow("/api/v1/reconcile"); err == nil && res.StatusCode == 200 {
+		t.Error("a slow ordinary request outlived the read timeout")
+	}
+}
+
 func TestMeshdDown(t *testing.T) {
 	ts, s := start(t, nil)
 	res, body := call(t, ts, "GET", "/api/v1/session", "", "")
@@ -496,6 +588,50 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
+func TestConnectionsPerAddress(t *testing.T) {
+	s := &Server{}
+	a, b := netip.MustParseAddr("10.73.4.4"), netip.MustParseAddr("10.73.5.5")
+	var held []net.Conn
+	for i := 0; i < connsPerAddr; i++ {
+		c1, c2 := net.Pipe()
+		defer c2.Close()
+		c := s.track(c1, a)
+		if c == nil {
+			t.Fatalf("connection %d refused under the limit", i+1)
+		}
+		held = append(held, c)
+	}
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	if s.track(c1, a) != nil {
+		t.Error("a connection over the limit was accepted")
+	}
+	if c := s.track(c1, b); c == nil {
+		t.Error("another address was refused")
+	} else {
+		c.Close()
+	}
+	held[0].Close()
+	held[0].Close() // a second close gives nothing back twice
+	c3, c4 := net.Pipe()
+	defer c4.Close()
+	if c := s.track(c3, a); c == nil {
+		t.Error("a closed connection's slot was not given back")
+	} else {
+		held[0] = c
+	}
+	if c := s.track(c3, a); c != nil {
+		t.Error("a double close gave back two slots")
+	}
+	for _, c := range held {
+		c.Close()
+	}
+	if len(s.conns) != 0 {
+		t.Errorf("counts left after every connection closed: %v", s.conns)
+	}
+}
+
 func TestGuardedListener(t *testing.T) {
 	_, s := start(t, &node{password: "x"})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -596,5 +732,77 @@ func TestRedirect(t *testing.T) {
 		if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != want {
 			t.Errorf("port %d: %d %s", port, rec.Code, rec.Header().Get("Location"))
 		}
+	}
+}
+
+// A meshd that hangs must not hold up connections: the guard decides from
+// the last answer, and asks again in the background.
+func TestGuardDoesNotWaitOnMeshd(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	hung, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hung.Close()
+	go func() {
+		for {
+			c, err := hung.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // accepted, never answered
+		}
+	}()
+	s, err := New(Options{Version: "test", Socket: sock, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("no loopback listener:", err)
+	}
+	defer ln.Close()
+	g := s.guard(ln)
+	for i := 0; i < 3; i++ {
+		go func() {
+			if c, err := net.Dial("tcp", ln.Addr().String()); err == nil {
+				defer c.Close()
+				time.Sleep(time.Second)
+			}
+		}()
+		began := time.Now()
+		c, err := g.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Close()
+		if d := time.Since(began); d > 500*time.Millisecond {
+			t.Fatalf("connection %d waited %s on a hung meshd", i+1, d)
+		}
+	}
+}
+
+// A change made on the node (meshctl web wan-access) reaches the guard
+// within refreshEvery, with no connection in between to prompt it.
+func TestCachedInfoFollowsMeshd(t *testing.T) {
+	n := &node{password: "x"}
+	_, s := start(t, n)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.webInfo(ctx)
+	go s.refreshInfo(ctx)
+	if info, _ := s.cachedInfo(); info.WANAccess {
+		t.Fatal("wan_access on before it was set")
+	}
+	time.Sleep(time.Second) // mid-way through an answer's life
+	n.mu.Lock()
+	n.wan = true
+	n.mu.Unlock()
+	time.Sleep(refreshEvery + 500*time.Millisecond)
+	s.infoMu.Lock()
+	got := s.info.WANAccess
+	s.infoMu.Unlock()
+	if !got {
+		t.Errorf("wan_access set on the node is not in webd's answer after %s", refreshEvery+500*time.Millisecond)
 	}
 }

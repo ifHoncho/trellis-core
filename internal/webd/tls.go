@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"meridian/trellis/internal/fsutil"
 )
 
 // The UI is served over HTTPS with a certificate the node signs itself
@@ -49,6 +51,7 @@ func (s *Server) certNames(ctx context.Context) (dns []string, ips []net.IP) {
 
 func loadOrCreateCert(dir string, names func() ([]string, []net.IP), log *slog.Logger) (*tls.Certificate, error) {
 	if dir != "" {
+		fsutil.RemoveStale(dir) // one webd per state directory
 		cert, err := tls.LoadX509KeyPair(filepath.Join(dir, certFile), filepath.Join(dir, keyFile))
 		if err == nil {
 			return &cert, nil
@@ -88,9 +91,9 @@ func loadOrCreateCert(dir string, names func() ([]string, []net.IP), log *slog.L
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err == nil {
-			err = os.WriteFile(filepath.Join(dir, keyFile), keyPEM, 0o600)
+			err = fsutil.WriteFile(filepath.Join(dir, keyFile), keyPEM, 0o600)
 			if err == nil {
-				err = os.WriteFile(filepath.Join(dir, certFile), certPEM, 0o644)
+				err = fsutil.WriteFile(filepath.Join(dir, certFile), certPEM, 0o644)
 			}
 			if err != nil {
 				log.Warn("cannot store the TLS certificate; browsers will warn again after a restart", "dir", dir, "err", err)

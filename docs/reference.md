@@ -224,19 +224,35 @@ the links they share.
   but cannot carry traffic (one end hears the other too weakly), Alerts
   says so: move the nodes closer, use a narrower width, or let them meet
   on a band that reaches further.
+- A radio that carries a link is Trellis's alone: meshd removes any other
+  interface that appears on it (a `p2p` or `wlan` one that a network
+  manager would scan on), except a **monitor** interface, which listens
+  on the link's channel. To capture a link: `sudo iw phy PHY interface add
+  mon0 type monitor && sudo ip link set mon0 up`, then `tcpdump -i mon0`.
 
 ## Access from outside the mesh
 
-A node Trellis sets up is closed to everything outside the mesh: from the
-network its uplink is plugged into, it answers only SSH (port 22), ping,
-and the web UI if you let it answer there (Settings → Access → "Also on
-the node's uplink network"). Settings → Access → **From outside the mesh**
-turns SSH off, opens further ports (`tcp/5201`), or opens the node
-altogether. Closed, a gateway also forwards no new connection from its
-uplink network into the mesh (your own port forwards excepted). The mesh,
-the node's Wi-Fi and device ports, and the internet it shares are never
-affected. A node upgraded from a release without this
-firewall stays open until you close it there; Alerts reminds you.
+Settings → Access → **Firewall** (`firewall.*` in node.yaml) is an nftables
+table, `inet trellis_fw`. `lo`, `br-mesh` and `anycast0` (the mesh, the
+node's Wi-Fi and device ports) are trusted and never filtered; the rules
+apply to every other interface: the uplink, and any VPN or container
+link on the host.
+
+With **Drop new connections from filtered interfaces** on
+(`firewall.wan: closed`, the default for nodes Trellis sets up):
+
+- **Input:** established and related, ICMP and ICMPv6, DHCP replies
+  (udp/68, udp/546), SSH (tcp/22, unless `firewall.ssh: false`), the web
+  UI (tcp/80, tcp/443) while "Also on the node's uplink network" is on,
+  and the ports under **Also accept** (`firewall.allow`, e.g. `tcp/5201`)
+  are accepted; the rest is dropped.
+- **Forward:** new connections from filtered interfaces into the mesh are
+  dropped; your own DNAT port forwards pass. Traffic leaving the mesh,
+  including the internet the node shares, is not touched.
+
+Off (`firewall.wan: open`), Trellis installs no rules and the host's own
+firewall, if any, applies. A node upgraded from a release without this
+firewall stays open until you turn it on; Alerts reminds you.
 
 ## Regulatory modes
 

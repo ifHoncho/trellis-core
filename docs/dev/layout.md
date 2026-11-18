@@ -110,7 +110,7 @@ restoring the kernel's wlan interface on radios Trellis took over.
 | Path | Contents |
 |---|---|
 | `/etc/trellis/node.yaml`, `/etc/trellis/profile.yaml` | configuration |
-| `/var/lib/trellis/identity.yaml` | node MAC, ID and the generated AP passphrase |
+| `/var/lib/trellis/identity.yaml` | node MAC, ID and the generated AP passphrase. `identity.yaml.bak` is its copy, used when the file is damaged or missing (an empty file with no backup gets a new identity); remove both to give a node a new identity |
 | `/var/lib/trellis/web-admin.yaml` | the web UI's admin password, as a salted hash (0600) |
 | `/var/lib/trellis/setup-profile.yaml` | the private mesh profile of a node in setup mode; removed once it is provisioned |
 | `/var/lib/trellis-web/` | webd's TLS certificate and key (owned by webd's own user) |

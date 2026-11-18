@@ -58,6 +58,10 @@ if [ ! -e /etc/trellis/node.yaml ] && [ -e /etc/trellis/profile.yaml ]; then
   fi && echo "-- node configuration made: callsign $CS"
 fi
 drop_node_key
+# The configuration reaches the disk before the run counts as done: a node
+# may lose power soon after (meshctl writes its files durably; install(1)
+# does not).
+sync
 [ -e /run/reboot-required ] && echo "@@ reboot"
 echo "@@ done"
 `
@@ -158,6 +162,7 @@ if [ "$rc" = 0 ] && [ -f "$D/profile.yaml" ] && [ ! -e /etc/trellis/profile.yaml
 fi
 rm -f "$D/profile.yaml"
 [ "$rc" = 0 ] && drop_node_key
+sync
 finish "$rc"
 `
 

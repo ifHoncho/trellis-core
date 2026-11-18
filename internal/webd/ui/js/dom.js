@@ -40,8 +40,6 @@ export function h(spec, attrs, ...children) {
       if (v) el.setAttribute('checked', '');
     } else if (k === 'key') {
       el.__key = String(v);
-    } else if (k === 'html') {
-      el.innerHTML = v; // only ever with strings this code built
     } else if (v === true) {
       el.setAttribute(k, '');
     } else {

@@ -117,6 +117,7 @@ func OpenQuery(key, pkt []byte) (*Query, error) {
 	if !validMAC(q.MAC) {
 		return nil, fmt.Errorf("%w: bad mac %q", ErrInvalid, q.MAC)
 	}
+	q.MAC = canonMAC(q.MAC)
 	return &q, nil
 }
 
@@ -144,12 +145,26 @@ func OpenLinks(key, pkt []byte) (*Links, error) {
 	if l.Clients < 0 || l.Clients > 100000 || l.Selected < 0 || l.Selected > 254 || l.More < 0 {
 		return nil, fmt.Errorf("%w: figures out of range", ErrInvalid)
 	}
+	l.MAC = canonMAC(l.MAC)
+	for i := range l.Links {
+		l.Links[i].Local, l.Links[i].Remote = canonMAC(l.Links[i].Local), canonMAC(l.Links[i].Remote)
+	}
 	return &l, nil
 }
 
 func validMAC(s string) bool {
 	m, err := net.ParseMAC(s)
 	return err == nil && len(m) == 6
+}
+
+// canonMAC writes a valid MAC the one way this node does (lower case,
+// colons), so that maps keyed by MAC and comparisons with this node's own
+// see one node as one, whatever form a sender used.
+func canonMAC(s string) string {
+	if m, err := net.ParseMAC(s); err == nil {
+		return m.String()
+	}
+	return s
 }
 
 // SendTo sends one packet to a single node's address on the gossip port.

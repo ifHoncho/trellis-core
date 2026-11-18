@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"meridian/trellis/internal/batadv"
@@ -149,13 +150,13 @@ func checkPlatform(r *Report) {
 	if b, err := os.ReadFile("/proc/device-tree/model"); err == nil {
 		r.add(Info, "board", strings.TrimRight(string(b), "\x00\n"), "")
 	}
-	out, err := exec.Command("dpkg", "--print-architecture").Output()
+	out, err := output("dpkg", "--print-architecture")
 	if err != nil {
 		return
 	}
 	uarch := strings.TrimSpace(string(out))
 	karch := runtime.GOARCH
-	if u, err := exec.Command("uname", "-m").Output(); err == nil {
+	if u, err := output("uname", "-m"); err == nil {
 		karch = strings.TrimSpace(string(u))
 	}
 	if karch == "aarch64" && uarch == "armhf" {
@@ -207,7 +208,7 @@ func KernelConfig(release string) (map[string]string, string, error) {
 	var src string
 	if _, err := os.Stat("/proc/config.gz"); err != nil {
 		// Raspberry Pi kernels build /proc/config.gz as a module.
-		_ = exec.Command("modprobe", "configs").Run()
+		_, _ = output("modprobe", "configs")
 	}
 	if f, err := os.Open("/proc/config.gz"); err == nil {
 		defer f.Close()
@@ -353,7 +354,7 @@ func checkBatman(r *Report, opts Options) {
 	default:
 		r.add(Pass, "batman-adv module", desc, "")
 	}
-	if out, err := exec.Command("dkms", "status").CombinedOutput(); err == nil {
+	if out, err := combined("dkms", "status"); err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if strings.Contains(line, "batman") {
 				r.add(Info, "dkms status", strings.TrimSpace(line), "")
@@ -363,7 +364,7 @@ func checkBatman(r *Report, opts Options) {
 }
 
 func modinfo(name string) (path, version string) {
-	out, err := exec.Command("modinfo", name).Output()
+	out, err := output("modinfo", name)
 	if err != nil {
 		return "", ""
 	}
@@ -469,7 +470,7 @@ func wildcardUDPListeners() map[int]bool {
 }
 
 func wpaVersion(p string) string {
-	out, _ := exec.Command(p, "-v").CombinedOutput()
+	out, _ := combined(p, "-v")
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "wpa_supplicant v") {
 			return strings.TrimPrefix(line, "wpa_supplicant ")
@@ -593,7 +594,7 @@ func checkRegulatory(r *Report) {
 		r.add(Fail, "regulatory.db", "/lib/firmware/regulatory.db is missing; the kernel cannot leave the world domain", "apt install wireless-regdb")
 		return
 	}
-	out, err := exec.Command("dmesg").Output()
+	out, err := output("dmesg")
 	if err != nil {
 		r.add(Info, "regulatory.db", "kernel log not readable as this user; signature check skipped", "sudo meshctl doctor")
 		return
@@ -610,7 +611,7 @@ func checkRegulatory(r *Report) {
 
 func checkNetworkManagers(r *Report) {
 	for _, svc := range []string{"NetworkManager", "systemd-networkd", "wpa_supplicant", "connman"} {
-		out, err := exec.Command("systemctl", "is-active", svc).Output()
+		out, err := output("systemctl", "is-active", svc)
 		if err == nil && strings.TrimSpace(string(out)) == "active" {
 			msg := "active"
 			switch svc {
@@ -796,4 +797,35 @@ func checkMeshBand(r *Report, opts Options, p *config.Profile) {
 		r.add(Fail, "mesh band", fmt.Sprintf("the profile's mesh is on %s, but the mesh-capable radios here are not: %s", p.Radio.Band, strings.Join(notBand, ", ")),
 			"use an adapter with "+p.Radio.Band+" support (every node in a mesh needs one)")
 	}
+}
+
+// cmdTimeout bounds each command the doctor runs: dkms status can take
+// long on a node that is building a module, and the report is asked for
+// over the API, where a browser waits.
+var cmdTimeout = 10 * time.Second
+
+// command makes a command bounded by cmdTimeout: it runs in its own
+// process group, and the whole group is killed at the deadline, so a
+// shell script's children (dkms) cannot keep its output open past it.
+func command(name string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	return cmd, cancel
+}
+
+// output runs a command and returns its standard output.
+func output(name string, args ...string) ([]byte, error) {
+	cmd, cancel := command(name, args...)
+	defer cancel()
+	return cmd.Output()
+}
+
+// combined runs a command and returns its standard output and error.
+func combined(name string, args ...string) ([]byte, error) {
+	cmd, cancel := command(name, args...)
+	defer cancel()
+	return cmd.CombinedOutput()
 }

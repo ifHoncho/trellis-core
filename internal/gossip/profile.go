@@ -78,6 +78,7 @@ func OpenOffer(key, pkt []byte) (*Offer, error) {
 	case o.Callsign != "" && !reCallsign.MatchString(o.Callsign):
 		return nil, fmt.Errorf("%w: callsign %q", ErrInvalid, o.Callsign)
 	}
+	o.MAC = canonMAC(o.MAC)
 	return &o, nil
 }
 
@@ -90,6 +91,7 @@ func OpenAck(key, pkt []byte) (*Ack, error) {
 	if !validMAC(a.MAC) || a.Rev == 0 || !plainText(a.Err, 300) {
 		return nil, fmt.Errorf("%w: bad acknowledgement", ErrInvalid)
 	}
+	a.MAC = canonMAC(a.MAC)
 	return &a, nil
 }
 
@@ -102,6 +104,7 @@ func OpenRequest(key, pkt []byte) (*Request, error) {
 	if !validMAC(r.MAC) || r.Rev == 0 {
 		return nil, fmt.Errorf("%w: bad request", ErrInvalid)
 	}
+	r.MAC = canonMAC(r.MAC)
 	return &r, nil
 }
 

@@ -25,6 +25,8 @@ runs their seed inputs every time; `make fuzz` runs each one for
 | `config` | `FuzzParseProfile`, `FuzzDecodeProfileCode`, `FuzzParseNode` | profiles, profile codes from QR codes, node configuration as YAML and JSON; what is accepted must validate |
 | `regdb`, `wpa`, `dnsmasq` | `FuzzParse`, `FuzzParseEvent`, `FuzzParseLeases` | the regulatory database, wpa_supplicant's events, DHCP leases (client hostnames) |
 | `version`, `cot` | `FuzzVersion`, `FuzzMarshal` | versions from gossip and packages (the Debian form must stay valid), callsigns and remarks in the XML phones receive |
+| `rollout` | `FuzzDecodeRollout` | rollouts announced by other nodes; what passes `Validate` must be safe to act on |
+| `dhcpc` | `FuzzParse`, `FuzzUDPPayload` | DHCP answers and raw frames from an uplink or client port; a lease that is accepted must stay within bounds (mask /8 or longer, 60 s to a year, T1 < T2 < lease) |
 
 For packages and upgrades:
 

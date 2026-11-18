@@ -56,10 +56,12 @@ type Provider interface {
 	UpgradeRollback(ctx context.Context) error
 
 	WebInfo() WebInfo
-	WebLogin(password string) error
+	// WebLogin checks the admin password. from is where the attempt comes
+	// from: wrong guesses lock out that source only.
+	WebLogin(from, password string) error
 	// WebSetPassword sets the admin password. privileged callers (root on
 	// the socket) need no current password.
-	WebSetPassword(current, new string, privileged bool) error
+	WebSetPassword(from, current, new string, privileged bool) error
 }
 
 // Server serves the API.
@@ -228,7 +230,9 @@ func (s *Server) Handler() http.Handler {
 		if !readJSON(w, r, &in) {
 			return
 		}
-		reply(w, func(r *http.Request) (any, error) { return map[string]any{"ok": true}, p.WebLogin(in.Password) }, r)
+		reply(w, func(r *http.Request) (any, error) {
+			return map[string]any{"ok": true}, p.WebLogin(in.From, in.Password)
+		}, r)
 	})
 	mux.HandleFunc("PUT /"+Version+"/web/password", func(w http.ResponseWriter, r *http.Request) {
 		var in PasswordInput
@@ -236,7 +240,7 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		reply(w, func(r *http.Request) (any, error) {
-			return map[string]any{"ok": true}, p.WebSetPassword(in.Current, in.New, peerUID(r) == 0)
+			return map[string]any{"ok": true}, p.WebSetPassword(in.From, in.Current, in.New, peerUID(r) == 0)
 		}, r)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

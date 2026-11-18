@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"meridian/trellis/internal/api"
+	"meridian/trellis/internal/fsutil"
 )
 
 // The web UI's admin credential (architecture §11). meshd keeps it, not
@@ -28,11 +30,25 @@ const (
 	webIterations  = 200_000 // PBKDF2-HMAC-SHA256; about half a second on a Cortex-A53
 	webMinPassword = 8
 	webMaxPassword = 128
-	// After webFreeFailures wrong passwords in a row, each further attempt
-	// must wait: 1 s, 2 s, 4 s … up to webMaxLockout.
+	// After webFreeFailures wrong passwords in a row from one source (an
+	// address, as webd reports it), each further attempt from that source
+	// must wait: 1 s, 2 s, 4 s … up to webMaxLockout. Other sources are not
+	// held up: a lockout shared by all would let any client on the Wi-Fi
+	// keep the admin out for as long as it kept guessing. Guessing from many
+	// addresses is bounded by the hash: one at a time, about half a second
+	// each on a Cortex-A53.
 	webFreeFailures = 5
 	webMaxLockout   = time.Minute
+	webSourcesMax   = 256              // sources tracked; the quietest goes first
+	webForgetAfter  = 10 * time.Minute // a source quiet this long starts afresh
 )
+
+// webSource is one source's run of wrong passwords.
+type webSource struct {
+	fails       int
+	lockedUntil time.Time
+	lastFail    time.Time
+}
 
 type webCredential struct {
 	Algo       string    `yaml:"algo"`
@@ -43,11 +59,14 @@ type webCredential struct {
 }
 
 type webAuth struct {
-	mu          sync.Mutex
-	loaded      bool
-	cred        *webCredential
-	fails       int
-	lockedUntil time.Time
+	mu      sync.Mutex
+	loaded  bool
+	cred    *webCredential
+	sources map[string]*webSource // by source; "" is a local caller
+
+	// hashMu lets one password hash run at a time, without holding mu:
+	// WebInfo, which webd asks for every connection, never waits on a hash.
+	hashMu sync.Mutex
 }
 
 func (d *Daemon) webAdminPath() string { return filepath.Join(d.opts.StateDir, webAdminFile) }
@@ -102,35 +121,112 @@ func (d *Daemon) WebInfo() api.WebInfo {
 	return wi
 }
 
+// sourceKey is the lockout key for an address as webd reports it. An IPv6
+// client can take any address in its /64 (SLAAC, privacy addresses), so
+// IPv6 sources are keyed by their /64.
+func sourceKey(from string) string {
+	a, err := netip.ParseAddr(from)
+	if err != nil {
+		return from
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		p, _ := a.WithZone("").Prefix(64)
+		return p.String()
+	}
+	return a.String()
+}
+
+// source returns the record for key, making it if needed. Call with
+// webAuth.mu held.
+func (a *webAuth) source(key string, now time.Time) *webSource {
+	if a.sources == nil {
+		a.sources = map[string]*webSource{}
+	}
+	src := a.sources[key]
+	if src != nil && now.Sub(src.lastFail) > webForgetAfter && !now.Before(src.lockedUntil) {
+		src.fails, src.lockedUntil = 0, time.Time{}
+	}
+	if src == nil {
+		for len(a.sources) >= webSourcesMax {
+			delete(a.sources, a.quietest(now))
+		}
+		src = &webSource{}
+		a.sources[key] = src
+	}
+	return src
+}
+
+// quietest picks the source to forget when the table is full: the one
+// whose last failure is oldest, preferring one not locked out now, so a
+// guesser cannot push its own lockout out by filling the table.
+func (a *webAuth) quietest(now time.Time) string {
+	oldest, at, locked := "", time.Time{}, true
+	for k, v := range a.sources {
+		l := now.Before(v.lockedUntil)
+		if oldest == "" || (locked && !l) || (locked == l && v.lastFail.Before(at)) {
+			oldest, at, locked = k, v.lastFail, l
+		}
+	}
+	return oldest
+}
+
 // checkPassword verifies password against the stored credential, with the
-// lockout. Call with webAuth.mu held.
-func (d *Daemon) checkPassword(password string) error {
+// lockout for its source. Call with webAuth.mu held; it is released while
+// the hash runs.
+//
+// Attempts are serialised by hashMu, and each one checks the lockout after
+// taking it, so parallel requests from one source cannot all pass the
+// check before the first failure is counted.
+func (d *Daemon) checkPassword(from, password string) error {
 	a := &d.webAuth
+	key := sourceKey(from)
+	a.mu.Unlock()
+	a.hashMu.Lock()
+	defer a.hashMu.Unlock()
+	a.mu.Lock()
 	c := d.webCred()
 	if c == nil {
 		return api.Forbidden("no admin password is set on this node")
 	}
-	if wait := time.Until(a.lockedUntil); wait > 0 {
-		return api.TooMany(wait, "too many wrong passwords; wait %d s and try again", int(wait/time.Second)+1)
+	if src := a.sources[key]; src != nil {
+		if wait := time.Until(src.lockedUntil); wait > 0 {
+			return api.TooMany(wait, "too many wrong passwords; wait %d s and try again", int(wait/time.Second)+1)
+		}
 	}
-	if c.matches(password) {
-		a.fails = 0
+	a.mu.Unlock()
+	ok := c.matches(password)
+	a.mu.Lock()
+	if a.cred != c {
+		// The password was removed while the hash ran (meshctl does not
+		// take hashMu to remove it).
+		return api.Errorf(409, "the admin password changed meanwhile; try again")
+	}
+	now := time.Now()
+	if ok {
+		delete(a.sources, key)
 		return nil
 	}
-	a.fails++
-	if a.fails >= webFreeFailures {
-		lock := time.Second << min(a.fails-webFreeFailures, 10)
-		a.lockedUntil = time.Now().Add(min(lock, webMaxLockout))
+	src := a.source(key, now)
+	src.fails++
+	src.lastFail = now
+	if src.fails >= webFreeFailures {
+		lock := time.Second << min(src.fails-webFreeFailures, 10)
+		src.lockedUntil = now.Add(min(lock, webMaxLockout))
 	}
-	d.log.Warn("web UI login failed: wrong admin password", "failures_in_a_row", a.fails)
+	where := from
+	if where == "" {
+		where = "local"
+	}
+	d.log.Warn("web UI login failed: wrong admin password", "from", where, "failures_in_a_row", src.fails)
 	return api.ErrBadPassword
 }
 
 // WebLogin checks the admin password.
-func (d *Daemon) WebLogin(password string) error {
+func (d *Daemon) WebLogin(from, password string) error {
 	d.webAuth.mu.Lock()
 	defer d.webAuth.mu.Unlock()
-	return d.checkPassword(password)
+	return d.checkPassword(from, password)
 }
 
 // WebSetPassword sets the admin password. Who may:
@@ -143,7 +239,7 @@ func (d *Daemon) WebLogin(password string) error {
 //
 // A provisioned node with no password takes one only from root, so a
 // stranger on the mesh cannot claim its UI.
-func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
+func (d *Daemon) WebSetPassword(from, current, new string, privileged bool) error {
 	d.webAuth.mu.Lock()
 	defer d.webAuth.mu.Unlock()
 	a := &d.webAuth
@@ -151,7 +247,7 @@ func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
 	switch {
 	case privileged:
 	case c != nil:
-		if err := d.checkPassword(current); err != nil {
+		if err := d.checkPassword(from, current); err != nil {
 			if errors.Is(err, api.ErrBadPassword) {
 				return api.Errorf(401, "the current password is wrong")
 			}
@@ -165,7 +261,7 @@ func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
 		if err := os.Remove(d.webAdminPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		a.cred, a.loaded, a.fails, a.lockedUntil = nil, true, 0, time.Time{}
+		a.cred, a.loaded, a.sources = nil, true, nil
 		d.log.Info("web admin password removed")
 		return nil
 	}
@@ -176,9 +272,18 @@ func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
 	if _, err := rand.Read(salt); err != nil {
 		return err
 	}
+	// Hash with mu released, one hash at a time, as for a login.
+	before := a.cred
+	a.mu.Unlock()
+	a.hashMu.Lock()
 	hash, err := hashPassword(new, salt, webIterations)
+	a.hashMu.Unlock()
+	a.mu.Lock()
 	if err != nil {
 		return err
+	}
+	if a.cred != before {
+		return api.Errorf(409, "the admin password changed meanwhile; try again")
 	}
 	nc := &webCredential{Algo: "pbkdf2-sha256", Iterations: webIterations, Salt: base64.StdEncoding.EncodeToString(salt),
 		Hash: base64.StdEncoding.EncodeToString(hash), SetAt: time.Now().UTC().Truncate(time.Millisecond)}
@@ -190,52 +295,13 @@ func (d *Daemon) WebSetPassword(current, new string, privileged bool) error {
 	if err := writeFileAtomic(d.webAdminPath(), data, 0o600); err != nil {
 		return fmt.Errorf("cannot store the admin password: %w", err)
 	}
-	a.cred, a.loaded, a.fails, a.lockedUntil = nc, true, 0, time.Time{}
+	a.cred, a.loaded, a.sources = nc, true, nil
 	d.log.Info("web admin password set", "by_root", privileged)
 	return nil
 }
 
-// writeFileAtomic writes data to path through a temporary file in the same
-// directory, so a reader never sees half a file, and a power loss leaves
-// either the old file or the new one: the data reaches the disk before the
-// rename, and the rename before the function returns. A node loses power
-// often, and an empty profile.yaml would keep it off the mesh.
+// writeFileAtomic is fsutil.WriteFile: whole on disk before it replaces
+// the old file.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	// A name of its own: two writers of the same file must not share one.
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	fail := func(err error) error {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Chmod(mode); err != nil {
-		return fail(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := f.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		d.Close()
-	}
-	return nil
+	return fsutil.WriteFile(path, data, mode)
 }

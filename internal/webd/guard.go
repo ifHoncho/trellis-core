@@ -1,9 +1,9 @@
 package webd
 
 import (
-	"context"
 	"net"
 	"net/netip"
+	"sync"
 )
 
 // The UI is reachable only from the mesh and this node's client ports
@@ -51,15 +51,68 @@ func (g *guardedListener) Accept() (net.Conn, error) {
 			c.Close()
 			continue
 		}
-		info, _ := g.s.webInfo(context.Background())
+		info, _ := g.s.cachedInfo()
 		prefix, err := netip.ParsePrefix(info.Prefix)
 		if err != nil {
 			prefix = defaultPrefix
 		}
-		if allowed(la.AddrPort().Addr(), ra.AddrPort().Addr(), prefix, info.WANAccess) {
-			return c, nil
+		if !allowed(la.AddrPort().Addr(), ra.AddrPort().Addr(), prefix, info.WANAccess) {
+			g.s.log.Debug("refused a connection from outside the mesh", "local", la.String(), "remote", ra.String())
+			c.Close()
+			continue
 		}
-		g.s.log.Debug("refused a connection from outside the mesh", "local", la.String(), "remote", ra.String())
+		if cc := g.s.track(c, ra.AddrPort().Addr().Unmap()); cc != nil {
+			return cc, nil
+		}
+		g.s.log.Debug("refused a connection: too many open from one address", "remote", ra.String(), "limit", connsPerAddr)
 		c.Close()
 	}
+}
+
+// connsPerAddr bounds the connections one address may hold open: a browser
+// uses a handful, and a client of the node's Wi-Fi must not be able to
+// take all of webd's.
+const connsPerAddr = 32
+
+// track counts c against its remote address, or returns nil when that
+// address has too many open already.
+func (s *Server) track(c net.Conn, addr netip.Addr) net.Conn {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conns == nil {
+		s.conns = map[netip.Addr]int{}
+	}
+	if s.conns[addr] >= connsPerAddr {
+		return nil
+	}
+	s.conns[addr]++
+	return &trackedConn{Conn: c, release: func() {
+		s.connMu.Lock()
+		defer s.connMu.Unlock()
+		if s.conns[addr]--; s.conns[addr] <= 0 {
+			delete(s.conns, addr)
+		}
+	}}
+}
+
+// trackedConn gives its address's count back once, when closed.
+type trackedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *trackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
+}
+
+// CloseWrite lets net/http half-close a plain TCP connection, as it does
+// for one that is not wrapped.
+func (c *trackedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }

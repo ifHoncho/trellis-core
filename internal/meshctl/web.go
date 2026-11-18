@@ -100,7 +100,7 @@ func webPassword(ctx context.Context, c *api.Client, args []string, stdout, stde
 	if pw == "" && !*clear {
 		return errors.New("the password is empty; nothing changed (use --clear to remove it)")
 	}
-	if err := c.WebSetPassword(ctx, "", pw); err != nil {
+	if err := c.WebSetPassword(ctx, "", "", pw); err != nil {
 		var ae *api.Error
 		if errors.As(err, &ae) && (ae.Status == 401 || ae.Status == 403) {
 			return fmt.Errorf("%w (run meshctl as root: only root sets the password without the current one)", err)

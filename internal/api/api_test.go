@@ -24,6 +24,7 @@ type fakeProvider struct {
 	identified string
 	pkg        []byte
 	pkgDry     bool
+	from       string
 }
 
 func (f *fakeProvider) UpgradeState(ctx context.Context) (*UpgradeState, error) {
@@ -90,7 +91,8 @@ func (f *fakeProvider) Doctor(ctx context.Context) (string, error) { return "rep
 func (f *fakeProvider) WebInfo() WebInfo {
 	return WebInfo{Callsign: "n1", AdminSet: true, Prefix: "10.73.0.0/16"}
 }
-func (f *fakeProvider) WebLogin(password string) error {
+func (f *fakeProvider) WebLogin(from, password string) error {
+	f.from = from
 	switch password {
 	case "right-password":
 		return nil
@@ -99,7 +101,7 @@ func (f *fakeProvider) WebLogin(password string) error {
 	}
 	return ErrBadPassword
 }
-func (f *fakeProvider) WebSetPassword(current, new string, privileged bool) error {
+func (f *fakeProvider) WebSetPassword(from, current, new string, privileged bool) error {
 	f.privileged = &privileged
 	return nil
 }
@@ -213,19 +215,19 @@ func TestConfigChanges(t *testing.T) {
 
 func TestWebAuthEndpoints(t *testing.T) {
 	p, c, ctx := startServer(t)
-	if err := c.WebLogin(ctx, "right-password"); err != nil {
-		t.Errorf("login: %v", err)
+	if err := c.WebLogin(ctx, "10.73.5.9", "right-password"); err != nil || p.from != "10.73.5.9" {
+		t.Errorf("login: %v, from %q", err, p.from)
 	}
 	var ae *Error
-	if err := c.WebLogin(ctx, "wrong"); !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
+	if err := c.WebLogin(ctx, "", "wrong"); !errors.As(err, &ae) || ae.Status != http.StatusUnauthorized {
 		t.Errorf("wrong password: %v", err)
 	}
-	if err := c.WebLogin(ctx, "locked"); !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || ae.RetryAfter != 8 {
+	if err := c.WebLogin(ctx, "", "locked"); !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || ae.RetryAfter != 8 {
 		t.Errorf("lockout: %+v", err)
 	}
 	// Only root on the socket is privileged: the server reads the peer's
 	// uid from the connection, the request cannot claim it.
-	if err := c.WebSetPassword(ctx, "", "new-password"); err != nil || p.privileged == nil {
+	if err := c.WebSetPassword(ctx, "", "", "new-password"); err != nil || p.privileged == nil {
 		t.Fatalf("set password: %v", err)
 	}
 	if want := os.Getuid() == 0; *p.privileged != want {

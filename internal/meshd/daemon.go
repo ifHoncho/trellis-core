@@ -23,6 +23,7 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/batadv"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/gnss"
 	"meridian/trellis/internal/gossip"
 	"meridian/trellis/internal/hwdb"
@@ -333,9 +334,17 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 		return err
 	}
 	defer unlock()
+	// Temporary files of writes a power loss cut short. Only meshd writes
+	// here, and the lock says no other meshd runs.
+	for _, f := range fsutil.RemoveStale(d.opts.StateDir) {
+		d.log.Info("removed a half-written file", "path", f)
+	}
 	ident, changed, err := nodestate.EnsureIdentity(d.opts.StateDir, d.cfg.NodeID)
 	if err != nil {
 		return fmt.Errorf("identity: %w", err)
+	}
+	if ident.Recovered != "" {
+		d.log.Warn("identity recovered", "why", ident.Recovered, "mac", ident.MAC, "node_id", ident.NodeID)
 	}
 	if changed {
 		d.log.Info("identity written", "mac", ident.MAC, "node_id", ident.NodeID, "source", ident.NodeIDSource)
@@ -344,7 +353,10 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.ident = ident
 	d.identMu.Unlock()
 	if d.radioMem, err = nodestate.LoadRadios(d.opts.StateDir); err != nil {
-		return err
+		if d.radioMem == nil {
+			return err
+		}
+		d.log.Warn("radio memory", "err", err)
 	}
 
 	if nl, err := nl80211.Dial(); err != nil {

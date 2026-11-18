@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,10 +70,9 @@ var ErrPermission = errors.New("permission denied")
 func (c *Client) Raw(ctx context.Context, method, path, query string, body []byte) (int, string, []byte, error) {
 	ctx, cancel := bounded(ctx)
 	defer cancel()
-	u := "http://meshd/" + Version + path
-	if query != "" {
-		u += "?" + query
-	}
+	// Built, not pasted together: path is a decoded path, and must reach
+	// meshd as that path and nothing else.
+	u := (&url.URL{Scheme: "http", Host: "meshd", Path: "/" + Version + path, RawQuery: query}).String()
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -259,12 +259,13 @@ func (c *Client) WebInfo(ctx context.Context) (*WebInfo, error) {
 	return &out, nil
 }
 
-// WebLogin checks the admin password.
-func (c *Client) WebLogin(ctx context.Context, password string) error {
-	return c.do(ctx, http.MethodPost, "/web/login", LoginInput{Password: password}, nil)
+// WebLogin checks the admin password; from is where the attempt comes
+// from ("" for a local caller).
+func (c *Client) WebLogin(ctx context.Context, from, password string) error {
+	return c.do(ctx, http.MethodPost, "/web/login", LoginInput{Password: password, From: from}, nil)
 }
 
-// WebSetPassword sets the admin password.
-func (c *Client) WebSetPassword(ctx context.Context, current, new string) error {
-	return c.do(ctx, http.MethodPut, "/web/password", PasswordInput{Current: current, New: new}, nil)
+// WebSetPassword sets the admin password; from as for WebLogin.
+func (c *Client) WebSetPassword(ctx context.Context, from, current, new string) error {
+	return c.do(ctx, http.MethodPut, "/web/password", PasswordInput{Current: current, New: new, From: from}, nil)
 }

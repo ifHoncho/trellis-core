@@ -83,7 +83,10 @@ func (s *Server) secure(next http.Handler) http.Handler {
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.webInfo(r.Context()) // notices a password changed behind webd's back
+		// Asked, not cached: a password changed behind webd's back ends
+		// the session before this request, not after. (A request here goes
+		// to meshd anyway; only the guard must never wait on it.)
+		s.webInfo(r.Context())
 		if !s.authenticated(r) {
 			writeError(w, http.StatusUnauthorized, "sign in first")
 			return
@@ -163,7 +166,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	if err := s.meshd.WebLogin(r.Context(), in.Password); err != nil {
+	if err := s.meshd.WebLogin(r.Context(), remoteIP(r), in.Password); err != nil {
 		s.log.Warn("sign-in refused", "from", remoteIP(r), "err", err)
 		writeAPIError(w, err)
 		return
@@ -209,7 +212,7 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the new password is empty")
 		return
 	}
-	if err := s.meshd.WebSetPassword(r.Context(), in.Current, in.New); err != nil {
+	if err := s.meshd.WebSetPassword(r.Context(), remoteIP(r), in.Current, in.New); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -229,8 +232,13 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, apiPrefix)
 	// meshd's /web endpoints are webd's own business with meshd: the
-	// password check must not be reachable around the login handler.
-	if path == "/web" || strings.HasPrefix(path, "/web/") {
+	// password check must not be reachable around the login handler. No
+	// API path has escapes, dots or empty segments, so a decoded path with
+	// any of them is refused rather than re-read by meshd as another path
+	// (/web%252Flogin decodes to /web%2Flogin, which meshd would decode
+	// again).
+	if path == "/web" || strings.HasPrefix(path, "/web/") ||
+		strings.ContainsAny(path, "%?#\\") || strings.Contains(path, "..") || strings.Contains(path, "//") {
 		writeError(w, http.StatusNotFound, "no such API endpoint")
 		return
 	}
@@ -240,6 +248,11 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 	limit, wait := int64(maxRequest), 25*time.Second
 	if r.Method == http.MethodPost && path == "/upgrade" {
 		limit, wait = api.MaxPackage, 2*time.Minute
+		// Past the server's read and write timeouts: megabytes over a slow
+		// mesh link, then meshd's check of the package.
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(wait))
+		_ = rc.SetWriteDeadline(time.Now().Add(wait + 30*time.Second))
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		var err error
@@ -259,7 +272,10 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		s.forgetInfo() // the change may alter what webd itself goes by
+		// The change may alter what webd itself goes by (wan_access, the
+		// prefix): ask now, so the next connection is decided by it.
+		s.forgetInfo()
+		s.webInfo(r.Context())
 		s.log.Info("API change", "method", r.Method, "path", path, "query", r.URL.RawQuery, "status", code, "from", remoteIP(r))
 	}
 	h := w.Header()
@@ -292,6 +308,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming is not supported here")
 		return
 	}
+	// A stream lasts as long as the page is open: each write gets its own
+	// deadline instead of the server's.
+	rc := http.NewResponseController(w)
+	extend := func() { _ = rc.SetWriteDeadline(time.Now().Add(writeTimeout)) }
+	extend()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
@@ -321,16 +342,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case ev := <-ch:
+			extend()
 			if _, err := fmt.Fprintf(out, "event: %s\ndata: %s\n\n", ev.name, ev.data); err != nil {
 				return
 			}
 			flush()
 		case <-beat.C:
+			extend()
 			if _, err := fmt.Fprint(out, ": keep-alive\n\n"); err != nil {
 				return
 			}
 			flush()
 		case <-check.C:
+			extend()
 			if !s.authenticated(r) {
 				fmt.Fprint(out, "event: signed-out\ndata: {}\n\n")
 				flush()

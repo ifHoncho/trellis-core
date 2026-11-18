@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,7 +87,15 @@ type portsReconciler struct {
 	loaded    bool   // leftover addresses and claims read from the run directory
 	addrsOut  string // what was last written there
 	claimsOut string
+
+	// What otherConfig looks at, read at most every hostCacheFor: it is
+	// asked for every port on every pass. Called with mu held.
+	hostAt    time.Time
+	ifupdown  map[string]bool // interfaces /etc/network/interfaces* mention
+	dhcpcdRun bool
 }
+
+const hostCacheFor = 30 * time.Second
 
 // addrsFile records the addresses meshd put on auto WAN ports, so a meshd
 // restarted after a crash recognises them as its own rather than as the
@@ -211,6 +218,14 @@ func (r *portsReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 		case p.role == portMissing:
 			warn("warning", "port-missing", "port %s (role auto) does not exist", name)
 		}
+		if p.role == portWAN && p.lease != nil {
+			if _, mesh, err := net.ParseCIDR(r.d.profile.Prefix); err == nil {
+				if sub := p.lease.Subnet(); sub.Contains(mesh.IP) || mesh.Contains(sub.IP) {
+					warn("warning", "wan-overlaps-mesh", "the uplink on %s is %s, which overlaps the mesh prefix %s: hosts in the overlap are not reachable from the mesh, nor the mesh from them. "+
+						"Give the mesh another prefix (profile), or the uplink another subnet", name, sub, mesh)
+				}
+			}
+		}
 	}
 	r.publish()
 	return res, nil
@@ -265,11 +280,11 @@ func (r *portsReconciler) step(p *autoPort, res *reconcile.Result) bool {
 		// cable moved faster than a pass): nothing decided before holds.
 		changed := false
 		if p.ifidx != 0 {
-			changed = r.release(p)
+			r.release(p)
 			r.giveBack(p, false)
 			p.forgetSystem()
 			r.set(p, "", "")
-			changed = true
+			changed = true // decided afresh below, whatever release did
 		}
 		p.ifidx = idx
 		if changed {
@@ -501,10 +516,13 @@ func (r *portsReconciler) otherConfig(name string) string {
 	if r.d.opts.NoHostConfig {
 		return ""
 	}
-	if ifupdownConfigures(name) {
+	if time.Since(r.hostAt) > hostCacheFor {
+		r.ifupdown, r.dhcpcdRun, r.hostAt = ifupdownInterfaces(), processRunning("dhcpcd"), time.Now()
+	}
+	if r.ifupdown[name] {
 		return "it is configured in /etc/network/interfaces; to hand it to Trellis, list it in node.yaml with role auto"
 	}
-	if processRunning("dhcpcd") {
+	if r.dhcpcdRun {
 		return "dhcpcd is running and may manage it; to hand it to Trellis, list it in node.yaml with role auto"
 	}
 	return ""
@@ -1008,9 +1026,10 @@ func networkdState(ifindex int) string {
 	return ""
 }
 
-// ifupdownConfigures reports whether /etc/network/interfaces (or its .d
-// directory) mentions the interface.
-func ifupdownConfigures(name string) bool {
+// ifupdownInterfaces lists the interfaces /etc/network/interfaces (or its
+// .d directory) mentions.
+func ifupdownInterfaces() map[string]bool {
+	out := map[string]bool{}
 	files := []string{"/etc/network/interfaces"}
 	if more, err := filepath.Glob("/etc/network/interfaces.d/*"); err == nil {
 		files = append(files, more...)
@@ -1022,12 +1041,17 @@ func ifupdownConfigures(name string) bool {
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			f := strings.Fields(line)
-			if len(f) >= 2 && (f[0] == "iface" || f[0] == "auto" || f[0] == "allow-hotplug") && slices.Contains(f[1:], name) {
-				return true
+			switch {
+			case len(f) >= 2 && f[0] == "iface": // iface NAME inet METHOD
+				out[f[1]] = true
+			case len(f) >= 2 && (f[0] == "auto" || f[0] == "allow-hotplug"): // auto NAME…
+				for _, name := range f[1:] {
+					out[name] = true
+				}
 			}
 		}
 	}
-	return false
+	return out
 }
 
 // processRunning reports whether a process with this command name exists.

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"meridian/trellis/internal/fsutil"
 )
 
 // File names under the state directory.
@@ -33,6 +35,10 @@ type Identity struct {
 	// APPassphrase is the generated client-AP passphrase, used when the node
 	// config sets none. Generated once so phones stay joined across restarts.
 	APPassphrase string `yaml:"ap_passphrase,omitempty"`
+
+	// Recovered says, when EnsureIdentity had to restore the identity from
+	// its backup, what was wrong with the file. Not stored.
+	Recovered string `yaml:"-"`
 }
 
 // HardwareAddr parses the MAC.
@@ -159,30 +165,103 @@ func macLess(a, b string) bool {
 	return bytes.Compare(ma, mb) < 0
 }
 
-// SaveIdentity writes the identity file.
+// SaveIdentity writes the identity file, and then its backup.
 func SaveIdentity(dir string, id *Identity) error {
-	return writeAtomic(filepath.Join(dir, IdentityFile), id, 0o600)
+	path := filepath.Join(dir, IdentityFile)
+	if err := writeAtomic(path, id, 0o600); err != nil {
+		return err
+	}
+	// The backup is what EnsureIdentity falls back on when the file itself
+	// is damaged; a failure to write it does not fail the save.
+	_ = writeAtomic(path+backupSuffix, id, 0o600)
+	return nil
+}
+
+// backupSuffix names the identity's backup; damagedSuffix the damaged file
+// a recovery set aside.
+const (
+	backupSuffix  = ".bak"
+	damagedSuffix = ".bad"
+)
+
+// errEmptyIdentity is an identity file with nothing in it: a write that
+// never reached the disk (releases before 0.2.2 did not sync it).
+var errEmptyIdentity = errors.New("the file is empty")
+
+// readIdentity reads an identity file. It reports an existing file that
+// is damaged (empty, cut short, a MAC that is not one) as an error; a
+// missing one as os.ErrNotExist. A file written by hand without a MAC is
+// fine: EnsureIdentity gives it one.
+func readIdentity(path string) (*Identity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	id := &Identity{}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, errEmptyIdentity
+	}
+	if err := yaml.Unmarshal(data, id); err != nil {
+		return nil, err
+	}
+	if id.MAC != "" {
+		m, err := net.ParseMAC(id.MAC)
+		if err != nil || len(m) != 6 {
+			return nil, fmt.Errorf("mac %q is not a MAC address", id.MAC)
+		}
+		id.MAC = m.String() // the form gossip uses (lower case, colons)
+	}
+	return id, nil
 }
 
 // EnsureIdentity loads the identity file, creating it on first run, and
 // reconciles the node ID with the pinned value from config (0 = none).
 // It returns the identity and whether the file was written.
+//
+// A damaged file (a power loss while it was written, a bad edit) is never
+// replaced by a new identity, which would quietly give the node a new MAC,
+// node ID and Wi-Fi passphrase: the backup written with every save is
+// used, and the damaged file kept beside it. With no usable backup either,
+// EnsureIdentity fails and says what to do.
 func EnsureIdentity(dir string, pinnedID int) (*Identity, bool, error) {
 	path := filepath.Join(dir, IdentityFile)
-	id := &Identity{}
 	changed := false
-	data, err := os.ReadFile(path)
+	id, err := readIdentity(path)
 	switch {
 	case err == nil:
-		if err := yaml.Unmarshal(data, id); err != nil {
-			return nil, false, fmt.Errorf("%s: %w", path, err)
-		}
 	case errors.Is(err, os.ErrNotExist):
-		changed = true
+		if bak, berr := readIdentity(path + backupSuffix); berr == nil {
+			id, changed = bak, true
+			id.Recovered = "the identity file was missing; restored from " + IdentityFile + backupSuffix
+		} else {
+			id, changed = &Identity{}, true // first run
+		}
 	default:
-		return nil, false, err
+		bak, berr := readIdentity(path + backupSuffix)
+		if berr != nil && errors.Is(err, errEmptyIdentity) {
+			// An empty file holds nothing to protect: it is a first save
+			// that never reached the disk, or one from a release that did
+			// not sync it and made no backup. Start afresh, as those
+			// releases did, rather than keep the node off the mesh.
+			if rerr := os.Rename(path, path+damagedSuffix); rerr != nil {
+				return nil, false, fmt.Errorf("%s is empty; cannot set it aside: %w", path, rerr)
+			}
+			id, changed = &Identity{}, true
+			id.Recovered = "the identity file was empty and there was no backup; this node has a new identity, the empty file kept as " + IdentityFile + damagedSuffix
+			break
+		}
+		if berr != nil {
+			return nil, false, fmt.Errorf("%s is damaged (%v), and there is no usable backup (%s: %v). "+
+				"meshd will not make a new identity over it: that would give this node a new MAC, node ID and Wi-Fi passphrase. "+
+				"Restore the file, or remove it to start this node with a new identity", path, err, IdentityFile+backupSuffix, berr)
+		}
+		if rerr := os.Rename(path, path+damagedSuffix); rerr != nil {
+			return nil, false, fmt.Errorf("%s is damaged (%v); cannot set it aside: %w", path, err, rerr)
+		}
+		id, changed = bak, true
+		id.Recovered = fmt.Sprintf("the identity file was damaged (%v); restored from %s, the damaged one kept as %s", err, IdentityFile+backupSuffix, IdentityFile+damagedSuffix)
 	}
-	if _, perr := net.ParseMAC(id.MAC); perr != nil || id.MAC == "" {
+	if id.MAC == "" {
 		mac, err := RandomMAC()
 		if err != nil {
 			return nil, false, err
@@ -208,12 +287,23 @@ func EnsureIdentity(dir string, pinnedID int) (*Identity, bool, error) {
 		// claimed ID (won after a conflict) is kept across restarts.
 		id.NodeID, id.NodeIDSource, changed = DeriveNodeID(id.HardwareAddr()), IDDerived, true
 	}
-	if changed {
-		if err := writeAtomic(path, id, 0o600); err != nil {
-			return nil, false, err
+	if !changed {
+		// Nodes set up before the backup existed get one now, and a hand
+		// edit of the file reaches the backup.
+		if bak, err := readIdentity(path + backupSuffix); err != nil || !sameIdentity(bak, id) {
+			_ = writeAtomic(path+backupSuffix, id, 0o600)
 		}
+		return id, false, nil
 	}
-	return id, changed, nil
+	if err := SaveIdentity(dir, id); err != nil {
+		return nil, false, err
+	}
+	return id, true, nil
+}
+
+func sameIdentity(a, b *Identity) bool {
+	return a.MAC == b.MAC && a.NodeID == b.NodeID && a.NodeIDSource == b.NodeIDSource &&
+		a.Created.Equal(b.Created) && a.APPassphrase == b.APPassphrase
 }
 
 // RadioRecord is what the node remembers about one radio.
@@ -243,7 +333,9 @@ func LoadRadios(dir string) (*Radios, error) {
 		return nil, err
 	}
 	if err := yaml.Unmarshal(data, r); err != nil {
-		return nil, fmt.Errorf("%s: %w", RadiosFile, err)
+		// Only what the node learned about its radios: it learns it again.
+		// The memory comes back empty, with the error to report.
+		return &Radios{Radios: map[string]*RadioRecord{}}, fmt.Errorf("%s is damaged, starting with an empty radio memory: %w", RadiosFile, err)
 	}
 	if r.Radios == nil {
 		r.Radios = map[string]*RadioRecord{}
@@ -267,18 +359,11 @@ func (r *Radios) Get(fingerprint string) *RadioRecord {
 }
 
 func writeAtomic(path string, v any, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	data, err := yaml.Marshal(v)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsutil.WriteFile(path, data, mode)
 }
 
 // FormatMAC lower-cases a MAC string.

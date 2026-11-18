@@ -187,15 +187,28 @@ func (l *Lease) Subnet() *net.IPNet {
 // Expires is when the lease runs out.
 func (l *Lease) Expires() time.Time { return l.Start.Add(l.Duration) }
 
+// Bounds on what a DHCP server may hand out. The server is on a network
+// Trellis does not control, and its lease becomes routes.
+const (
+	minPrefixLen = 8                // a shorter mask would route a large part of the internet out of the port
+	minLease     = 10 * time.Second // shorter would renew every few seconds; refused, since using it longer than granted risks a clash
+	maxLease     = 365 * 24 * time.Hour
+)
+
 // leaseFrom builds a lease from an ACK.
 func leaseFrom(ack *Packet, from net.HardwareAddr, now time.Time) (*Lease, error) {
 	ip := ack.YIAddr.To4()
-	if ip == nil || ip.IsUnspecified() {
-		return nil, errors.New("ACK without an address")
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.Equal(net.IPv4bcast) {
+		return nil, fmt.Errorf("ACK without a usable address (%v)", ack.YIAddr)
 	}
 	mask := net.IPMask(ack.Options[optSubnetMask])
 	if len(mask) != 4 {
 		mask = ip.DefaultMask()
+	}
+	if ones, bits := mask.Size(); bits == 0 {
+		return nil, fmt.Errorf("the server's subnet mask %v is not a prefix", net.IP(mask))
+	} else if ones < minPrefixLen {
+		return nil, fmt.Errorf("the server's subnet mask /%d is wider than /%d", ones, minPrefixLen)
 	}
 	l := &Lease{Addr: net.IPNet{IP: ip, Mask: mask}, Router: ack.ip4Opt(optRouter), Domain: string(ack.Options[optDomain]),
 		Server: ack.ServerID(), ServerMAC: from, Duration: ack.seconds(optLeaseTime), Start: now}
@@ -205,18 +218,20 @@ func leaseFrom(ack *Packet, from net.HardwareAddr, now time.Time) (*Lease, error
 	for v := ack.Options[optDNS]; len(v) >= 4; v = v[4:] {
 		l.DNS = append(l.DNS, net.IPv4(v[0], v[1], v[2], v[3]).To4())
 	}
-	if l.Duration == 0 {
+	switch {
+	case l.Duration == 0:
 		l.Duration = time.Hour
-	}
-	if l.Duration == 0xffffffff*time.Second { // infinite
-		l.Duration = 365 * 24 * time.Hour
+	case l.Duration < minLease:
+		return nil, fmt.Errorf("the server's lease of %v is shorter than %v", l.Duration, minLease)
+	case l.Duration > maxLease: // infinite (0xffffffff) or nearly
+		l.Duration = maxLease
 	}
 	l.T1, l.T2 = ack.seconds(optT1), ack.seconds(optT2)
 	if l.T1 <= 0 || l.T1 >= l.Duration {
 		l.T1 = l.Duration / 2
 	}
 	if l.T2 <= l.T1 || l.T2 >= l.Duration {
-		l.T2 = l.Duration * 7 / 8
+		l.T2 = l.Duration - l.Duration/8 // 7/8, without overflowing
 	}
 	return l, nil
 }

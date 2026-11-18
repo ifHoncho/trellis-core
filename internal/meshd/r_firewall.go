@@ -12,7 +12,7 @@ import (
 )
 
 // firewallOpenNotice is the status line of a node open from outside.
-const firewallOpenNotice = "this node takes connections from outside the mesh to every service its system runs. Closed, it takes SSH, the web UI where it is served beyond the mesh, and the ports you list (firewall.wan: closed; Settings → Access)"
+const firewallOpenNotice = "the firewall is off: Trellis filters nothing on the uplink or other non-mesh interfaces, so the host's own firewall, if any, decides. Turned on, they get only SSH, the web UI where it is served beyond the mesh, and the ports you list (firewall.wan: closed; Settings → Access → Firewall)"
 
 // firewallReconciler owns the firewall towards everything outside the mesh
 // (firewall.* in node.yaml, docs/security.md R2): the nftables table

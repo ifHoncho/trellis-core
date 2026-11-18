@@ -480,7 +480,7 @@ func (f *fake) SetNode(ctx context.Context, raw []byte, dryRun bool) (*api.Apply
 		res.Effects = append(res.Effects, eff("warning", "ap-credentials", "The client Wi-Fi's name or passphrase changes. Devices must join again with the new ones, and so must you if you are on it."))
 	}
 	if !cur.Firewall.Closed() && n.Firewall.Closed() {
-		res.Effects = append(res.Effects, eff("warning", "firewall-closes", "The node closes to everything outside the mesh: from its uplink network it takes tcp/22, besides replies to its own traffic, ICMP and DHCP. Anything there that used this node's other services loses them; the mesh, its Wi-Fi and device ports, and the internet it shares are not affected."))
+		res.Effects = append(res.Effects, eff("warning", "firewall-closes", "Firewall on: from every interface but lo, br-mesh and anycast0 (the uplink, VPNs, containers) the node accepts tcp/22, plus replies, ICMP and DHCP, and drops new connections into the mesh except your DNAT port forwards. Services reached that way before stop answering; the mesh, this node's Wi-Fi and device ports, and the internet it shares are not affected."))
 	}
 
 	if cur.Web.WANAccess != n.Web.WANAccess {
@@ -829,7 +829,7 @@ func (f *fake) WebInfo() api.WebInfo {
 	return api.WebInfo{Callsign: f.node.Callsign, Version: "demo", AdminSet: f.password != "", Setup: f.setup, WANAccess: f.node.Web.WANAccess, Prefix: f.profile.Prefix}
 }
 
-func (f *fake) WebLogin(password string) error {
+func (f *fake) WebLogin(from, password string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.password == "" {
@@ -847,7 +847,7 @@ func (f *fake) WebLogin(password string) error {
 	return nil
 }
 
-func (f *fake) WebSetPassword(current, new string, privileged bool) error {
+func (f *fake) WebSetPassword(from, current, new string, privileged bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {

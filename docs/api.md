@@ -240,8 +240,8 @@ On the socket:
 | Request | Body | |
 |---|---|---|
 | `GET /web` | | what `webd` needs: `{callsign, version, admin_set, admin_since, setup, wan_access, prefix}` |
-| `POST /web/login` | `{"password"}` | checks it, with the lockout |
-| `PUT /web/password` | `{"current", "new"}` | sets it. Root on the socket needs no `current`, and removes the password with an empty `new`. |
+| `POST /web/login` | `{"password", "from"}` | checks it, with the lockout for `from` (the address `webd` saw; empty for a local caller) |
+| `PUT /web/password` | `{"current", "new", "from"}` | sets it. Root on the socket needs no `current`, and removes the password with an empty `new`. |
 
 `webd` does not pass these through: over the network only its own
 `/login` and `/password` reach them. `meshctl web password` is the reset.

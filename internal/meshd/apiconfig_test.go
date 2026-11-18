@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -332,16 +333,16 @@ func TestWebPassword(t *testing.T) {
 		t.Fatal("a fresh node has an admin password")
 	}
 	var ae *api.Error
-	if err := d.WebSetPassword("", "claimed-by-a-stranger", false); !errors.As(err, &ae) || ae.Status != 403 {
+	if err := d.WebSetPassword("", "", "claimed-by-a-stranger", false); !errors.As(err, &ae) || ae.Status != 403 {
 		t.Fatalf("unprivileged first password on a provisioned node: %v", err)
 	}
-	if err := d.WebLogin("anything"); !errors.As(err, &ae) || ae.Status != 403 {
+	if err := d.WebLogin("", "anything"); !errors.As(err, &ae) || ae.Status != 403 {
 		t.Errorf("login with no password set: %v", err)
 	}
-	if err := d.WebSetPassword("", "short", true); !errors.As(err, &ae) || ae.Status != 400 {
+	if err := d.WebSetPassword("", "", "short", true); !errors.As(err, &ae) || ae.Status != 400 {
 		t.Errorf("short password: %v", err)
 	}
-	if err := d.WebSetPassword("", "first-password", true); err != nil {
+	if err := d.WebSetPassword("", "", "first-password", true); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "state", webAdminFile))
@@ -351,52 +352,136 @@ func TestWebPassword(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(dir, "state", webAdminFile)); fi.Mode().Perm() != 0o600 {
 		t.Errorf("credential file mode %v", fi.Mode().Perm())
 	}
-	if err := d.WebLogin("first-password"); err != nil {
+	if err := d.WebLogin("", "first-password"); err != nil {
 		t.Errorf("login: %v", err)
 	}
-	if err := d.WebLogin("wrong"); !errors.Is(err, api.ErrBadPassword) {
+	if err := d.WebLogin("", "wrong"); !errors.Is(err, api.ErrBadPassword) {
 		t.Errorf("wrong password: %v", err)
 	}
 	// Changing it takes the current one.
-	if err := d.WebSetPassword("wrong", "second-password", false); !errors.As(err, &ae) || ae.Status != 401 {
+	if err := d.WebSetPassword("", "wrong", "second-password", false); !errors.As(err, &ae) || ae.Status != 401 {
 		t.Errorf("change with a wrong current password: %v", err)
 	}
-	if err := d.WebSetPassword("first-password", "second-password", false); err != nil {
+	if err := d.WebSetPassword("", "first-password", "second-password", false); err != nil {
 		t.Fatal(err)
 	}
-	if d.WebLogin("first-password") == nil || d.WebLogin("second-password") != nil {
+	if d.WebLogin("", "first-password") == nil || d.WebLogin("", "second-password") != nil {
 		t.Error("the password did not change")
 	}
 	// It survives a restart.
 	d2, err := New(d.opts)
-	if err != nil || !d2.WebInfo().AdminSet || d2.WebLogin("second-password") != nil {
+	if err != nil || !d2.WebInfo().AdminSet || d2.WebLogin("", "second-password") != nil {
 		t.Errorf("after restart: %v", err)
 	}
-	// Wrong passwords in a row lock logins out for a while, even the right one.
+	// Wrong passwords in a row lock that source out for a while, even with
+	// the right one; other sources are not held up.
+	const guesser, admin = "10.73.9.9", "10.73.1.2"
 	for i := 0; i < webFreeFailures; i++ {
-		if err := d.WebLogin("guess"); !errors.Is(err, api.ErrBadPassword) {
+		if err := d.WebLogin(guesser, "guess"); !errors.Is(err, api.ErrBadPassword) {
 			t.Fatalf("guess %d: %v", i, err)
 		}
 	}
-	if err := d.WebLogin("second-password"); !errors.As(err, &ae) || ae.Status != 429 || ae.RetryAfter < 1 {
+	if err := d.WebLogin(guesser, "second-password"); !errors.As(err, &ae) || ae.Status != 429 || ae.RetryAfter < 1 {
 		t.Errorf("after %d wrong passwords: %v", webFreeFailures, err)
 	}
-	d.webAuth.lockedUntil = time.Now().Add(-time.Second)
-	if err := d.WebLogin("second-password"); err != nil {
+	if err := d.WebLogin(admin, "second-password"); err != nil {
+		t.Errorf("another source during the guesser's lockout: %v", err)
+	}
+	if err := d.WebSetPassword(guesser, "second-password", "third-password", false); !errors.As(err, &ae) || ae.Status != 429 {
+		t.Errorf("password change from a locked-out source: %v", err)
+	}
+	d.webAuth.sources[guesser].lockedUntil = time.Now().Add(-time.Second)
+	if err := d.WebLogin(guesser, "second-password"); err != nil {
 		t.Errorf("after the lockout: %v", err)
 	}
+	if _, ok := d.webAuth.sources[guesser]; ok {
+		t.Error("a right password did not clear the source's failures")
+	}
+	// The table of sources stays bounded.
+	for i := 0; i < webSourcesMax+10; i++ {
+		d.webAuth.source(fmt.Sprintf("10.73.%d.%d", i/250, i%250), time.Now())
+	}
+	if n := len(d.webAuth.sources); n > webSourcesMax {
+		t.Errorf("%d sources tracked, over %d", n, webSourcesMax)
+	}
 	// Root can remove it (meshctl web password --clear).
-	if err := d.WebSetPassword("", "", true); err != nil || d.WebInfo().AdminSet {
+	if err := d.WebSetPassword("", "", "", true); err != nil || d.WebInfo().AdminSet {
 		t.Errorf("clear: %v", err)
 	}
 
 	// In setup mode, whoever sets the node up gives it its password.
 	s, _ := testDaemon(t, nil)
-	if err := s.WebSetPassword("", "set-during-setup", false); err != nil {
+	if err := s.WebSetPassword("", "", "set-during-setup", false); err != nil {
 		t.Fatalf("first password in setup mode: %v", err)
 	}
-	if err := s.WebSetPassword("", "taken-over", false); err == nil {
+	if err := s.WebSetPassword("", "", "taken-over", false); err == nil {
 		t.Error("a second unauthenticated password was accepted in setup mode")
+	}
+}
+
+// Parallel guesses from one source are counted one by one: no more than
+// webFreeFailures of them reach the hash before the lockout.
+func TestWebPasswordParallelGuesses(t *testing.T) {
+	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile})
+	if err := d.WebSetPassword("", "", "the-password", true); err != nil {
+		t.Fatal(err)
+	}
+	const n = 32
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { errs <- d.WebLogin("10.73.9.9", "guess") }()
+	}
+	wrong, locked := 0, 0
+	for i := 0; i < n; i++ {
+		var ae *api.Error
+		switch err := <-errs; {
+		case errors.Is(err, api.ErrBadPassword):
+			wrong++
+		case errors.As(err, &ae) && ae.Status == 429:
+			locked++
+		default:
+			t.Errorf("guess: %v", err)
+		}
+	}
+	if wrong != webFreeFailures || locked != n-webFreeFailures {
+		t.Errorf("%d guesses checked, %d locked out; want %d checked", wrong, locked, webFreeFailures)
+	}
+}
+
+// IPv6 sources are locked out by /64: a client cannot take a fresh address
+// for each guess. Filling the table does not push a lockout out.
+func TestWebPasswordSources(t *testing.T) {
+	for from, want := range map[string]string{
+		"10.73.1.2":            "10.73.1.2",
+		"::ffff:10.73.1.2":     "10.73.1.2",
+		"2001:db8:1:2:aaaa::1": "2001:db8:1:2::/64",
+		"2001:db8:1:2:bbbb::2": "2001:db8:1:2::/64",
+		"fe80::1%br-mesh":      "fe80::/64",
+		"":                     "",
+	} {
+		if got := sourceKey(from); got != want {
+			t.Errorf("sourceKey(%q) = %q, want %q", from, got, want)
+		}
+	}
+	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile})
+	if err := d.WebSetPassword("", "", "the-password", true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < webFreeFailures; i++ {
+		d.WebLogin(fmt.Sprintf("2001:db8:1:2::%x", i+1), "guess")
+	}
+	var ae *api.Error
+	if err := d.WebLogin("2001:db8:1:2::ffff", "the-password"); !errors.As(err, &ae) || ae.Status != 429 {
+		t.Errorf("a new address in a locked-out /64: %v", err)
+	}
+	d.webAuth.mu.Lock()
+	for i := 0; i < 2*webSourcesMax; i++ {
+		d.webAuth.source(fmt.Sprintf("10.73.%d.%d", i/250, i%250), time.Now())
+	}
+	_, kept := d.webAuth.sources["2001:db8:1:2::/64"]
+	d.webAuth.mu.Unlock()
+	if !kept {
+		t.Error("filling the table pushed out a locked-out source")
 	}
 }
 
