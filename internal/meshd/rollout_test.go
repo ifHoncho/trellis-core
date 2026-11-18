@@ -179,8 +179,12 @@ func TestRolloutHalts(t *testing.T) {
 
 	d2, _, key2, _ := rolloutDaemon(t)
 	r2 := testRollout(t, d2)
-	r2.Started = time.Now().Add(-rollout.Stalled - time.Minute)
 	sendRolloutMsg(t, d2, key2, r2)
+	// Got past the stall time ago (by this node's clock: the origin's
+	// start is not used).
+	d2.rollouts.mu.Lock()
+	d2.rollouts.cur.Received = time.Now().Add(-rollout.Stalled - time.Minute)
+	d2.rollouts.mu.Unlock()
 	step(d2)
 	if c := step(d2); c.Phase != rollout.Halted {
 		t.Fatalf("with the node before it silent past the stall: %+v", c)
@@ -274,9 +278,25 @@ func TestRolloutOver(t *testing.T) {
 	step(d)
 	s := &d.rollouts
 	s.mu.Lock()
-	over := d.rolloutOver(s.cur, macMe)
+	over := rollout.Over(&s.cur.Rollout, macMe, s.cur.Phase, s.cur.received(), s.others, time.Now())
 	s.mu.Unlock()
 	if !over {
 		t.Fatal("not over with every node finished")
+	}
+}
+
+// A node away when the rollout halted: back, it halts too instead of
+// upgrading by itself; and the rollout, stopped, ends once the nodes still
+// out have been silent for the stall time.
+func TestRolloutBackAfterHalt(t *testing.T) {
+	d, _, key, up := rolloutDaemon(t)
+	r := testRollout(t, d)
+	r.Order = []string{macMe, macFirst, macOrigin} // this node first
+	sendRolloutMsg(t, d, key, r)
+	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "halted", Reason: "me did not move on its turn"})
+	step(d)
+	c := step(d)
+	if c.Phase != rollout.Halted || c.Reason != "me did not move on its turn" || len(up.started) != 0 {
+		t.Fatalf("back after the halt: %+v, started %v", c, up.started)
 	}
 }

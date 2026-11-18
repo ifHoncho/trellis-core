@@ -199,17 +199,25 @@ func TestGatewayConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.Gateway.Mode != GatewayAuto || len(n.Gateway.ProbeTargets) != 3 || n.Gateway.ProbeIntervalMS != 1000 {
+	if n.Gateway.Mode != GatewayAuto || len(n.Gateway.ProbeTargets) != 3 || n.Gateway.ProbeIntervalMS != 1000 ||
+		!n.Gateway.WebChecking() || len(n.Gateway.WebCheckURLs) != 3 {
 		t.Errorf("gateway defaults: %+v", n.Gateway)
 	}
-	_, err = ParseNode([]byte("schema: 0\ncallsign: gw-1\ngateway: {mode: sometimes, probe_targets: [example.com], probe_interval_ms: 5}\n"))
+	_, err = ParseNode([]byte("schema: 0\ncallsign: gw-1\ngateway: {mode: sometimes, probe_targets: [example.com], probe_interval_ms: 5, web_check_urls: [\"http://192.0.2.1/x\", \"https://example.com/\"]}\n"))
 	if err == nil {
 		t.Fatal("bad gateway config accepted")
 	}
-	for _, want := range []string{"gateway.mode", "gateway.probe_targets[0]", "gateway.probe_interval_ms"} {
+	for _, want := range []string{"gateway.mode", "gateway.probe_targets[0]", "gateway.probe_interval_ms", "gateway.web_check_urls[1]"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %s: %v", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), "web_check_urls[0]") {
+		t.Errorf("a good URL refused: %v", err)
+	}
+	n, err = ParseNode([]byte("schema: 0\ncallsign: gw-1\ngateway: {web_check: false}\n"))
+	if err != nil || n.Gateway.WebChecking() {
+		t.Errorf("web_check: false: %v %+v", err, n.Gateway)
 	}
 }
 

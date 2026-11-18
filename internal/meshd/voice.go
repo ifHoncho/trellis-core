@@ -164,6 +164,10 @@ func (d *Daemon) Voice(ctx context.Context) (*api.VoiceState, error) {
 		st.Error = voiceNotInstalled
 		return st, nil
 	}
+	if m := d.voiceLibsMessage(); m != "" {
+		st.Error = m
+		return st, nil
+	}
 	b, answered := d.voiceStatus(ctx, time.Second)
 	switch {
 	case !answered:
@@ -221,10 +225,52 @@ func (d *Daemon) VoiceTest(ctx context.Context, in api.VoiceTestInput) error {
 	return nil
 }
 
-// voiceNotInstalled is what voice on a node without the package says.
-const voiceNotInstalled = "voice is on, but the trellis-voice package is not installed on this node: install it with trellis-deploy --voice, or apt install ./trellis-voice_*.deb"
+// voiceNotInstalled is what voice on a node whose package has none says:
+// the trellis package carries voice on arm64 and amd64.
+const voiceNotInstalled = "voice is on, but Trellis on this node has no voice: it is built for arm64 and amd64 only"
 
-// voiceUnitFile is where the trellis-voice package puts its unit.
+// voiceLibs are the libraries trellis-voiced loads at run time. The
+// package recommends them rather than requiring them: meshctl upgrade
+// installs with dpkg alone, often on a node with no network.
+var voiceLibs = []struct{ file, pkg string }{
+	{"libopus.so.0", "libopus0"},
+	{"libasound.so.2", "libasound2t64 (or libasound2)"},
+}
+
+// voiceLibDirs are where the libraries are looked for.
+var voiceLibDirs = []string{"/usr/lib/*", "/usr/lib", "/lib/*", "/lib", "/usr/lib64", "/usr/local/lib"}
+
+// voiceLibsMissing names the packages of the libraries voice needs that
+// are not on this node.
+func voiceLibsMissing() []string {
+	var out []string
+	for _, l := range voiceLibs {
+		found := false
+		for _, d := range voiceLibDirs {
+			if m, _ := filepath.Glob(filepath.Join(d, l.file)); len(m) > 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, l.pkg)
+		}
+	}
+	return out
+}
+
+// voiceLibsMessage says what to install, or "".
+func (d *Daemon) voiceLibsMessage() string {
+	if d.opts.NoHostConfig {
+		return ""
+	}
+	if m := voiceLibsMissing(); len(m) > 0 {
+		return "voice is on, but the libraries it loads are missing: install " + strings.Join(m, " and ") + " (sudo apt install libopus0 libasound2t64, or libasound2 on older releases; trellis-deploy installs them when the node has network)"
+	}
+	return ""
+}
+
+// voiceUnitFile is where the trellis package puts voice's unit.
 var voiceUnitFile = "/usr/lib/systemd/system/" + voiceUnit
 
 // voiceInstalled reports whether trellis-voiced is here: the package's
@@ -322,6 +368,11 @@ func (v *voiceReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 		res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "voice-not-installed", Message: voiceNotInstalled})
 		return res, nil
 	}
+	if m := v.d.voiceLibsMessage(); want && m != "" {
+		// Checked again every pass: started once they are installed.
+		res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "voice-libraries", Message: m})
+		return res, nil
+	}
 	if err := exec.CommandContext(ctx, "systemctl", verb, "--no-block", voiceUnit).Run(); err != nil {
 		if want {
 			// Tried again next pass, with the warning shown meanwhile.
@@ -354,11 +405,11 @@ func (d *Daemon) voiceWarnings(ctx context.Context) []reconcile.Warning {
 		return nil
 	}
 	var out []reconcile.Warning
-	// meshctl upgrade and the web UI replace trellis alone: the voice
-	// package then stays at its old version until it is upgraded too.
+	// The package restarts a running voice service when it is upgraded;
+	// one that was not (systemd away, a failed restart) runs the old binary.
 	if vs.Version != "" && vs.Version != d.opts.Version {
 		out = append(out, reconcile.Warning{Level: "warning", Code: "voice-version",
-			Message: "the voice service is version " + vs.Version + ", Trellis is " + d.opts.Version + ": upgrade the trellis-voice package too (trellis-deploy does both)"})
+			Message: "the voice service is version " + vs.Version + ", Trellis is " + d.opts.Version + ": restart it (sudo systemctl restart trellis-voiced)"})
 	}
 	if vs.Audio != nil {
 		for _, ch := range vs.Audio.ButtonHold {

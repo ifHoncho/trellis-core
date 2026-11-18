@@ -104,6 +104,7 @@ cleanup() {
     ip netns del "eud$i" 2>/dev/null
   done
   [ -f "$RUN/rtr.pid" ] && kill "$(cat "$RUN/rtr.pid")" 2>/dev/null
+  [ -f "$RUN/inetweb.pid" ] && kill "$(cat "$RUN/inetweb.pid")" 2>/dev/null
   for w in "$RUN"/webd*.pid; do [ -f "$w" ] && kill "$(cat "$w")" 2>/dev/null; done
   if [ -f "$RUN/node9/pid" ]; then kill "$(cat "$RUN/node9/pid")" 2>/dev/null; sleep 1; kill -9 "$(cat "$RUN/node9/pid")" 2>/dev/null; fi
   ip netns del node9 2>/dev/null; ip netns del eud9 2>/dev/null
@@ -182,6 +183,7 @@ $([ "$i" = 3 ] && echo "  - {name: eth3, role: auto}   # T9: created by the test
 ap: {enabled: false}
 gateway:
   probe_targets: [198.51.100.1, 198.51.100.2]
+  web_check_urls: ["http://203.0.113.10/generate_204"]
 YAML
   # Started directly, not through the NS function: "ip netns exec" execs
   # meshd in place, so $! is meshd's own pid and kill reaches meshd itself.
@@ -198,7 +200,9 @@ for i in $(seq 1 "$NODES"); do
   ip netns add "eud$i"
   ip link add "eth1" netns "node$i" type veth peer name "p$i" netns air
   ip link add "eth2" netns "node$i" type veth peer name "eth0" netns "eud$i"
-  NS air ip link set "p$i" master air0 up
+  # meshd raises the mesh port's MTU for batman-adv's header: the air
+  # side must carry those frames too.
+  NS air ip link set "p$i" mtu 1600 master air0 up
   NS "node$i" ip link set lo up
   NS "node$i" ip link set eth1 up
   NS "node$i" ip link set eth2 up
@@ -222,6 +226,11 @@ for i in 1 2; do
   NS "node$i" ip link set wan0 up
   NS "node$i" ip route add default via "100.64.$i.1"
 done
+# Its web server answers the nodes' web checks (204), or gives a WAN a
+# login page (CP tests). Started directly so $! is the server itself.
+mkdir -p "$RUN/portal"; rm -f "$RUN/portal"/portal-*
+ip netns exec inet python3 -I "$HERE/eud.py" webserve 203.0.113.10 80 "$RUN/portal" > "$RUN/inet-web.log" 2>&1 &
+echo $! > "$RUN/inetweb.pid"
 EUD="python3 -I $HERE/eud.py"
 # chain_drops <node> <chain> <comment>: packets counted by the rules with that comment in one chain
 chain_drops() {
@@ -696,6 +705,60 @@ NFT
   else
     skip "G9 client of a gateway that loses its WAN" "eud1 has no address (T7b)"
   fi
+
+  # CP1-CP3: a WAN behind a login page that answers pings, which the ICMP
+  # probes alone took for internet. The lab internet's web server gives
+  # node 1's WAN address a login page instead of the 204.
+  deadline=$((SECONDS + 30))
+  while [ $SECONDS -lt $deadline ] && { [ "$(jsonq 1 "s['gateway']['role']")" != gateway ] || [ "$(jsonq 1 "s['gateway'].get('web_check','')")" != ok ]; }; do sleep 1; done
+  wc1=$(jsonq 1 "s['gateway'].get('web_check','')")
+  touch "$RUN/portal/portal-100.64.1.2"
+  # Plugged into the hotel's network: the link goes down and comes back.
+  NS inet ip link set w1 down; sleep 4; NS inet ip link set w1 up
+  deadline=$((SECONDS + 25))
+  while [ $SECONDS -lt $deadline ] && [ "$(jsonq 1 "s['gateway'].get('web_check','') + ' ' + str(s['gateway']['wan_healthy'])")" != "portal True" ]; do sleep 1; done
+  deadline=$((SECONDS + 15))
+  while [ $SECONDS -lt $deadline ] && [ "$(jsonq 3 "sum(1 for c in s['gateway']['candidates'] if c['usable'])")" != 1 ]; do sleep 1; done
+  p1=$(jsonq 1 "' '.join([s['gateway']['role'].split()[0], s['gateway'].get('web_check',''), str(s['gateway']['wan_healthy'])])")
+  d1=$(jsonq 1 "s['gateway'].get('web_check_detail','')")
+  w1=$(jsonq 1 "any(w['code']=='wan-portal' for w in s['warnings'])")
+  u3=$(jsonq 3 "sum(1 for c in s['gateway']['candidates'] if c['usable'])")
+  s3=$(jsonq 3 "(s['gateway'].get('selected') or {}).get('node_id',0)")
+  net1=no; NS eud1 ping -c 2 -W 2 203.0.113.10 > /dev/null 2>&1 && net1=yes
+  if [ "$wc1" = ok ] && [ "$p1" = "client portal True" ] && [ "$w1" = True ] && [ "$u3" = 1 ] && [ "$s3" = 2 ] && [ "$net1" = yes ]; then
+    pass "CP1 node 1's WAN behind a login page (it answers pings): seen ($d1), not announced, node 3 uses node 2 only, node 1's client reaches the internet through node 2"
+  else
+    fail "CP1 WAN behind a login page" "before: web check $wc1; node 1: $p1 ($d1), warning $w1; node 3: $u3 usable, selected $s3; eud1 internet: $net1"
+  fi
+
+  # CP2: no other gateway: node 1's own client reaches the login page
+  # through node 1's WAN, to sign in; node 3 still gets nothing from it.
+  NS inet ip link set w2 down
+  deadline=$((SECONDS + 15))
+  while [ $SECONDS -lt $deadline ] && [ "$(jsonq 1 "(s['gateway'].get('selected') or {}).get('self', False)")" != True ]; do sleep 1; done
+  sleep 1
+  page=$(NS eud1 $EUD httpget http://203.0.113.10/news 2>&1)
+  self1=$(jsonq 1 "(s['gateway'].get('selected') or {}).get('self', False)")
+  if [ "$self1" = True ] && echo "$page" | grep -q '^302 http://login.lab/' && [ "$(gw_of3)" = none ]; then
+    pass "CP2 no other gateway: node 1's client gets the login page through node 1's WAN ($page); node 3 is not offered it"
+  else
+    fail "CP2 reaching the login page" "node 1 selected itself: $self1; eud1 got: $page; node 3 selected $(gw_of3)"
+  fi
+
+  # CP3: signed in: the WAN is shared again within seconds, with no hand on
+  # the node.
+  rm -f "$RUN/portal/portal-100.64.1.2"
+  t0=$SECONDS
+  deadline=$((SECONDS + 30))
+  while [ $SECONDS -lt $deadline ] && [ "$(gw_of3)" != lab-node-1 ]; do sleep 1; done
+  took=$((SECONDS - t0))
+  p3=$(jsonq 1 "s['gateway']['role'] + ' ' + s['gateway'].get('web_check','')")
+  if [ "$p3" = "gateway ok" ] && [ "$(gw_of3)" = lab-node-1 ]; then
+    pass "CP3 signed in: node 1 shares its WAN again and node 3 uses it, ${took} s later"
+  else
+    fail "CP3 shared again after signing in" "node 1: $p3; node 3 selected $(gw_of3) after ${took} s"
+  fi
+  wan_on 2; sleep 6
 
   # G7: connection pinning (A§8.5). Node 3 uses node 1; a much better node 2
   # appears; node 3 switches, but a connection opened through node 1 keeps
@@ -1290,13 +1353,36 @@ print(n)" 2>/dev/null || echo 0)
     fail "F1 firewall.wan closed" "open before=$open_before closed: unlisted=$shut listed=$listed mesh-side=$mesh icmp=$ping_ok clients' internet=$fwd into the mesh=$into ($into_drops dropped) status=[$fw] open after=$open_after ($(tr '\n' ' ' < "$RUN/f1.txt"))"
   fi
 
+  # F2: firewall.wan closed on a node that is not a gateway (node 3, no
+  # WAN): its client's internet goes through another node's gateway, ICMP
+  # and TCP alike, and the node itself still reaches the internet.
+  if [ -n "${eud3_ip:-}" ]; then
+    cp "$RUN/node3/node.yaml" "$RUN/node3/node.yaml.f2"
+    printf 'firewall:\n  wan: closed\n' >> "$RUN/node3/node.yaml"
+    ctl 3 reload > "$RUN/f2.txt" 2>&1
+    sleep 3
+    fw3=$(jsonq 3 "s['gateway']['firewall']")
+    ping3=no; NS eud3 ping -c 2 -W 2 203.0.113.10 > /dev/null 2>&1 && ping3=yes
+    web3=$(NS eud3 $EUD httpget http://203.0.113.10/generate_204 2>&1)
+    own3=$(NS node3 python3 -I "$HERE/eud.py" httpget http://203.0.113.10/generate_204 2>&1)
+    mv "$RUN/node3/node.yaml.f2" "$RUN/node3/node.yaml"
+    ctl 3 reload >> "$RUN/f2.txt" 2>&1
+    if [ "$fw3" = closed ] && [ "$ping3" = yes ] && [ "${web3% *}" = 204 ] && [ "${own3% *}" = 204 ]; then
+      pass "F2 firewall.wan closed on node 3 (no WAN): its client reaches the internet through $(gw_of3), ICMP and TCP, and so does node 3"
+    else
+      fail "F2 closed firewall on a non-gateway node" "firewall=$fw3 client ping=$ping3 client web=[$web3] node web=[$own3] via $(gw_of3) ($(tr '\n' ' ' < "$RUN/f2.txt"))"
+    fi
+  else
+    skip "F2 closed firewall on a non-gateway node" "eud3 has no address (T7b)"
+  fi
+
   # W5: a node with no configuration at all (setup mode), set up through
   # the web API only: it serves the wizard to a device on its port, takes
   # the mesh profile and a name, and joins the mesh.
   ip netns add node9; ip netns add eud9
   ip link add eth1 netns node9 type veth peer name p9 netns air
   ip link add eth2 netns node9 type veth peer name eth0 netns eud9
-  NS air ip link set p9 master air0 up
+  NS air ip link set p9 mtu 1600 master air0 up
   for l in lo eth1 eth2; do NS node9 ip link set "$l" up; done
   NS eud9 ip link set lo up; NS eud9 ip link set eth0 up
   mkdir -p "$RUN/node9/state" "$RUN/node9/run" "$RUN/node9/pm"

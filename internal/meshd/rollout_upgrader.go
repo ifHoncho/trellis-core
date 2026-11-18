@@ -13,6 +13,7 @@ import (
 
 	"meridian/trellis/internal/deb"
 	"meridian/trellis/internal/release"
+	"meridian/trellis/internal/rollout"
 	"meridian/trellis/internal/upgrade"
 )
 
@@ -41,7 +42,12 @@ type rolloutUpgrader interface {
 func (d *Daemon) rolloutUpgrader() rolloutUpgrader {
 	d.rollouts.upOnce.Do(func() {
 		if dir := d.opts.TestUpgraderDir; dir != "" {
-			d.rollouts.up = &labUpgrader{dir: dir, version: d.opts.Version}
+			l := &labUpgrader{dir: dir, version: d.opts.Version}
+			d.rollouts.up = l
+			// The lab's stall time, shorter than a real one (tests only).
+			if n, err := time.ParseDuration(l.read("stall", "") + "s"); err == nil && n > 0 {
+				rollout.Stalled = n
+			}
 		} else {
 			d.rollouts.up = &hostUpgrader{d: d}
 		}
@@ -89,11 +95,6 @@ func (h *hostUpgrader) Check(ctx context.Context, pkg []byte) (string, error) {
 		return "", err
 	}
 	sys := d.upgradeSys()
-	// The rollout carries trellis alone; trellis-voice goes on with it
-	// (trellis-deploy installs both).
-	if out, err := sys.Run(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev}", "trellis-voice"); err == nil && strings.HasPrefix(out, "ii") {
-		return "", errors.New("trellis-voice is installed, and a mesh-wide upgrade carries trellis only: upgrade this node with trellis-deploy")
-	}
 	keys, err := release.TrustedKeys(release.KeyDir)
 	if err != nil {
 		return "", err
@@ -146,6 +147,8 @@ func (h *hostUpgrader) Outcome(ctx context.Context, since time.Time) (bool, *upg
 //	refuse       when present, the node does not take rollouts (its text
 //	             says why)
 //	delay        seconds an upgrade takes (default 3)
+//	stall        seconds a node's turn may go unmoved (rollout.Stalled;
+//	             read at the start)
 //	started      written: when the last upgrade began (RFC 3339)
 //	last.json    written: how the last upgrade ended
 type labUpgrader struct {

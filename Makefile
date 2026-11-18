@@ -2,11 +2,13 @@
 #
 #   make            build bin/trellis for this machine (plus meshd/meshctl links)
 #   make cross      build dist/ binaries for arm64, armv7 and amd64
-#   make deb        build dist/deb/ packages: trellis (arm64, armhf, amd64) and trellis-batman-adv-dkms
+#   make deb        build dist/deb/ packages: trellis (arm64, armhf, amd64; voice in arm64 and amd64) and trellis-batman-adv-dkms
 #   make deb-test   install, upgrade, remove and purge the packages in Debian and Ubuntu containers
 #   make deploy-test  trellis-deploy against Debian and Ubuntu containers running sshd
 #   make release    dist/release/<version>/: signed packages and checksums (scripts/release.sh)
 #   make publish    the release on GitHub, after checking it (scripts/publish.sh; DRY_RUN=1 to try)
+#   make apt-repo APT_REPO=DIR APT_GPG_KEY=FINGERPRINT   add dist/release/<version>/'s packages to the apt repository in DIR
+#   make apt-test   an apt repository signed with a throwaway key: install, upgrade, tampering, in containers
 #   make deploy-tool  dist/trellis-deploy/: trellis-deploy for Linux, macOS and Windows (amd64, arm64)
 #   make test       unit tests (no root)
 #   make lab        lab tests in network namespaces (root, or a user namespace)
@@ -15,7 +17,7 @@
 #   make gen        regenerate netlink constants from the kernel headers
 #   make deploy     check, build and update every node in deploy.hosts
 #   make lab-scale  scale lab: 50 nodes, ID convergence and gossip volume (~6 min)
-#   make lab-rollout  rollout lab: a mesh-wide upgrade through 4 nodes (~2 min)
+#   make lab-rollout  rollout lab: a mesh-wide upgrade through 4 nodes (~3 min)
 #   make nodes      show meshctl status from every node in deploy.hosts
 #   make band BAND=2g [CHANNEL=6]   switch mesh-profile.yaml to a band and push it to every node
 #   make profile    push mesh-profile.yaml to every node and apply it live
@@ -34,7 +36,7 @@ ARCHES   = arm64 arm armv6 amd64
 # and tested on these only.
 VOICE_ARCHES = arm64 amd64
 
-.PHONY: static lab-voice lab-rollout all build cross deb deb-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: static lab-voice lab-rollout all build cross deb deb-test apt-repo apt-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -78,12 +80,9 @@ $(BATADV_TARBALL):
 deb: cross $(BATADV_TARBALL)
 	@rm -rf $(DEB_OUT)
 	@for pair in arm64:arm64 armhf:armv6 amd64:amd64; do \
+	  voiced=; [ -f dist/trellis-voiced-linux-$${pair##*:} ] && voiced="--voiced dist/trellis-voiced-linux-$${pair##*:}"; \
 	  $(GO) run ./tools/mkdeb trellis --version '$(VERSION)' --arch $${pair%%:*} \
-	    --binary dist/trellis-linux-$${pair##*:} --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
-	done
-	@for arch in $(VOICE_ARCHES); do \
-	  $(GO) run ./tools/mkdeb voice --version '$(VERSION)' --arch $$arch \
-	    --binary dist/trellis-voiced-linux-$$arch --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
+	    --binary dist/trellis-linux-$${pair##*:} $$voiced --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS) || exit 1; \
 	done
 	@$(GO) run ./tools/mkdeb batman-adv --source $(BATADV_TARBALL) --out $(DEB_OUT) --epoch '$(EPOCH)' --key '$(TRELLIS_RELEASE_KEY)' $(DEB_SIGN_FLAGS)
 
@@ -98,6 +97,16 @@ release:
 
 publish:
 	scripts/publish.sh
+
+# The apt repository: a directory to serve as it is (tools/aptrepo).
+APT_REPO    ?=
+APT_GPG_KEY ?=
+apt-repo:
+	@[ -n "$(APT_REPO)" ] && [ -n "$(APT_GPG_KEY)" ] || { echo "set APT_REPO (the repository's folder) and APT_GPG_KEY (the archive key)"; exit 2; }
+	$(GO) run ./tools/aptrepo --dir "$(APT_REPO)" --gpg-key "$(APT_GPG_KEY)" dist/release/$(VERSION)/*.deb
+
+apt-test:
+	scripts/apt-test.sh
 
 # trellis-deploy runs on the operator's computer, not on a node.
 DEPLOY_TOOL_OUT ?= dist/trellis-deploy
@@ -175,7 +184,7 @@ clean:
 	rm -rf bin dist
 
 deploy:
-	FAST='$(FAST)' DRY_RUN='$(DRY_RUN)' VOICE='$(VOICE)' scripts/deploy.sh $(HOSTS)
+	FAST='$(FAST)' DRY_RUN='$(DRY_RUN)' scripts/deploy.sh $(HOSTS)
 
 nodes:
 	scripts/deploy.sh --status $(HOSTS)
@@ -207,6 +216,6 @@ ui-dev: build
 	$(GO) build -o bin/fakemeshd ./tools/fakemeshd
 	@mkdir -p $(UI_DEV_DIR)
 	@echo "== http://127.0.0.1:8480  (password: trellis-demo; Ctrl-C stops both)"
-	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock --console $(UI_DEV_DIR)/console.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) & fake=$$!; \
+	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock --console $(UI_DEV_DIR)/console.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) $(if $(PORTAL),--portal) & fake=$$!; \
 	  trap "kill $$fake 2>/dev/null" EXIT INT TERM; sleep 0.5; \
 	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --voice-console $(UI_DEV_DIR)/console.sock --listen 127.0.0.1:8480 --plain-http

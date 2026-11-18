@@ -22,6 +22,7 @@ export function headline(st) {
 
 export function internetSummary(st) {
   const g = st.gateway;
+  if (g.web_check === 'portal') return { tone: 'warn', value: 'Login page', note: `Uplink ${g.wan} is behind a login page: not shared until someone signs in${g.selected && !g.selected.self ? `; devices use ${g.selected.callsign} meanwhile` : ''}` };
   if (g.selected && g.selected.self) return { tone: 'ok', value: 'Shared', note: `This node's uplink (${g.wan}) serves the mesh` };
   if (g.selected) return { tone: 'ok', value: `Via ${g.selected.callsign}`, note: `${mbps(g.selected.throughput_mbps)} Mbit/s path to that gateway` };
   if (g.wan_known && !g.wan_healthy) return { tone: 'bad', value: 'Down', note: `Uplink ${g.wan} is not answering, and no other gateway is usable` };

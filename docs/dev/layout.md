@@ -11,7 +11,8 @@ Everything else is under `internal/`, except:
   and Windows);
 - `tools/fakemeshd`, a development stand-in for `meshd` that serves the API
   from made-up data (`make ui-dev`);
-- `tools/mkdeb`, which builds and signs the Debian packages (`make deb`).
+- `tools/mkdeb`, which builds and signs the Debian packages (`make deb`);
+- `tools/aptrepo`, which keeps the apt repository (`make apt-repo`).
 
 | Package | What it does | Kernel interface |
 |---|---|---|
@@ -34,7 +35,7 @@ Everything else is under `internal/`, except:
 | `nft` | The bridge-family nftables ruleset for `bat0` and client ports; apply, verify, read counters | exec `nft` |
 | `sysctl` | `/proc/sys` get/set with change detection | procfs |
 | `gossip` | Node-to-node records (architecture §12.5): format, HMAC, replay-safe table, multicast socket | UDP multicast |
-| `probe` | WAN health: ICMP rounds out of one interface, healthy/unhealthy hysteresis | raw ICMP socket |
+| `probe` | WAN health: ICMP rounds out of one interface, healthy/unhealthy hysteresis; the web check that spots a login page | raw ICMP socket, HTTP out of one interface |
 | `dhcpc` | DHCPv4 client over a link-layer socket: probing auto ports, holding an auto WAN's lease (renew, rebind, expiry) | AF_PACKET socket |
 | `reconcile` | The loop: ordered reconcilers, kicks, timer, teardown in reverse | — |
 | `meshd` | The daemon: facts, reconcilers (below), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), mesh-wide profile changes (`meshchange.go`) and settling those made apart (`meshconflict.go`), channel surveys (`survey.go`), finding the mesh again (`findmesh.go`) with the nodes heard lately (`roster.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`), upgrades through the API (`apiupgrade.go`), mixed-release warnings (`releases.go`) | all of the above |
@@ -165,7 +166,7 @@ Rules the code keeps to (a test checks the first two):
 To work on it: `make ui-dev` serves the UI on `http://127.0.0.1:8480`
 against `tools/fakemeshd` (`SETUP=1` for the setup wizard, `LINKS=2` or `3`
 for more mesh links, HaLow among them, `UNRESTRICTED=1` for a mesh in
-unrestricted regulatory mode).
+unrestricted regulatory mode, `PORTAL=1` for an uplink behind a login page).
 `tools/uishot.py` takes screenshots of it with a headless Firefox, at any
 window size and in any theme, and reports JavaScript errors:
 

@@ -749,6 +749,14 @@ Each gateway probes its WAN every second. Probes are ICMP to several targets
 plus a DNS or HTTP check, so one dead target isn't a dead WAN. It withdraws
 after 3 consecutive failures and re-announces after sustained success.
 
+A web check runs beside the probes, out of the WAN: several connectivity-check
+URLs that answer an empty 204. Any other HTTP answer means a login page
+(captive portal) intercepts the traffic. Such a WAN is not announced, even
+while it answers ICMP. The node's own clients still use it while no other
+gateway is usable, so someone can sign in. It is checked again every 10 s
+until the 204 comes back. No answer at all leaves the decision to ICMP.
+Each new WAN waits for its first web check before it is announced.
+
 **Why:** a peer that is alive and still announcing itself as a gateway, but
 not passing traffic, must be caught (lab scenario S4). Probing runs out of the WAN, so it costs no mesh
 airtime.

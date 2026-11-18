@@ -123,6 +123,12 @@ func (n Node) Sparse() Node {
 	if n.Gateway.ProbeIntervalMS == 1000 {
 		n.Gateway.ProbeIntervalMS = 0
 	}
+	if slices.Equal(n.Gateway.WebCheckURLs, DefaultWebCheckURLs) {
+		n.Gateway.WebCheckURLs = nil
+	}
+	if n.Gateway.WebCheck != nil && *n.Gateway.WebCheck {
+		n.Gateway.WebCheck = nil
+	}
 	if n.Gateway.DownMbit == 20 {
 		n.Gateway.DownMbit = 0
 	}

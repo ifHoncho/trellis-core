@@ -122,12 +122,20 @@ type gatewayReconciler struct {
 	hostDNSOn   string // the server applied, "" when none
 	hostDNSAt   time.Time
 
-	evalMu      sync.Mutex // one evaluation at a time (loop and monitor)
-	mu          sync.Mutex
-	prober      *probe.Prober
-	proberKey   string
-	wan         string
-	healthy     bool
+	evalMu    sync.Mutex // one evaluation at a time (loop and monitor)
+	mu        sync.Mutex
+	prober    *probe.Prober
+	proberKey string
+	wan       string
+	healthy   bool
+	// portalOnly: the WAN is behind a login page. It is not shared with the
+	// mesh, but this node's own clients use it while no other gateway is
+	// usable, so that someone can reach the login page and sign in.
+	portalOnly  bool
+	web         *webChecker
+	webKey      string
+	carrier     string                                                                             // the WAN and its carrier when last seen
+	webCheckFn  func(ctx context.Context, ifname string, urls, resolvers []string) probe.WebResult // tests
 	cands       []status.GatewayCandidate
 	usable      []*gwChoice
 	selected    *gwChoice
@@ -188,6 +196,7 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	if err := g.ensureProber(wan, cfg); err != nil {
 		warn("warning", "gateway-probe", "cannot probe the WAN on %s: %v", wan, err)
 	}
+	g.ensureWebCheck(wan, cfg, auto)
 	var ps probe.State
 	if g.prober != nil {
 		ps = g.prober.State()
@@ -203,8 +212,19 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 		}
 	}
 	g.mu.Lock()
+	if c := fmt.Sprintf("%s %v", wan, carrier); c != g.carrier {
+		if g.carrier != "" && g.web != nil {
+			g.web.reset()
+		}
+		g.carrier = c
+	}
+	g.mu.Unlock()
+	web, webOn, portal, webWaiting := g.webState()
+	g.mu.Lock()
 	g.wan = wan
-	g.healthy = cfg.Mode == config.GatewayAuto && wan != "" && ps.Healthy && carrier
+	sharing := cfg.Mode == config.GatewayAuto && wan != "" && carrier
+	g.healthy = sharing && ps.Healthy && !portal && !webWaiting
+	g.portalOnly = sharing && portal
 	healthy := g.healthy
 	g.mu.Unlock()
 
@@ -213,8 +233,13 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 		gw = &gossip.GW{Healthy: healthy, DownKbps: uint32(cfg.DownMbit) * 1000, UpKbps: uint32(cfg.UpMbit) * 1000,
 			RTTms: int(ps.LastRTT.Milliseconds()), LossPct: ps.LossPct}
 	}
-	if wan != "" && ps.Known && !ps.Healthy {
+	switch {
+	case portal && sharing:
+		warn("warning", "wan-portal", "the WAN on %s is behind a login page (%s): not sharing it with the mesh until someone signs in. While no other gateway is usable, this node's own clients reach the login page; gateway.web_check: off shares it anyway", wan, web.Detail)
+	case wan != "" && ps.Known && !ps.Healthy:
 		warn("warning", "wan-unhealthy", "the WAN on %s is not passing traffic (no reply from %s): not sharing it", wan, strings.Join(cfg.ProbeTargets, ", "))
+	case webOn && ps.Healthy && web.Verdict == probe.WebNone:
+		warn("info", "wan-web-none", "the WAN on %s answers pings but none of the web check addresses answered (%s): sharing it all the same", wan, web.Detail)
 	}
 
 	// batman-adv gateway mode: announce while healthy, else be a client.
@@ -232,7 +257,8 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	selSince, switches := g.selSince, g.switches
 	g.mu.Unlock()
 
-	if ch, err := g.applyRouting(ctx, sel, usable, healthy, wan, auto); err != nil {
+	selfUp := healthy || sel != nil && sel.Self
+	if ch, err := g.applyRouting(ctx, sel, usable, selfUp, wan, auto); err != nil {
 		warn("error", "gateway-routing", "cannot apply gateway routing: %v", err)
 		res.RequeueAfter = 5 * time.Second
 	} else if ch {
@@ -277,6 +303,15 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 
 	st.WAN, st.WANHealthy, st.WANKnown, st.WANSince = wan, ps.Healthy, ps.Known, ps.Since
 	st.RTTms, st.LossPct, st.ProbeError = float64(ps.LastRTT.Microseconds())/1000, ps.LossPct, ps.LastError
+	if webOn {
+		st.WebCheck, st.WebCheckDetail = web.Verdict, web.Detail
+		if web.Verdict == "" {
+			st.WebCheck = "checking"
+		}
+		if !web.At.IsZero() {
+			st.WebCheckAt = web.At
+		}
+	}
 	if wan != "" {
 		st.ProbeTargets = cfg.ProbeTargets
 	}
@@ -286,6 +321,9 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	}
 	if cfg.Mode == config.GatewayOff {
 		st.Role = "client (sharing off)"
+	}
+	if g.portalOnly {
+		st.Role = "client (uplink behind a login page)"
 	}
 	if sel != nil {
 		st.Selected = &status.SelectedGateway{Self: sel.Self, Callsign: sel.Callsign, NodeID: sel.ID, Address: sel.Addr, ThroughputMbps: sel.Tput, Since: selSince}
@@ -359,6 +397,11 @@ func (g *gatewayReconciler) ensureProber(wan string, cfg config.GatewayConfig) e
 			} else {
 				g.d.log.Warn("WAN unhealthy", "interface", wan, "err", s.LastError)
 			}
+			g.mu.Lock()
+			if g.web != nil && s.Healthy {
+				g.web.reset()
+			}
+			g.mu.Unlock()
 			g.d.Kick("wan health changed")
 		}}
 	if err := p.Start(); err != nil {
@@ -426,7 +469,7 @@ func (g *gatewayReconciler) evaluate() bool {
 	prev := g.selected
 	var next *gwChoice
 	switch {
-	case g.healthy:
+	case g.healthy || g.portalOnly && len(usable) == 0:
 		node, _ := d.conf() // evaluate also runs on the gateway monitor goroutine
 		next = &gwChoice{Self: true, ID: d.identity().NodeID, Callsign: node.Callsign, Addr: strings.Split(d.facts.bridgeAddress(), "/")[0]}
 		g.betterMAC = ""
@@ -1044,6 +1087,7 @@ func (g *gatewayReconciler) Teardown(ctx context.Context) error {
 		g.monWG.Wait()
 	}
 	g.stopProber()
+	g.stopWebCheck()
 	g.applyHostDNS(ctx, false, "", func(string, string, string, ...any) {})
 	var errs []string
 	if _, err := rtnl.EnsureRules(ruleLo, ruleHi, nil); err != nil {

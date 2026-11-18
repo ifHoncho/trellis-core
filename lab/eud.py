@@ -24,6 +24,12 @@ binary needed) and plain DNS queries. Run inside the EUD's namespace.
                                  CoT event for UID (type, callsign, stale, remarks), or "none"
   eud.py gpsd LAT LON            a gpsd with a 3D fix at LAT, LON on 127.0.0.1:2947
                                  (run in a node's namespace)
+  eud.py webserve ADDR PORT DIR  the lab internet's web server: 204 for every
+                                 request, except from a source with a file
+                                 DIR/portal-<source address>, which gets a
+                                 hotel-style login page (302 to http://login.lab/)
+  eud.py httpget URL             one GET, no redirects followed; prints
+                                 "<status> <location>" or "error <why>"
 """
 import json
 import os
@@ -357,6 +363,41 @@ def cmd_tcpclient(host, port, seconds, interval=0.25):
         return 1
 
 
+def cmd_webserve(addr, port, flagdir):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if os.path.exists(os.path.join(flagdir, "portal-" + self.client_address[0])):
+                self.send_response(302)
+                self.send_header("Location", "http://login.lab/?from=" + self.path)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, fmt, *a):
+            print(f"{time.time():.3f} {self.client_address[0]} {fmt % a}", flush=True)
+
+    ThreadingHTTPServer((addr, int(port)), H).serve_forever()
+
+
+def cmd_httpget(url):
+    import http.client
+    import urllib.parse
+    u = urllib.parse.urlsplit(url)
+    try:
+        c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5)
+        c.request("GET", u.path or "/")
+        r = c.getresponse()
+        print(r.status, r.getheader("Location", ""))
+        return 0
+    except OSError as e:
+        print("error", e)
+        return 1
+
+
 def cmd_cotwait(iface, uid, seconds):
     """A phone running ATAK, waiting for one marker: joins the SA group and
     prints the first CoT event with this uid (type, callsign, whether it
@@ -447,6 +488,10 @@ def main(argv):
         return cmd_cotwait(*argv[1:])
     if len(argv) == 3 and argv[0] == "gpsd":
         return cmd_gpsd(argv[1], argv[2])
+    if len(argv) == 4 and argv[0] == "webserve":
+        return cmd_webserve(*argv[1:])
+    if len(argv) == 2 and argv[0] == "httpget":
+        return cmd_httpget(argv[1])
     if len(argv) == 3 and argv[0] == "dns":
         return cmd_dns(argv[1], argv[2])
     print(__doc__, file=sys.stderr)

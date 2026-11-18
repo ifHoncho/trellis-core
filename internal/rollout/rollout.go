@@ -55,8 +55,9 @@ func (p Phase) Final() bool {
 // the nodes after it halt: one that never got the rollout, one that cannot
 // be heard, one stuck. An upgrade with its health check takes some 5 min.
 // Not skipped past: a node that cannot be heard may be in the middle of
-// installing, and the next one would then upgrade beside it.
-const Stalled = 15 * time.Minute
+// installing, and the next one would then upgrade beside it. A variable
+// only so that the lab can shorten it.
+var Stalled = 15 * time.Minute
 
 // Package is the release for one architecture.
 type Package struct {
@@ -185,18 +186,27 @@ type Decision struct {
 }
 
 // Turn decides, for node me, ready to upgrade, whether to start now, keep
-// waiting, or halt. states holds the other nodes' progress by MAC; names
-// gives a readable name for a MAC in the reasons.
-func Turn(r *Rollout, me string, states map[string]State, names func(string) string, now time.Time) Decision {
+// waiting, or halt. received is when me got the rollout (its own clock:
+// the origin's may differ); states holds the other nodes' progress by MAC;
+// names gives a readable name for a MAC in the reasons.
+func Turn(r *Rollout, me string, received time.Time, states map[string]State, names func(string) string, now time.Time) Decision {
 	if r.Cancelled {
 		return Decision{Halt, "the rollout was cancelled"}
 	}
 	if !slices.Contains(r.Order, me) {
 		return Decision{Halt, "this node is not in the rollout's order"}
 	}
-	// turn is when the node whose turn it is got it: the rollout's start,
-	// or the moment the one before it finished.
-	turn := r.Started
+	// A rollout that stopped anywhere stops here: a node that was away
+	// when it halted does not upgrade by itself when it is back.
+	if d, stopped := stoppedBy(r, me, states, names); stopped {
+		return d
+	}
+	// turn is when the node whose turn it is got it: when this node got
+	// the rollout, or the moment the one before it finished.
+	turn := received
+	if turn.IsZero() {
+		turn = r.Started
+	}
 	for _, mac := range r.Order {
 		if mac == me {
 			return Decision{Action: Start}
@@ -223,11 +233,88 @@ func Turn(r *Rollout, me string, states map[string]State, names func(string) str
 			since = s.Since
 		}
 		if now.Sub(since) > Stalled {
-			return Decision{Halt, fmt.Sprintf("%s did not move on its turn for %s (%s)", names(mac), Stalled, phaseOr(s.Phase, "never heard of the rollout"))}
+			return Decision{Halt, fmt.Sprintf("%s did not move on its turn for %s (%s)", names(mac), stallText(), phaseOr(s.Phase, "never heard of the rollout"))}
 		}
 		return Decision{Wait, fmt.Sprintf("%s's turn (%s)", names(mac), phaseOr(s.Phase, "not heard yet"))}
 	}
 	return Decision{Halt, "this node is not in the rollout's order"}
+}
+
+// stoppedBy finds why the rollout stopped, if it did: a node other than me
+// that rolled back or failed, else one that halted. A halt passes its own
+// reason on, so that every node names the first cause, not a chain.
+func stoppedBy(r *Rollout, me string, states map[string]State, names func(string) string) (Decision, bool) {
+	var halted *Decision
+	for _, mac := range r.Order {
+		if mac == me {
+			continue
+		}
+		s := states[mac]
+		switch s.Phase {
+		case RolledBack, Failed:
+			why := fmt.Sprintf("%s %s", names(mac), s.Phase)
+			if s.Reason != "" {
+				why += ": " + s.Reason
+			}
+			return Decision{Halt, why}, true
+		case Halted:
+			if halted == nil {
+				why := s.Reason
+				if why == "" {
+					why = names(mac) + " halted"
+				}
+				halted = &Decision{Halt, why}
+			}
+		}
+	}
+	if halted != nil {
+		return *halted, true
+	}
+	return Decision{}, false
+}
+
+// Over reports whether a rollout has ended as node me sees it: every node
+// in the order is in a final phase; or the rollout stopped (cancelled, or
+// a node rolled back, failed or halted) and every node still not final,
+// me aside, has not moved for Stalled: it is away, and will halt when it
+// is back. me must be final itself. states holds the other nodes'
+// progress; received is when me got the rollout.
+func Over(r *Rollout, me string, mine Phase, received time.Time, states map[string]State, now time.Time) bool {
+	if slices.Contains(r.Order, me) && !mine.Final() {
+		return false
+	}
+	stopped := r.Cancelled || mine == RolledBack || mine == Failed || mine == Halted
+	if !stopped {
+		_, stopped = stoppedBy(r, me, states, func(string) string { return "" })
+	}
+	if received.IsZero() {
+		received = r.Started
+	}
+	for _, mac := range r.Order {
+		if mac == me {
+			continue
+		}
+		s := states[mac]
+		if s.Phase.Final() {
+			continue
+		}
+		since := received
+		if s.Since.After(since) {
+			since = s.Since
+		}
+		if !stopped || now.Sub(since) <= Stalled {
+			return false
+		}
+	}
+	return true
+}
+
+// stallText is Stalled for a reason: "15 min".
+func stallText() string {
+	if Stalled < time.Minute {
+		return fmt.Sprintf("%d s", int(Stalled.Seconds()))
+	}
+	return fmt.Sprintf("%d min", int(Stalled.Minutes()))
 }
 
 func phaseOr(p Phase, def string) string {

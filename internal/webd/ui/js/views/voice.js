@@ -362,7 +362,7 @@ export function voice() {
   let line = null;
   if (vstate && vstate.enabled && !vstate.running) line = notice({ level: 'warning', message: vstate.error || 'The voice service is not running.' });
   if (vstate && !vstate.enabled && !d.voice.enable) line = notice({ level: 'info', message: vstate.installed === false
-    ? 'Voice is off, and this node does not have the trellis-voice package: install it (trellis-deploy --voice) before turning voice on.'
+    ? 'Voice is off, and Trellis on this node has no voice: it is built for arm64 and amd64 only.'
     : 'Voice is off on this node. Turn it on below.' });
   return h('div.page', head,
     line,

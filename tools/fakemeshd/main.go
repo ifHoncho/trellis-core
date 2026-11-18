@@ -103,6 +103,8 @@ type fake struct {
 	// oneRadio is a node with one dual-band USB adapter in a two-link
 	// profile: it meshes on one link, the other has no radio here.
 	oneRadio bool
+	// portal: the uplink is behind a login page (the WAN's web check).
+	portal bool
 	// upg is a made-up upgrade (upgrade.go).
 	upg  *fakeUpgrade
 	kept []byte // the package of the last dry run
@@ -360,6 +362,16 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			{Originator: nodes[2].orig, Callsign: "truck-3", NodeID: 41, Address: "10.73.41.1", ThroughputMbps: direct[2], LastSeenMS: 310, Usable: true},
 			{Originator: nodes[5].orig, Callsign: "ops-6", NodeID: 96, Address: "10.73.96.1", ThroughputMbps: 24, LastSeenMS: 640, Usable: false, Why: "its uplink is down (gossip)"},
 		}}
+	if f.node.Gateway.WebChecking() {
+		st.Gateway.WebCheck, st.Gateway.WebCheckAt = "ok", now.Add(-20*time.Second)
+	}
+	if f.portal {
+		st.Gateway.Role, st.Gateway.Announced = "client (uplink behind a login page)", ""
+		st.Gateway.WebCheck, st.Gateway.WebCheckDetail = "portal", "connectivitycheck.gstatic.com: 302 to http://wifi.example-hotel.com/"
+		st.Gateway.Candidates[0].Usable, st.Gateway.Candidates[0].Why = false, "its uplink is down (gossip)"
+		st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Source: "gateway", Code: "wan-portal",
+			Message: "the WAN on eth0 is behind a login page (connectivitycheck.gstatic.com: 302 to http://wifi.example-hotel.com/): not sharing it with the mesh until someone signs in. While no other gateway is usable, this node's own clients reach the login page; gateway.web_check: off shares it anyway"})
+	}
 	if gwMode == config.GatewayOff {
 		st.Gateway.Role, st.Gateway.Announced = "client", ""
 		st.Gateway.Selected = &status.SelectedGateway{Callsign: "truck-3", NodeID: 41, Address: "10.73.41.1", ThroughputMbps: direct[2], Since: now.Add(-2 * time.Minute)}
@@ -877,6 +889,7 @@ func main() {
 	password := flag.String("password", "trellis-demo", "the admin password (ignored with --setup)")
 	bare := flag.Bool("bare", false, "a node with no per-radio rules, as freshly installed")
 	oneRadio := flag.Bool("one-radio", false, "a node with one dual-band adapter in a 2.4 + 5 GHz profile")
+	portal := flag.Bool("portal", false, "the uplink is behind a login page, and no other gateway is usable")
 	unrestricted := flag.Bool("unrestricted", false, "a mesh profile in unrestricted regulatory mode")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
 	consoleSock := flag.String("console", "", "also serve a made-up voice console socket here (webd --voice-console)")
@@ -897,6 +910,7 @@ func main() {
 	if *oneRadio {
 		f.oneRadioNode()
 	}
+	f.portal = *portal
 	if *consoleSock != "" {
 		if err := f.serveConsole(*consoleSock); err != nil {
 			fmt.Fprintln(os.Stderr, "fakemeshd:", err)

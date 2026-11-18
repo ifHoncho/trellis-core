@@ -77,9 +77,8 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 | `--release X.Y.Z`, `--from DIR` | Another release, or release files you have |
 | `--dry-run`, `--yes` | Only show the plan; do not ask before going ahead |
 | `--web-password`, `--no-web-password` | Ask for the web UI's admin password even with `--yes`; never ask |
-| `--voice` | Also install push-to-talk voice (`trellis-voice`) on every device of arm64 or amd64; a device that has it is upgraded with it either way |
 | `--jobs N`, `--no-reboot`, `--keep-going`, `--force` | New installs at once; no reboot after them (the admin password is then set later, on the node, with `sudo meshctl web password`); go on after an upgrade goes back; reinstall devices that run the release already |
-| `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other`; yours override the tool's defaults |
+| `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other`; yours override the tool's defaults. On Windows, for a device reached through another, the Windows command shell replaces `%NAME%` in a value when NAME is an environment variable |
 | `--logs DIR` | Where the logs go |
 | `--trust`, `--node-key`, `--any-version`, `--no-health-check` | For development builds ([building.md](dev/building.md)) |
 
@@ -149,6 +148,28 @@ After the reboot, a device without a mesh profile waits in setup mode
 Installing, upgrading and removing never touch a device's configuration,
 mesh profile or identity (`/etc/trellis`, `/var/lib/trellis`); only `apt
 purge trellis` deletes them.
+
+### Installing from the apt repository
+
+An apt repository of the packages, built with `make apt-repo`
+([building.md](dev/building.md)), can be served from any web server. The
+project does not publish one yet. On the device, with the repository's
+address in `REPO`:
+
+```sh
+curl -fsSL "$REPO/trellis-archive-keyring.gpg" | sudo tee /usr/share/keyrings/trellis-archive-keyring.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/trellis-archive-keyring.gpg] $REPO stable main" | sudo tee /etc/apt/sources.list.d/trellis.list
+sudo apt update
+sudo apt install trellis trellis-batman-adv-dkms
+sudo meshctl prepare
+```
+
+Check the key's fingerprint (`gpg --show-keys
+/usr/share/keyrings/trellis-archive-keyring.gpg`) against the one its
+publisher gives before you trust it. `apt upgrade` then brings new releases,
+but it installs them directly, without the health check and rollback of
+`meshctl upgrade`. For a node in the field, use `meshctl upgrade`, or the
+mesh-wide upgrade.
 
 ## Setting a device up from a phone
 
@@ -231,6 +252,37 @@ the links they share.
   manager would scan on), except a **monitor** interface, which listens
   on the link's channel. To capture a link: `sudo iw phy PHY interface add
   mon0 type monitor && sudo ip link set mon0 up`, then `tcpdump -i mon0`.
+
+## Sharing an uplink
+
+A node with an uplink of its own (the interface of its default route, a
+port with role `wan`, or `gateway.wan`) shares it with the mesh
+(`gateway.mode: auto`; `off` never shares and still uses other nodes'
+gateways). Two checks decide whether the uplink is shared, both out of
+the uplink itself:
+
+- **Pings** to `gateway.probe_targets` (default `1.1.1.1`, `8.8.8.8`,
+  `9.9.9.9`) every `gateway.probe_interval_ms` (1000). Three missed rounds
+  withdraw the uplink; three good ones bring it back.
+- **A web check** (`gateway.web_check`, on by default): a request to
+  each of `gateway.web_check_urls` for the empty "204" answer phones and
+  laptops use to spot a login page. The defaults are Google's, Cloudflare's
+  and Ubuntu's connectivity-check addresses. The check runs every minute,
+  and again when the pings start or stop passing. Any other answer, such as
+  a redirect or a page, means a **login page** (a hotel or café network)
+  sits in front of the internet.
+
+An uplink behind a login page is not offered to the mesh, even when it
+answers pings. While no other gateway is usable, the node's own devices
+still go out through it, so someone can open any `http://` page there,
+reach the login page and sign in. The check then runs every 10 s, and
+sharing starts on its own once it passes. The Internet page and `meshctl
+status` say "behind a login page", with the answer seen. When none of the
+web addresses answer (a network that blocks them), the pings alone decide.
+`gateway.web_check: false` turns the web check off.
+
+The requests carry no cookies and no details about the node; the sites
+asked see the uplink's public address, as the ping targets do.
 
 ## Access from outside the mesh
 
@@ -322,7 +374,9 @@ meshctl upgrade --mesh --yes --follow trellis_0.4.0_arm64.deb trellis_0.4.0_armh
   and back to the old version by itself if it is not healthy.
 - **The first node that goes back halts the rest,** as does a node that
   does not move on its turn for 15 minutes. The others keep the release
-  they run.
+  they run. A halted upgrade is over once the nodes still out have been
+  silent for 15 minutes; one that was away halts too when it is back,
+  instead of upgrading by itself.
 - The sending node may go away, or restart: the nodes go on by
   themselves. A node that was out of reach when it was sent asks another
   node for it.
@@ -330,8 +384,6 @@ meshctl upgrade --mesh --yes --follow trellis_0.4.0_arm64.deb trellis_0.4.0_armh
   the overview shows it while it runs. `meshctl upgrade --mesh --cancel`,
   or **Cancel the upgrade**, on the sending node, stops the nodes that
   have not begun.
-- A node with `trellis-voice` installed is left out: upgrade it with
-  `trellis-deploy`, which upgrades both packages.
 
 Upgrade every node of a mesh to the same release. Nodes say so under
 Alerts while they differ, with a warning when one is a release series
@@ -367,8 +419,14 @@ in the UI is also in `meshctl` on the node and in the [HTTP API](api.md).
 ## Push-to-talk voice
 
 A preview: built and tested in the lab, not yet with headsets on nodes.
-Install `trellis-voice` beside `trellis` (`trellis-deploy --voice`, or
-apt); it needs `libopus0` and `libasound2`. arm64 and amd64 only.
+Voice is part of the `trellis` package on arm64 and amd64 (not armhf
+yet), off until `voice.enable` is set (or the Voice page). It loads
+`libopus0` and `libasound2t64` (`libasound2` on older releases), which the
+package recommends: `trellis-deploy` and `apt install` bring them; on a
+node upgraded with `meshctl upgrade` and no network, install them before
+turning voice on (the node says so). A node that had the separate
+`trellis-voice` package of earlier builds loses it at the upgrade: the
+`trellis` package takes its place.
 
 The talk groups are mesh-wide, in the profile:
 

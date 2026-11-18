@@ -317,7 +317,7 @@ gives headless Firefox a made-up microphone.
 (a stand-in for the upgrade, driven by files: trusted keys, the version
 installed, how an upgrade ends, how long it takes, whether the node takes
 rollouts). The packages are real, built and signed by `tools/mkdeb` with
-a key made for the run. Node 4 sends them. About 2 min.
+a key made for the run. Node 4 sends them. About 3 min.
 
 - R0 the line forms;
 - R1.1 the plan: farthest first, node 4 last; a node that does not take
@@ -330,7 +330,12 @@ a key made for the run. Node 4 sends them. About 2 min.
   went on from disk;
 - R3 a release that rolls back on node 2 halts nodes 3 and 4;
 - R4 cancel while node 1 upgrades: it finishes, the rest halt; every
-  node shows the same outcome.
+  node shows the same outcome;
+- R6 node 1 cut off as a rollout starts: the rest halt once its turn has
+  gone unmoved for the stall time (45 s in the lab, from the
+  `--test-upgrader` directory's `stall` file; 15 min on a mesh), the
+  rollout ends, `--follow` returns with the reason, and node 1, back,
+  halts instead of upgrading.
 
 The air side's veth ends are set to MTU 1600: meshd raises a mesh port's
 MTU for batman-adv's header, and full-size frames (a package over HTTP)
@@ -445,18 +450,37 @@ plus HaLow, two radios sharing the AP) are Go unit tests in
 make deb-test
 ```
 
-Builds two versions of the `trellis` package (the newer one signed) and the
-batman-adv package, and in a throwaway Debian 13 and Ubuntu 22.04 container
-(podman or docker) installs them with the distribution's own `apt` over a
-made-up script install, upgrades, downgrades, removes and purges, checking
-after each step: the configuration, profile and identity are untouched
-until the purge, an edited chrony drop-in survives, the script install is
-taken over, units are enabled, the regulatory rules are handed over and
-given back. The containers have no systemd and no kernel headers for the
+Builds two versions of the `trellis` package (the newer one signed, with
+voice) and the batman-adv package, and in a throwaway Debian 13 and Ubuntu
+22.04 container (podman or docker) installs them with the distribution's
+own `apt` over a made-up script install, upgrades, downgrades, removes and
+purges, checking after each step: the configuration, profile and identity
+are untouched until the purge, an edited chrony drop-in survives, the
+script install is taken over, units are enabled, the regulatory rules are
+handed over and given back. The upgrade is `dpkg -i` alone, as `meshctl
+upgrade` does it, over a separate `trellis-voice` package as earlier
+builds had: it must need nothing new, take that package's files and
+remove it. Voice's libraries are recommended, not required, and voice
+runs once they are installed. The containers have no systemd and no kernel headers for the
 host: no service starts and no module is built, and an install must
 survive both. It also runs `meshctl prepare`, which must go through every
 step and report the ones a container cannot do.
 
+## The apt repository
+
+```sh
+make apt-test
+```
+
+Builds `trellis` 0.9.0 and 0.9.1 and the batman-adv package, signed with
+a throwaway release key, and with `tools/aptrepo` a repository signed by a
+throwaway gpg key: one with 0.9.0, the same with 0.9.1 added, a copy whose
+index was changed after signing, and a copy signed by another key. In
+throwaway Debian 13 and Ubuntu 22.04 containers, the distribution's own
+`apt` adds the repository with `signed-by`, installs both packages and
+their dependencies from it, and upgrades to 0.9.1. It must refuse the
+changed copy and the one signed by another key. Takes about a minute;
+needs network access for the distributions' packages.
 ## trellis-deploy in containers
 
 ```sh

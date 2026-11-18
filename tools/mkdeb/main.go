@@ -1,7 +1,7 @@
 // Command mkdeb builds Trellis's Debian packages and signs them. It needs
 // no dpkg, so a release can be built on any machine with Go.
 //
-//	mkdeb trellis --version V --arch arm64 --binary dist/trellis-linux-arm64 --out dist/deb
+//	mkdeb trellis --version V --arch arm64 --binary dist/trellis-linux-arm64 [--voiced dist/trellis-voiced-arm64] --out dist/deb
 //	mkdeb batman-adv --source batman-adv-2026.3.tar.gz --out dist/deb
 //	mkdeb keygen --out release.key [--comment TEXT]     (prints the public line)
 //	mkdeb pubkey --key release.key                      (prints it again)
@@ -43,7 +43,7 @@ const (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: mkdeb trellis|voice|batman-adv|keygen|pubkey|sign|verify [flags]")
+		fmt.Fprintln(os.Stderr, "usage: mkdeb trellis|batman-adv|keygen|pubkey|sign|verify [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -52,8 +52,6 @@ func main() {
 		err = cmdTrellis(os.Args[2:])
 	case "batman-adv":
 		err = cmdBatman(os.Args[2:])
-	case "voice":
-		err = cmdVoice(os.Args[2:])
 	case "keygen":
 		err = cmdKeygen(os.Args[2:])
 	case "pubkey":
@@ -204,9 +202,13 @@ func cmdTrellis(args []string) error {
 	ver := fl.String("version", "", "the version the binary reports (as built with -X main.version=)")
 	arch := fl.String("arch", "", "Debian architecture: arm64, armhf or amd64")
 	bin := fl.String("binary", "", "the trellis binary for that architecture")
+	voiced := fl.String("voiced", "", "the trellis-voiced binary for that architecture (push-to-talk voice; arm64 and amd64)")
 	fl.Parse(args)
 	if *ver == "" || *arch == "" || *bin == "" {
 		return errors.New("trellis needs --version, --arch and --binary")
+	}
+	if *voiced != "" && *arch != "arm64" && *arch != "amd64" {
+		return fmt.Errorf("voice is built for arm64 and amd64 only (got %q)", *arch)
 	}
 	switch *arch {
 	case "arm64", "armhf", "amd64":
@@ -235,6 +237,37 @@ func cmdTrellis(args []string) error {
 		if err := file(&files, filepath.Join(c.root, f[0]), f[1], 0o644); err != nil {
 			return err
 		}
+	}
+	// Push-to-talk voice: trellis-voiced, its unit and the udev rule for
+	// CM108 adapters. meshd starts it when voice.enable is set. It loads
+	// libopus and libasound at run time: recommended, not required, so
+	// that meshctl upgrade (dpkg alone, often with no network) never needs
+	// a package the node lacks.
+	recommends := fmt.Sprintf("trellis-batman-adv-dkms (>= %s), batctl", pin.version)
+	var takeover []deb.Field
+	about := " This package holds the single trellis binary (meshd, meshctl, webd), its\n" +
+		" services, and the scripts that set up radios it supports."
+	if *voiced != "" {
+		if err := file(&files, *voiced, "/usr/bin/trellis-voiced", 0o755); err != nil {
+			return err
+		}
+		for _, f := range [][2]string{
+			{"packaging/systemd/trellis-voiced.service", "/usr/lib/systemd/system/trellis-voiced.service"},
+			{"packaging/udev/70-trellis-voice.rules", "/usr/lib/udev/rules.d/70-trellis-voice.rules"},
+		} {
+			if err := file(&files, filepath.Join(c.root, f[0]), f[1], 0o644); err != nil {
+				return err
+			}
+		}
+		// libasound2t64 first: on Ubuntu 24.04 the virtual libasound2 can be
+		// met by liboss4-salsa-asound2, which lacks the PCM API.
+		recommends += ", libopus0, libasound2t64 | libasound2"
+		// Voice was a package of its own before 0.3: this one takes its
+		// files, and dpkg removes it in the same install.
+		takeover = []deb.Field{{Name: "Conflicts", Value: "trellis-voice"}, {Name: "Replaces", Value: "trellis-voice"}}
+		about = " This package holds the single trellis binary (meshd, meshctl, webd),\n" +
+			" push-to-talk voice (trellis-voiced, off until voice.enable), their\n" +
+			" services, and the scripts that set up radios it supports."
 	}
 	// The hardware scripts and what they install, laid out as in the
 	// repository so they find each other. Only the scripts a node runs: the
@@ -265,101 +298,33 @@ Source: `+homepage+"\n"))
 	if err != nil {
 		return err
 	}
+	control := []deb.Field{
+		{Name: "Package", Value: "trellis"},
+		{Name: "Version", Value: version.Debian(*ver)},
+		{Name: "Architecture", Value: *arch},
+		{Name: "Maintainer", Value: maintainer},
+		{Name: "Section", Value: "net"},
+		{Name: "Priority", Value: "optional"},
+		{Name: "Homepage", Value: homepage},
+		{Name: "Depends", Value: "wpasupplicant, hostapd, dnsmasq-base, nftables, iw, wireless-regdb, iproute2, kmod, udev, chrony"},
+		{Name: "Recommends", Value: recommends},
+	}
+	control = append(control, takeover...)
+	control = append(control, []deb.Field{
+		{Name: "Trellis-Version", Value: *ver},
+		{Name: "Description", Value: "Meridian Trellis mesh node\n" +
+			" A self-forming, encrypted IP mesh: 802.11s and SAE radio links with\n" +
+			" batman-adv routing, one flat client network, shared internet with\n" +
+			" failover, efficient multicast for ATAK, and a web UI.\n" +
+			" .\n" + about + " It never\n" +
+			" ships or overwrites a node's configuration, mesh profile or identity."},
+	}...)
 	return c.write(&deb.Package{
-		Control: []deb.Field{
-			{Name: "Package", Value: "trellis"},
-			{Name: "Version", Value: version.Debian(*ver)},
-			{Name: "Architecture", Value: *arch},
-			{Name: "Maintainer", Value: maintainer},
-			{Name: "Section", Value: "net"},
-			{Name: "Priority", Value: "optional"},
-			{Name: "Homepage", Value: homepage},
-			{Name: "Depends", Value: "wpasupplicant, hostapd, dnsmasq-base, nftables, iw, wireless-regdb, iproute2, kmod, udev, chrony"},
-			{Name: "Recommends", Value: fmt.Sprintf("trellis-batman-adv-dkms (>= %s), batctl", pin.version)},
-			{Name: "Trellis-Version", Value: *ver},
-			{Name: "Description", Value: "Meridian Trellis mesh node\n" +
-				" A self-forming, encrypted IP mesh: 802.11s and SAE radio links with\n" +
-				" batman-adv routing, one flat client network, shared internet with\n" +
-				" failover, efficient multicast for ATAK, and a web UI.\n" +
-				" .\n" +
-				" This package holds the single trellis binary (meshd, meshctl, webd), its\n" +
-				" services, and the scripts that set up radios it supports. It never\n" +
-				" ships or overwrites a node's configuration, mesh profile or identity."},
-		},
+		Control:   control,
 		Scripts:   sc,
 		Conffiles: []string{"/etc/chrony/conf.d/trellis.conf"},
 		Files:     files,
 		Time:      c.when(),
-	})
-}
-
-// cmdVoice builds trellis-voice: trellis-voiced (push-to-talk), its unit
-// and the udev rule for CM108 adapters. A package of its own because the
-// binary loads libopus and libasound, which a node without voice does
-// not need.
-func cmdVoice(args []string) error {
-	fl := flag.NewFlagSet("voice", flag.ExitOnError)
-	var c common
-	c.register(fl)
-	ver := fl.String("version", "", "the version the binary reports")
-	arch := fl.String("arch", "", "Debian architecture: arm64 or amd64")
-	bin := fl.String("binary", "", "the trellis-voiced binary for that architecture")
-	fl.Parse(args)
-	if *ver == "" || *arch == "" || *bin == "" {
-		return errors.New("voice needs --version, --arch and --binary")
-	}
-	switch *arch {
-	case "arm64", "amd64":
-	default:
-		return fmt.Errorf("trellis-voice is built for arm64 and amd64 only (got %q)", *arch)
-	}
-	var files []deb.File
-	if err := file(&files, *bin, "/usr/bin/trellis-voiced", 0o755); err != nil {
-		return err
-	}
-	for _, f := range [][2]string{
-		{"packaging/systemd/trellis-voiced.service", "/usr/lib/systemd/system/trellis-voiced.service"},
-		{"packaging/udev/70-trellis-voice.rules", "/usr/lib/udev/rules.d/70-trellis-voice.rules"},
-	} {
-		if err := file(&files, filepath.Join(c.root, f[0]), f[1], 0o644); err != nil {
-			return err
-		}
-	}
-	files = append(files, copyright("trellis-voice", `Meridian Trellis
-Copyright (C) 2026 Eunoia IT Solutions LLC.
-
-Licensed under the GNU General Public License, version 3 only; on Debian
-systems its text is in /usr/share/common-licenses/GPL-3. A commercial
-licence is also available: see LICENSING.md in the source.
-
-Source: `+homepage+"\n"))
-	sc, err := scripts(c.root, "voice")
-	if err != nil {
-		return err
-	}
-	return c.write(&deb.Package{
-		Control: []deb.Field{
-			{Name: "Package", Value: "trellis-voice"},
-			{Name: "Version", Value: version.Debian(*ver)},
-			{Name: "Architecture", Value: *arch},
-			{Name: "Maintainer", Value: maintainer},
-			{Name: "Section", Value: "net"},
-			{Name: "Priority", Value: "optional"},
-			{Name: "Homepage", Value: homepage},
-			// No version on trellis: meshctl upgrade replaces trellis alone
-			// and may roll it back to an older one, which a constraint
-			// would block. trellis-deploy upgrades this package after it.
-			{Name: "Depends", Value: "trellis, libopus0, libasound2t64 | libasound2, udev"},
-			{Name: "Trellis-Version", Value: *ver},
-			{Name: "Description", Value: "Meridian Trellis push-to-talk voice\n" +
-				" Talk groups over the mesh, from the operator's own PTT and headset on\n" +
-				" the node (a USB adapter such as an OpenVLM, or onboard audio): Opus over\n" +
-				" multicast RTP, two channels at once, one per ear. meshd starts it when\n" +
-				" voice.enable is set in node.yaml."},
-		},
-		Scripts: sc,
-		Files:   files,
-		Time:    c.when(),
 	})
 }
 

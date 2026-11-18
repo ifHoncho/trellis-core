@@ -51,9 +51,10 @@ func (d *Daemon) Rollout(ctx context.Context, in api.RolloutRequest) (*api.Rollo
 	s := &d.rollouts
 	s.mu.Lock()
 	if c := s.cur; c != nil && !c.Dropped && c.Ended.IsZero() && !c.Rollout.Cancelled {
+		origin := d.rolloutName(c.Rollout.Origin)
 		s.mu.Unlock()
 		return nil, api.Errorf(http.StatusConflict, "a mesh-wide upgrade to %s is under way (started %s by %s): cancel it first",
-			c.Rollout.Version, c.Rollout.Started.Local().Format("15:04"), d.rolloutName(c.Rollout.Origin))
+			c.Rollout.Version, c.Rollout.Started.Local().Format("15:04"), origin)
 	}
 	if c := s.cur; c != nil && !c.Dropped && c.Phase == rollout.Upgrading {
 		s.mu.Unlock()
@@ -187,7 +188,7 @@ func (d *Daemon) Rollout(ctx context.Context, in api.RolloutRequest) (*api.Rollo
 	if err := r.Validate(); err != nil {
 		return nil, api.Invalid("%v", err)
 	}
-	c := &rolloutRecord{Rollout: r, Since: time.Now(), Sender: true}
+	c := &rolloutRecord{Rollout: r, Since: time.Now(), Received: time.Now(), Sender: true}
 	s.mu.Lock()
 	if err := d.saveRollout(c); err != nil {
 		s.mu.Unlock()

@@ -7,13 +7,13 @@
   has two channels, one per ear, and listen-only groups. Half-duplex per
   group: PTT on a busy group is refused with a tone. The operator's own
   PTT and headset plug into the node: CM108-family USB adapters (OpenVLM
-  among them, found with no configuration) or any ALSA sound card. A new
-  package, `trellis-voice`, holds the service (`trellis-voiced`); meshd
-  starts it with `voice.enable` in node.yaml, and `meshctl voice` shows
-  who is talking. A **Voice** page in the web UI shows the talk groups
-  live, edits this node's channels and headset, checks the headset, and
-  edits the talk groups for every node. `trellis-deploy --voice` installs
-  it. PTT from a CM108 pin, a plain USB adapter's headset button (phone-style
+  among them, found with no configuration) or any ALSA sound card. The
+  service (`trellis-voiced`) is part of the `trellis` package on arm64 and
+  amd64, off until `voice.enable` in node.yaml; meshd starts it, and
+  `meshctl voice` shows who is talking. A **Voice** page in the web UI
+  shows the talk groups live, edits this node's channels and headset,
+  checks the headset, and edits the talk groups for every node. PTT from
+  a CM108 pin, a plain USB adapter's headset button (phone-style
   PTT adapters; their PTT silences the microphone while held, so they
   want "press to start, press to stop", which can be chosen; Trellis
   flags the mismatch before anyone talks, stops a talk whose microphone
@@ -37,10 +37,23 @@
   (farthest node first, this node last) and the nodes left out, with the
   reason. Each node fetches its package over the mesh, checks it against
   its own release keys, waits its turn and upgrades with the usual health
-  check and rollback. A node that rolls back halts the rest; `meshctl
-  upgrade --mesh --cancel` stops the nodes that have not started. Nodes
-  with `trellis-voice` are left out for now. The package transfer uses TCP
-  port 7373 on the mesh, which client ports drop like gossip.
+  check and rollback. A node that rolls back, or does not move on its
+  turn for 15 minutes, halts the rest, and a node that was away halts too
+  when it is back; `meshctl upgrade --mesh --cancel` stops the nodes that
+  have not started. The package transfer uses TCP port 7373 on the mesh,
+  which client ports drop like gossip.
+- **Uplinks behind a login page:** a gateway now also asks a few
+  connectivity-check addresses (Google's, Cloudflare's, Ubuntu's) for their
+  empty answer, out of its uplink. An uplink behind a hotel or café login
+  page, which may still answer pings, is no longer shared with the mesh.
+  While no other gateway is usable, the node's own devices still reach the
+  login page so that someone can sign in, and sharing starts on its own
+  once they have. The Internet page, the overview and `meshctl status`
+  show it. `gateway.web_check: false` turns the check off, and
+  `gateway.web_check_urls` changes the addresses.
+- **Apt repository tooling:** `make apt-repo` keeps a signed apt
+  repository of the release packages, a folder any web server can serve;
+  `make apt-test` checks it with apt in Debian and Ubuntu containers.
 - **trellis-deploy on Windows:** builds for Windows (amd64 and arm64).
   Password entry, `--setup` (no `ssh-copy-id` needed) and nodes reached
   through another node work there.

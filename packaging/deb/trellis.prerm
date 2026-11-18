@@ -5,7 +5,7 @@ set -e
 case "$1" in
   remove|deconfigure)
     if [ -d /run/systemd/system ]; then
-      systemctl stop trellis-webd.socket trellis-webd.service 2>/dev/null || true
+      systemctl stop trellis-webd.socket trellis-webd.service trellis-voiced.service 2>/dev/null || true
       # meshd removes every interface, route and rule it made as it stops.
       systemctl stop trellis-meshd.service 2>/dev/null || true
     fi

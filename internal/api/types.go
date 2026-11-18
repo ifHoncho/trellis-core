@@ -338,7 +338,7 @@ type VoiceConfig struct {
 // status when it answers.
 type VoiceState struct {
 	Enabled bool `json:"enabled"`
-	// Installed: the trellis-voice package is on this node.
+	// Installed: this node's trellis package carries voice (arm64, amd64).
 	Installed bool            `json:"installed"`
 	Running   bool            `json:"running"`
 	Error     string          `json:"error,omitempty"`

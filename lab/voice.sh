@@ -116,7 +116,9 @@ voice: $(voice_yaml "$i")
 YAML
   ip netns add "node$i"
   ip link add eth1 netns "node$i" type veth peer name "p$i" netns air
-  NS air ip link set "p$i" master air0 up
+  # meshd raises the mesh port's MTU for batman-adv's header: the air
+  # side must carry those frames too.
+  NS air ip link set "p$i" mtu 1600 master air0 up
   NS "node$i" ip link set lo up
   NS "node$i" ip link set eth1 up
   ip netns exec "node$i" "$BIN" meshd --node "$RUN/node$i/node.yaml" --state-dir "$RUN/node$i/state" \

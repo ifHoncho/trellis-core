@@ -526,24 +526,30 @@ type GatewayState struct {
 	// Firewall is what the node takes from outside the mesh: "closed" or
 	// "open" (firewall.wan), the ports open while closed ("tcp/22"), and
 	// how many packets it has turned away.
-	Firewall     string             `json:"firewall"`
-	FirewallOpen []string           `json:"firewall_open,omitempty"`
-	FirewallDrop uint64             `json:"firewall_dropped,omitempty"`
-	Mode         string             `json:"mode"` // auto or off
-	Role         string             `json:"role"` // gateway, client
-	WAN          string             `json:"wan,omitempty"`
-	WANHealthy   bool               `json:"wan_healthy"`
-	WANKnown     bool               `json:"wan_known"`
-	WANSince     time.Time          `json:"wan_since,omitempty"`
-	RTTms        float64            `json:"rtt_ms,omitempty"`
-	LossPct      int                `json:"loss_pct"`
-	ProbeError   string             `json:"probe_error,omitempty"`
-	ProbeTargets []string           `json:"probe_targets,omitempty"`
-	Announced    string             `json:"announced,omitempty"` // e.g. 20/5 Mbit/s
-	Selected     *SelectedGateway   `json:"selected,omitempty"`
-	Candidates   []GatewayCandidate `json:"candidates"`
-	DNS          []string           `json:"dns"`
-	Switches     int                `json:"switches"`
+	Firewall     string    `json:"firewall"`
+	FirewallOpen []string  `json:"firewall_open,omitempty"`
+	FirewallDrop uint64    `json:"firewall_dropped,omitempty"`
+	Mode         string    `json:"mode"` // auto or off
+	Role         string    `json:"role"` // gateway, client
+	WAN          string    `json:"wan,omitempty"`
+	WANHealthy   bool      `json:"wan_healthy"`
+	WANKnown     bool      `json:"wan_known"`
+	WANSince     time.Time `json:"wan_since,omitempty"`
+	RTTms        float64   `json:"rtt_ms,omitempty"`
+	LossPct      int       `json:"loss_pct"`
+	ProbeError   string    `json:"probe_error,omitempty"`
+	ProbeTargets []string  `json:"probe_targets,omitempty"`
+	// WebCheck is the WAN's web check: ok, portal (behind a login page),
+	// no-answer, checking; empty when it is off. WebCheckDetail says what
+	// was seen.
+	WebCheck       string             `json:"web_check,omitempty"`
+	WebCheckDetail string             `json:"web_check_detail,omitempty"`
+	WebCheckAt     time.Time          `json:"web_check_at,omitempty"`
+	Announced      string             `json:"announced,omitempty"` // e.g. 20/5 Mbit/s
+	Selected       *SelectedGateway   `json:"selected,omitempty"`
+	Candidates     []GatewayCandidate `json:"candidates"`
+	DNS            []string           `json:"dns"`
+	Switches       int                `json:"switches"`
 }
 
 // SelectedGateway is where this node's clients reach the internet.

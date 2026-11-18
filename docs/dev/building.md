@@ -6,7 +6,7 @@ headers (`/usr/include/linux/nl80211.h`, `batman_adv.h`) plus Python 3.
 ```sh
 make            # bin/trellis, with bin/meshd and bin/meshctl symlinks
 make cross      # dist/trellis-linux-{arm64,armv7,amd64}
-make deb        # dist/deb/: trellis_VERSION_{arm64,armhf,amd64}.deb, trellis-voice_VERSION_{arm64,amd64}.deb, trellis-batman-adv-dkms
+make deb        # dist/deb/: trellis_VERSION_{arm64,armhf,amd64}.deb (voice in arm64 and amd64), trellis-batman-adv-dkms
 make check      # gofmt, go vet, the static-binary check, unit tests
 ```
 
@@ -84,6 +84,29 @@ sign the next one. Keep the secret file off the network.
    major number is 0 a release is a pre-release titled "(alpha)";
    `STAGE=beta` names another stage, `STAGE=final` publishes a full
    release. `scripts/release-notes.sh 0.4.0` prints the notes alone.
+
+6. Add it to the apt repository (below).
+
+**The apt repository** is a folder of static files that any web server can
+serve as it is. `tools/aptrepo` adds packages to its `pool/`, then writes
+`dists/stable/` again from everything the pool holds. It signs `Release`
+with a gpg key, the **archive key** (separate from the release key and
+from anyone's commit key), and writes the key's public half beside it as
+`trellis-archive-keyring.gpg`:
+
+```sh
+make apt-repo APT_REPO=~/trellis-apt APT_GPG_KEY=<archive key fingerprint>
+```
+
+The key must name exactly one gpg secret key (a name two keys share is
+refused); it prints the fingerprint, which goes beside the repository for
+people to check. It takes only release packages signed with a key in `trusted.keys`, and
+never replaces a published file with different contents. Older versions
+stay listed. `make apt-test` builds a repository with throwaway keys and
+checks, in Debian and Ubuntu containers, that apt installs and upgrades
+from it, and that it refuses the repository when an index is changed or
+another key signed it. The [reference](../reference.md#installing-from-the-apt-repository) has
+the lines a machine needs.
 
 A node takes a release with `sudo meshctl upgrade FILE.deb`
 ([reference](../reference.md#upgrading-a-device-by-itself)). To try one that no built-in key signed,
@@ -179,6 +202,7 @@ gateway:
   mode: auto            # or off: never share, still use other gateways
   wan: eth0             # optional; default: the default route's interface
   probe_targets: [1.1.1.1, 8.8.8.8, 9.9.9.9]
+  web_check: true       # a WAN behind a login page is not shared
   down_mbit: 20         # announced capacity
   up_mbit: 5
 ```

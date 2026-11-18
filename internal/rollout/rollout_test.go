@@ -55,15 +55,62 @@ func TestTurn(t *testing.T) {
 		{"a phase change restarts the clock", "c",
 			map[string]State{"a": {Done, "", at(20)}, "b": {Upgrading, "", at(30)}}, at(40), Wait, "b's turn (upgrading)"},
 		{"not in the order", "z", nil, at(0), Halt, "not in the rollout's order"},
+		{"a node away when the rest halted halts when back", "a",
+			map[string]State{"b": {Halted, "a did not move on its turn for 15 min", at(20)}, "c": {Halted, "a did not move", at(20)}}, at(300), Halt, "a did not move on its turn for 15 min"},
+		{"one that rolled back after this node stops it too", "a", map[string]State{"c": {RolledBack, "x", at(5)}}, at(6), Halt, "c rolled-back"},
+		{"a rollback wins over a halt", "a", map[string]State{"b": {Halted, "c rolled-back: x", at(5)}, "c": {RolledBack, "x", at(5)}}, at(6), Halt, "c rolled-back: x"},
+		{"a halt with no reason names the node", "a", map[string]State{"b": {Halted, "", at(5)}}, at(6), Halt, "b halted"},
 	} {
-		d := Turn(r, c.me, c.states, name, c.now)
+		d := Turn(r, c.me, time.Time{}, c.states, name, c.now)
 		if d.Action != c.want || !strings.Contains(d.Why, c.why) {
 			t.Errorf("%s: %v %q, want %v %q", c.name, d.Action, d.Why, c.want, c.why)
 		}
 	}
 	r.Cancelled = true
-	if d := Turn(r, "a", nil, name, t0); d.Action != Halt {
+	if d := Turn(r, "a", time.Time{}, nil, name, t0); d.Action != Halt {
 		t.Errorf("cancelled: %v", d)
+	}
+}
+
+// Turns count from when this node got the rollout, by its own clock.
+func TestTurnFromReceived(t *testing.T) {
+	r := rollout("a", "b")
+	// The origin's clock is an hour behind: the start looks old.
+	got := t0.Add(time.Hour)
+	if d := Turn(r, "b", got, nil, name, got.Add(time.Minute)); d.Action != Wait {
+		t.Errorf("a minute after it arrived: %v %q", d.Action, d.Why)
+	}
+	if d := Turn(r, "b", got, nil, name, got.Add(Stalled+time.Minute)); d.Action != Halt {
+		t.Errorf("past the stall: %v %q", d.Action, d.Why)
+	}
+}
+
+func TestOver(t *testing.T) {
+	r := rollout("a", "b", "c")
+	at := func(min int) time.Time { return t0.Add(time.Duration(min) * time.Minute) }
+	for _, c := range []struct {
+		name   string
+		me     string
+		mine   Phase
+		states map[string]State
+		now    time.Time
+		want   bool
+	}{
+		{"every node done", "c", Done, map[string]State{"a": {Done, "", at(1)}, "b": {Skipped, "", at(2)}}, at(3), true},
+		{"this node still upgrading", "c", Upgrading, map[string]State{"a": {Done, "", at(1)}, "b": {Done, "", at(2)}}, at(3), false},
+		{"one still waiting, nothing stopped", "a", Done, map[string]State{"b": {Ready, "", at(1)}}, at(60), false},
+		{"halted on a silent node: not yet", "c", Halted, map[string]State{"b": {Halted, "", at(16)}}, at(10), false},
+		{"halted on a silent node: over after the stall", "c", Halted, map[string]State{"b": {Halted, "", at(16)}}, at(16), true},
+		{"a rollback, the rest halted", "c", Halted, map[string]State{"a": {RolledBack, "", at(4)}, "b": {Halted, "", at(4)}}, at(5), true},
+		{"a node upgrading lately is waited for", "c", Halted, map[string]State{"a": {Upgrading, "", at(10)}, "b": {Halted, "", at(11)}}, at(20), false},
+	} {
+		if got := Over(r, c.me, c.mine, time.Time{}, c.states, c.now); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	r.Cancelled = true
+	if !Over(r, "c", Halted, time.Time{}, map[string]State{"a": {Done, "", t0}, "b": {Halted, "", t0}}, t0) {
+		t.Error("cancelled, every node final: not over")
 	}
 }
 

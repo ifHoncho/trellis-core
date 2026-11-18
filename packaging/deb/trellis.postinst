@@ -19,10 +19,10 @@ enable_units() {
 # The trellis group may open meshd's API socket: webd runs in it, and an
 # operator's account can be added to it to use meshctl without sudo.
 getent group trellis >/dev/null 2>&1 || groupadd --system trellis
-# The trellis-voice group is the voice service's (the trellis-voice
-# package): it reads the configuration meshd keeps for it, and webd is in
-# it to reach the voice console. Made here, with or without that package:
-# webd's unit names it. It opens nothing of meshd's API.
+# The trellis-voice group is the voice service's (trellis-voiced): it
+# reads the configuration meshd keeps for it, and webd is in it to reach
+# the voice console. Made on every architecture: webd's unit names it. It
+# opens nothing of meshd's API.
 getent group trellis-voice >/dev/null 2>&1 || groupadd --system trellis-voice
 install -d -m 0755 /etc/trellis /var/lib/trellis
 
@@ -113,6 +113,13 @@ if running_systemd; then
   # Running daemons move to the new binary. Browsers sign in again.
   systemctl try-restart trellis-webd.service 2>/dev/null || true
   systemctl try-restart trellis-meshd.service 2>/dev/null || true
+  # Voice (meshd starts it when voice.enable is set): CM108 adapters
+  # already plugged in get the udev rule's group, and a running voice
+  # service moves to the new binary.
+  if [ -x /usr/bin/trellis-voiced ]; then
+    udevadm trigger --subsystem-match=hidraw 2>/dev/null || true
+    systemctl try-restart trellis-voiced.service 2>/dev/null || true
+  fi
 fi
 
 if [ -z "$previous" ] && [ -f /etc/trellis/profile.yaml ]; then

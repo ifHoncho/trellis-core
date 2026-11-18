@@ -110,7 +110,12 @@ stops the radio.
   A closed node stays closed while meshd is stopped (an upgrade, a
   restart, a crash); removing Trellis removes the firewall.
   Positions never leave through a gateway (a lab test checks the uplink
-  side), and gossip is never routed.
+  side), and gossip is never routed. What a gateway itself sends out of
+  its uplink is its WAN checks: pings to the probe targets and a plain
+  HTTP request to each connectivity-check address, with no cookies and
+  nothing about the node (`gateway.web_check: false` stops the requests).
+  A network that fakes the answers can at worst get a WAN shared that
+  carries no traffic, as the pings alone would.
 
 ### A4: a mesh member
 

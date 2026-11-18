@@ -253,9 +253,11 @@ export function rolloutSummary(r) {
   const nodes = r.nodes || [];
   const done = nodes.filter((n) => n.phase === 'done').length;
   const stop = nodes.find((n) => n.phase === 'rolled-back' || n.phase === 'failed');
+  const halt = nodes.find((n) => n.phase === 'halted' && n.reason);
   const up = nodes.find((n) => n.phase === 'upgrading');
   const from = r.sender ? 'this node' : r.origin;
   if (stop) return { tone: 'error', text: `Upgrade to ${r.version} from ${from} halted: ${stop.callsign} ${stop.phase === 'failed' ? 'failed' : 'went back'}${stop.reason ? ` (${stop.reason})` : ''}. ${done} of ${nodes.length} upgraded.` };
+  if (halt && !r.cancelled) return { tone: 'error', text: `Upgrade to ${r.version} from ${from} halted: ${halt.reason}. ${done} of ${nodes.length} upgraded.` };
   if (r.cancelled) return { tone: 'warning', text: `Upgrade to ${r.version} from ${from} cancelled. ${done} of ${nodes.length} upgraded${up ? `; ${up.callsign} is finishing` : ''}.` };
   if (r.ended) return { tone: 'ok', text: `Upgrade to ${r.version} from ${from} is over: ${done} of ${nodes.length} upgraded.` };
   return { tone: 'warning', text: `Upgrading the mesh to ${r.version} from ${from}: ${done} of ${nodes.length} done${up ? `; ${up.callsign} upgrading now` : ''}.` };

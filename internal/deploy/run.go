@@ -35,9 +35,6 @@ type Runner struct {
 	// meshctl upgrade's health check and rollback: a developer's quick
 	// iterations.
 	Fast bool
-	// Voice installs trellis-voice on every node; without it, only nodes
-	// that have it already are upgraded.
-	Voice bool
 	// NodeKey is a release public key the nodes are made to trust
 	// (/etc/trellis/release-keys/deploy-dev.pub): a development key.
 	NodeKey []byte
@@ -298,7 +295,6 @@ func (r *Runner) install(ctx context.Context, s Step, w io.Writer) Outcome {
 	if r.Release.Batman != "" {
 		files["dkms.deb"] = r.Release.Batman
 	}
-	r.addVoice(s, files)
 	data := map[string][]byte{"install.sh": []byte(installScript)}
 	r.keyFiles(data)
 	if len(r.Profile) > 0 && !s.State.Profile {
@@ -462,7 +458,6 @@ func (r *Runner) upgrade(ctx context.Context, s Step, w io.Writer) Outcome {
 	if r.Release.Batman != "" && r.Release.BatmanVersion != s.State.Batman {
 		files["dkms.deb"] = r.Release.Batman
 	}
-	r.addVoice(s, files)
 	data := map[string][]byte{"upgrade.sh": []byte(upgradeScript)}
 	r.keyFiles(data)
 	if len(r.Profile) > 0 && !s.State.Profile {
@@ -700,19 +695,4 @@ func Failed(outs []Outcome) int {
 		}
 	}
 	return n
-}
-
-// addVoice adds the voice package for the node's architecture: on every
-// node with --voice, else where it is installed already (it must keep up
-// with trellis).
-func (r *Runner) addVoice(s Step, files map[string]string) {
-	f := r.Release.Voice[s.State.Arch]
-	switch {
-	case f != "" && (r.Voice || s.State.Voice != ""):
-		files["voice.deb"] = f
-	case f == "" && (r.Voice || s.State.Voice != ""):
-		// Asked for, or to be kept up with trellis, and not there: said,
-		// not passed over.
-		r.say(s, "no trellis-voice package for %s in this release: voice is not installed or upgraded here", s.State.Arch)
-	}
 }

@@ -44,7 +44,7 @@ if [ -z "${TRELLIS_LAB_UNSHARED:-}" ]; then
   rm -rf "$RUN"; mkdir -p "$RUN/pkg"
   ( cd "$ROOT" && go build -o "$RUN/mkdeb" ./tools/mkdeb ) || exit 2
   "$RUN/mkdeb" keygen --out "$RUN/lab.key" --comment "rollout lab" > "$RUN/lab.pub" 2>/dev/null || exit 2
-  for v in 9.0.1 9.0.2 9.0.3; do
+  for v in 9.0.1 9.0.2 9.0.3 9.0.4; do
     "$RUN/mkdeb" trellis --root "$ROOT" --out "$RUN/pkg" --key "$RUN/lab.key" --sign-dev \
       --version "$v" --arch amd64 --binary "$BIN" > /dev/null || exit 2
   done
@@ -105,6 +105,7 @@ for i in $(seq 1 $NODES); do
   mkdir -p "$RUN/node$i/state" "$RUN/node$i/run" "$RUN/node$i/pm" "$RUN/node$i/upg/keys"
   cp "$RUN/lab.pub" "$RUN/node$i/upg/keys/lab.pub"
   echo 9.0.0 > "$RUN/node$i/upg/installed"
+  echo 45 > "$RUN/node$i/upg/stall"   # a node's turn may go unmoved 45 s (15 min on a real mesh)
   printf 'mac: "02:00:00:00:02:%02x"\n' "$i" > "$RUN/node$i/state/identity.yaml"
   cat > "$RUN/node$i/node.yaml" <<YAML
 schema: 0
@@ -286,6 +287,49 @@ fi
 # Every node says the same at the end.
 same=$(for i in 1 2 3 4; do phases "$i"; done | sort -u | wc -l)
 [ "$same" = 1 ] && pass "R4.1 every node sees the same outcome" || fail "R4.1 views" "$(for i in 1 2 3 4; do phases "$i"; echo; done)"
+
+# R6: node 1 (first in the order) is cut off just as the rollout starts.
+# The others halt once its turn has gone unmoved for the stall time, the
+# rollout ends after another, and node 1, back, halts instead of upgrading
+# by itself.
+# Cut both ways: nothing to or from node 1 crosses the air, and its port
+# goes down.
+NS air nft -f - <<'NFT'
+table bridge r6 {
+  chain cut {
+    type filter hook forward priority -10; policy accept;
+    iifname "p1" drop
+    oifname "p1" drop
+  }
+}
+NFT
+NS air ip link set p1 down
+cut1=$(NS node1 ip -br link show eth1 | awk '{print $2}')
+ctl 4 upgrade --mesh --yes "$(pkg 9.0.4)" > "$RUN/r6.txt" 2>&1
+in1=$(grep -c 'lab-1 ' "$RUN/r6.txt")
+t0=$SECONDS
+deadline=$((SECONDS + 240))
+until [ $SECONDS -ge $deadline ] || ended 4; do sleep 2; done
+took=$((SECONDS - t0))
+p=$(phases 4)
+follow=$(timeout 20 "$BIN" meshctl --socket "$RUN/node4/run/meshd.sock" upgrade --mesh --follow 2>&1); frc=$?
+if [ "$in1" -ge 1 ] && ended 4 && [ "$p" = "lab-1:- lab-2:halted lab-3:halted lab-4:halted" ] && [ "$frc" -ne 0 ] && echo "$follow" | grep -q 'halted: lab-1 did not move'; then
+  pass "R6.1 a node silent on its turn halts the rest, and the rollout ends (${took} s; follow returns: $(echo "$follow" | tail -1))"
+else
+  fail "R6.1 rollout with a silent node ends" "in order: $in1; node 1's eth1 when cut: $cut1; ended after ${took} s: $(ended 4 && echo yes || echo no); [$p]; follow ($frc): $(echo "$follow" | tail -2 | tr '\n' '|')"
+fi
+NS air ip link set p1 up
+NS air nft delete table bridge r6
+deadline=$((SECONDS + 120))
+until [ $SECONDS -ge $deadline ] || [ "$(jsonq 1 "(s.get('rollout') or {}).get('phase','')")" = halted ]; do sleep 2; done
+ph1=$(jsonq 1 "(s.get('rollout') or {}).get('phase','')")
+why1=$(jsonq 1 "(s.get('rollout') or {}).get('reason','')")
+inst1=$(cat "$RUN/node1/upg/installed")
+if [ "$ph1" = halted ] && [ "$inst1" = 9.0.3 ] && echo "$why1" | grep -q 'lab-1 did not move'; then
+  pass "R6.2 node 1, back, takes the rollout and halts ($why1) instead of upgrading; it still runs 9.0.3"
+else
+  fail "R6.2 node back after a halt" "phase=$ph1 why=[$why1] installed=$inst1; node 1's eth1 when cut: $cut1; node 1's log: $(grep -n 'mesh-wide upgrade' "$RUN/node1.log" | tail -6 | tr '\n' '|')"
+fi
 
 # ---------------------------------------------------------------- summary
 say ""

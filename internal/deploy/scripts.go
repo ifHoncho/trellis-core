@@ -10,7 +10,7 @@ package deploy
 const installScript = `#!/bin/sh
 set -u
 D="$1"; CS="$2"; ID="$3"
-` + nodeKeyFunctions + `
+` + nodeKeyFunctions + voiceLibsFunction + `
 export DEBIAN_FRONTEND=noninteractive
 inst() {
   apt-get install -y --no-install-recommends \
@@ -18,7 +18,6 @@ inst() {
 }
 set -- "$D/trellis.deb"
 [ -f "$D/dkms.deb" ] && set -- "$@" "$D/dkms.deb"
-[ -f "$D/voice.deb" ] && set -- "$@" "$D/voice.deb"
 trust_node_key
 
 echo "@@ step installing the packages"
@@ -33,6 +32,7 @@ if ! inst "$@" > "$D/apt.log" 2>&1; then
 fi
 cat "$D/apt.log"
 echo "-- installed: trellis $(dpkg-query -W -f='${Version}' trellis)"
+voice_libs
 
 echo "@@ step preparing the system (a few minutes when modules are built)"
 /usr/bin/meshctl prepare --no-doctor || echo "@@ warn meshctl prepare reported problems (see the log)"
@@ -83,7 +83,7 @@ echo "@@ done"
 const upgradeScript = `#!/bin/sh
 set -u
 D="$1"; MODE="${2:-upgrade}"; CS="${3:-node}"; ID="${4:-0}"
-` + nodeKeyFunctions + `
+` + nodeKeyFunctions + voiceLibsFunction + `
 if [ -z "${TD_DETACHED:-}" ] && command -v setsid > /dev/null 2>&1; then
   rm -f "$D/exit"; : > "$D/run.log"
   TD_DETACHED=1 setsid -w sh "$0" "$@" >> "$D/run.log" 2>&1 < /dev/null &
@@ -147,12 +147,9 @@ if [ "$rc" = 0 ] && [ "$MODE" != install ]; then
   echo "@@ step preparing the system"
   /usr/bin/meshctl prepare --no-doctor || echo "@@ warn meshctl prepare reported problems (see the log)"
 fi
-# The voice package follows trellis.
-if [ "$rc" = 0 ] && [ -f "$D/voice.deb" ]; then
-  echo "@@ step the voice package"
-  inst "$D/voice.deb" > "$D/apt.log" 2>&1 ||
-    { tail -n 15 "$D/apt.log"; echo "@@ warn trellis-voice did not install"; }
-fi
+# Voice's libraries, which the package only recommends (meshctl upgrade
+# installs with dpkg alone, and needs nothing new).
+[ "$rc" = 0 ] && voice_libs
 # A node waiting in setup mode (Trellis but no mesh profile) gets the
 # run's profile and a configuration, and joins the mesh.
 if [ "$rc" = 0 ] && [ -f "$D/profile.yaml" ] && [ ! -e /etc/trellis/profile.yaml ]; then
@@ -178,6 +175,41 @@ finish "$rc"
 // on the built-in release keys alone ($D/drop-node-key) removes it once its
 // install or upgrade succeeded, so a node that takes real releases does not
 // go on trusting development builds.
+// voiceLibsFunction: voice_libs installs the libraries push-to-talk voice
+// loads (libopus, libasound) where the package carries voice and they are
+// missing, with apt, best effort: a node with no network keeps working,
+// and says what voice needs.
+const voiceLibsFunction = `
+voice_libs() {
+  [ -x /usr/bin/trellis-voiced ] || return 0
+  has() { dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null | grep -q '^ii'; }
+  if has libopus0 && { has libasound2t64 || has libasound2; }; then return 0; fi
+  echo "@@ step the libraries voice needs (libopus0, libasound2)"
+  # libasound2t64 on newer releases, libasound2 on older ones: whichever
+  # installs (apt names one it cannot install as merely referred to).
+  # Short timeouts: a node with no network must not hold the run up.
+  q="-o Acquire::Retries=0 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10"
+  try() {
+    for a in libasound2t64 libasound2; do
+      # shellcheck disable=SC2086
+      apt-get install -y --no-install-recommends $q libopus0 "$a" > "$D/apt-voice.log" 2>&1 && return 0
+    done
+    return 1
+  }
+  offline() { grep -q -E 'Temporary failure resolving|Could not resolve|Unable to connect|Network is unreachable|Connection timed out' "$D/apt-voice.log"; }
+  try && return 0
+  # Package lists too old to know them: refreshed once, unless the
+  # network is not there at all.
+  if ! offline; then
+    # shellcheck disable=SC2086
+    apt-get update -q $q > /dev/null 2>&1 || true
+    try && return 0
+  fi
+  tail -n 10 "$D/apt-voice.log"
+  echo "@@ warn voice needs libopus0 and libasound2t64 (or libasound2), which did not install (no network?): install them before turning voice on"
+}
+`
+
 const nodeKeyFunctions = `trust_node_key() {
   [ -f "$D/node-key.pub" ] || return 0
   install -D -m 0644 "$D/node-key.pub" /etc/trellis/release-keys/deploy-dev.pub

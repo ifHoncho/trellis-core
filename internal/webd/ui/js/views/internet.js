@@ -9,7 +9,9 @@ function path(st) {
   const g = st.gateway;
   const hops = [h('div.hop', h('b', 'Devices'), h('small', `on ${st.node.callsign}`)), h('i.wire'), h('div.hop.me', h('b', st.node.callsign), h('small', 'this node'))];
   if (g.selected && g.selected.self) {
-    hops.push(h('i.wire'), h('div.hop', h('b', g.wan || 'uplink'), h('small', 'this node’s uplink')), h('i.wire'), h('div.hop', h('b', 'Internet'), h('small', g.rtt_ms ? `${g.rtt_ms.toFixed(0)} ms away` : 'reachable')));
+    hops.push(h('i.wire'), h('div.hop', h('b', g.wan || 'uplink'), h('small', 'this node’s uplink')), g.web_check === 'portal'
+      ? [h('i.wire.down'), h('div.hop.down', h('b', 'Login page'), h('small', 'sign in to reach the internet'))]
+      : [h('i.wire'), h('div.hop', h('b', 'Internet'), h('small', g.rtt_ms ? `${g.rtt_ms.toFixed(0)} ms away` : 'reachable'))]);
   } else if (g.selected) {
     hops.push(h('i.wire'), h('div.hop', h('b', g.selected.callsign), h('small', `gateway · ${mbps(g.selected.throughput_mbps)} Mbit/s path`)), h('i.wire'), h('div.hop', h('b', 'Internet'), h('small', 'through its uplink')));
   } else {
@@ -18,20 +20,43 @@ function path(st) {
   return h('div.path', hops);
 }
 
+function webCheck(g) {
+  switch (g.web_check) {
+    case 'ok': return 'passes';
+    case 'portal': return h('span.warn', `behind a login page: ${g.web_check_detail}`);
+    case 'no-answer': return h('span.dim', `no answer (${g.web_check_detail}); shared on the probes alone`);
+    default: return h('span.dim', 'checking');
+  }
+}
+
+function portalNote(st) {
+  const g = st.gateway;
+  if (g.web_check !== 'portal') return null;
+  const self = g.selected && g.selected.self;
+  return panel('Sign in to the uplink', {},
+    h('p', `${g.wan} is on a network that shows a login page before it lets traffic out (${g.web_check_detail}). The node does not share it with the mesh until someone signs in.`),
+    h('p.dim', self
+      ? 'No other gateway is usable, so devices on this node use it: open any http:// page from one of them to reach the login page. Sharing starts on its own within seconds of signing in.'
+      : 'Devices on this node use another gateway for now. To sign in, reach the login page from a device on this node while no other gateway is usable, or set gateway.web_check to off to share the uplink as it is.'));
+}
+
 export function internet() {
   const st = state.status;
   const g = st.gateway;
   const sum = internetSummary(st);
   const rows = [];
   if (g.wan_known) {
-    rows.push({ self: true, callsign: st.node.callsign, node_id: st.node.node_id, address: st.node.address.split('/')[0], usable: g.wan_healthy && g.mode !== 'off',
-      why: g.mode === 'off' ? 'sharing is switched off on this node' : g.wan_healthy ? '' : (g.probe_error || 'its uplink is not answering'), selected: g.selected && g.selected.self });
+    const portal = g.web_check === 'portal';
+    rows.push({ self: true, callsign: st.node.callsign, node_id: st.node.node_id, address: st.node.address.split('/')[0], usable: g.wan_healthy && g.mode !== 'off' && !portal,
+      why: g.mode === 'off' ? 'sharing is switched off on this node' : portal ? 'its uplink is behind a login page' : g.wan_healthy ? '' : (g.probe_error || 'its uplink is not answering'), selected: g.selected && g.selected.self });
   }
   for (const c of g.candidates || []) rows.push({ ...c, selected: g.selected && !g.selected.self && g.selected.node_id === c.node_id });
 
   return h('div.page',
     h('header.page-head', h('div', h('h1', 'Internet'),
       h('p.sub', 'Any node with a working uplink shares it. Each node picks the best gateway it can reach and moves to another within seconds if that one fails.'))),
+
+    portalNote(st),
 
     panel('Path in use', { meta: g.selected ? `for ${since(g.selected.since)}` : '' }, path(st),
       h('p.dim', { style: { marginTop: '14px', fontSize: '14px' } }, sum.note, '.')),
@@ -40,14 +65,17 @@ export function internet() {
       panel('This node’s uplink', { class: 'c5' },
         g.wan_known
           ? [h('div.stats',
-              stat('State', g.wan_healthy ? 'Healthy' : 'Down', '', { text: true, tone: g.wan_healthy ? 'ok' : 'bad' }),
+              g.web_check === 'portal'
+                ? stat('State', 'Login page', '', { text: true, tone: 'warn' })
+                : stat('State', g.wan_healthy ? 'Healthy' : 'Down', '', { text: true, tone: g.wan_healthy ? 'ok' : 'bad' }),
               stat('Round trip', g.wan_healthy && g.rtt_ms ? g.rtt_ms.toFixed(0) : '–', 'ms'),
               stat('Loss', String(g.loss_pct), '%')),
             h('div', { style: { margin: '14px 0 12px' } }, spark(history('rtt'))),
             kv([
               ['Interface', g.wan],
-              ['Sharing', g.mode === 'off' ? 'off (node setting)' : g.role === 'gateway' ? `on · announces ${g.announced}` : 'on · waiting for a healthy uplink'],
+              ['Sharing', g.mode === 'off' ? 'off (node setting)' : g.role === 'gateway' ? `on · announces ${g.announced}` : g.web_check === 'portal' ? 'not with the mesh until someone signs in' : 'on · waiting for a healthy uplink'],
               ['Probes', (g.probe_targets || []).join(', ')],
+              g.web_check ? ['Web check', webCheck(g)] : null,
               g.probe_error ? ['Last error', g.probe_error] : null,
               ['Since', since(g.wan_since) + ' ago'],
             ])]

@@ -106,6 +106,7 @@ func printPlan(w io.Writer, p *api.RolloutPlan) {
 func rolloutLine(r *status.Rollout) string {
 	done, total, now := 0, len(r.Nodes), ""
 	var stopped []string
+	halted := ""
 	for _, n := range r.Nodes {
 		switch n.Phase {
 		case "done":
@@ -114,12 +115,18 @@ func rolloutLine(r *status.Rollout) string {
 			now = n.Callsign + " upgrading"
 		case "rolled-back", "failed":
 			stopped = append(stopped, n.Callsign+" "+n.Phase)
+		case "halted":
+			if halted == "" && !r.Cancelled {
+				halted = n.Reason
+			}
 		}
 	}
 	line := fmt.Sprintf("to %s from %s: %d of %d done", r.Version, r.Origin, done, total)
 	switch {
 	case len(stopped) > 0:
 		line += "; HALTED: " + strings.Join(stopped, ", ")
+	case halted != "":
+		line += "; HALTED: " + halted
 	case r.Cancelled:
 		line += "; cancelled"
 	case now != "":
@@ -174,8 +181,8 @@ func followRollout(ctx context.Context, client *api.Client, stdout io.Writer) er
 				if n.Reason != "" {
 					ph += ": " + n.Reason
 				}
-				if ph != "" && seen[n.MAC+n.Callsign] != ph {
-					seen[n.MAC+n.Callsign] = ph
+				if ph != "" && seen[n.MAC] != ph {
+					seen[n.MAC] = ph
 					fmt.Fprintf(stdout, "%s  %s %s\n", time.Now().Format("15:04:05"), n.Callsign, ph)
 				}
 			}
@@ -184,6 +191,11 @@ func followRollout(ctx context.Context, client *api.Client, stdout io.Writer) er
 				for _, n := range r.Nodes {
 					if n.Phase == "rolled-back" || n.Phase == "failed" {
 						return fmt.Errorf("%s %s: %s", n.Callsign, n.Phase, n.Reason)
+					}
+				}
+				for _, n := range r.Nodes {
+					if n.Phase == "halted" && !r.Cancelled {
+						return fmt.Errorf("halted: %s", n.Reason)
 					}
 				}
 				return nil

@@ -584,29 +584,24 @@ func TestDropNodeKeyMark(t *testing.T) {
 	}
 }
 
-// The voice package goes to nodes that have it, and with --voice to all,
-// for the node's architecture only.
+// Voice is in the trellis package: no package of its own goes to a node,
+// and both scripts install the libraries it loads (best effort).
 func TestRunVoice(t *testing.T) {
-	f := fake("a", "b", "c")
+	f := fake("a")
 	r, console := newRunner(f)
-	r.Release.Voice = map[string]string{"arm64": "/r/trellis-voice_0.2.0_arm64.deb"}
-	a, b, c := step("a", Upgrade, false), step("b", Upgrade, false), step("c", Upgrade, false)
-	a.State.Arch, b.State.Arch, c.State.Arch = "arm64", "arm64", "armhf"
-	a.State.Voice, c.State.Voice = "0.1.0", "0.1.0"
-	outs := r.Run(context.Background(), []Step{a, b, c})
-	if Failed(outs) != 0 {
+	a := step("a", Upgrade, false)
+	if outs := r.Run(context.Background(), []Step{a}); Failed(outs) != 0 {
 		t.Fatalf("%+v\n%s", outs, console)
 	}
-	if f.nodes["a"].files["voice.deb"] == "" || f.nodes["b"].files["voice.deb"] != "" || f.nodes["c"].files["voice.deb"] != "" {
-		t.Errorf("without --voice: a %q, b %q, c %q", f.nodes["a"].files["voice.deb"], f.nodes["b"].files["voice.deb"], f.nodes["c"].files["voice.deb"])
+	for name := range f.nodes["a"].files {
+		if strings.Contains(name, "voice") {
+			t.Errorf("a voice file went to the node: %s", name)
+		}
 	}
-	f = fake("b")
-	r, _ = newRunner(f)
-	r.Release.Voice = map[string]string{"arm64": "/r/trellis-voice_0.2.0_arm64.deb"}
-	r.Voice = true
-	r.Run(context.Background(), []Step{b})
-	if f.nodes["b"].files["voice.deb"] == "" {
-		t.Error("--voice did not install it")
+	for name, sc := range map[string]string{"install": installScript, "upgrade": upgradeScript} {
+		if !strings.Contains(sc, "voice_libs()") || strings.Count(sc, "voice_libs") < 2 || strings.Contains(sc, "voice.deb") {
+			t.Errorf("the %s script does not install voice's libraries, or still looks for a voice package", name)
+		}
 	}
 }
 

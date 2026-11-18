@@ -132,7 +132,7 @@ func TestLoadRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Version != "0.2.0" || len(r.Arches) != 2 || r.Batman == "" || r.BatmanVersion != "2026.3-1" || r.SignedBy != "1" || !r.Checksums || r.Voice["arm64"] == "" {
+	if r.Version != "0.2.0" || len(r.Arches) != 2 || r.Batman == "" || r.BatmanVersion != "2026.3-1" || r.SignedBy != "1" || !r.Checksums {
 		t.Fatalf("%+v", r)
 	}
 

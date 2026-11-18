@@ -95,31 +95,42 @@ done
 case "$rc" in 0|1) ;; *) printf '%s\n' "$out" | tail -30; fail "meshctl prepare exited $rc" ;; esac
 ok "meshctl prepare ran every step (exit $rc: $(printf '%s\n' "$out" | tail -1 | cut -c1-90))"
 
-echo "== operator edits the chrony drop-in, then upgrades to $(basename "$new")"
+# Voice was a package of its own before 0.3: a node may have it. Made
+# here as that package was (its files, and Depends: trellis).
+mkdir -p /tmp/tv/DEBIAN /tmp/tv/usr/bin /tmp/tv/usr/lib/systemd/system
+printf 'Package: trellis-voice\nVersion: 0.9.0\nArchitecture: all\nMaintainer: test <test@example.com>\nDepends: trellis\nDescription: the old voice package\n' > /tmp/tv/DEBIAN/control
+printf '#!/bin/sh\necho old voice\n' > /tmp/tv/usr/bin/trellis-voiced; chmod 755 /tmp/tv/usr/bin/trellis-voiced
+echo '# old' > /tmp/tv/usr/lib/systemd/system/trellis-voiced.service
+dpkg-deb --build /tmp/tv /tmp/trellis-voice_0.9.0_all.deb >/dev/null || fail "cannot build the old trellis-voice package"
+dpkg -i /tmp/trellis-voice_0.9.0_all.deb >/dev/null 2>&1 || fail "cannot install the old trellis-voice package"
+ok "the old, separate trellis-voice package installed"
+
+echo "== operator edits the chrony drop-in, then upgrades to $(basename "$new") with dpkg alone (as meshctl upgrade does)"
 echo '# operator edit' >> /etc/chrony/conf.d/trellis.conf
 drop="$(sha256sum < /etc/chrony/conf.d/trellis.conf)"
-apt-get install -y --no-install-recommends "$new" > /tmp/upgrade.log 2>&1 || { tail -40 /tmp/upgrade.log; fail "upgrade"; }
+dpkg -i --force-confold --force-confdef "$new" > /tmp/upgrade.log 2>&1 || { tail -40 /tmp/upgrade.log; fail "upgrade with dpkg -i (it must need no new package)"; }
 dpkg -s trellis | grep -q '^Status: install ok installed' || fail "trellis not configured after upgrade"
 [ "$(dpkg-query -W -f='${Version}' trellis)" = "$(dpkg-deb -f "$new" Version)" ] || fail "version after upgrade"
 [ "$(sums)" = "$before" ] || fail "upgrade changed the configuration, profile or identity"
 [ "$(sha256sum < /etc/chrony/conf.d/trellis.conf)" = "$drop" ] || fail "upgrade replaced the edited chrony drop-in"
 [ -n "$(dpkg-query -W -f='${Trellis-Version}' trellis)" ] || fail "Trellis-Version field lost"
 ok "upgrade keeps configuration, identity and the edited drop-in"
+dpkg -s trellis-voice 2>/dev/null | grep -q '^Status: install ok installed' && fail "the old trellis-voice package is still installed"
+[ "$(dpkg -S /usr/bin/trellis-voiced 2>/dev/null | cut -d: -f1)" = trellis ] || fail "trellis-voiced does not belong to trellis: $(dpkg -S /usr/bin/trellis-voiced 2>&1)"
+grep -q '^# old' /usr/lib/systemd/system/trellis-voiced.service && fail "the old voice unit is still there"
+ok "the merged package took the old trellis-voice's files and removed it"
 
-echo "== trellis-voice"
-voice="$(ls /debs/new/trellis-voice_*.deb)"
-apt-get install -y --no-install-recommends "$voice" > /tmp/voice.log 2>&1 || { tail -40 /tmp/voice.log; fail "apt-get install trellis-voice"; }
+echo "== voice"
+dpkg-deb -f "$new" Recommends | grep -q 'libopus0' && ! dpkg-deb -f "$new" Depends | grep -q 'libopus' || fail "the voice libraries must be recommended, not required"
+apt-get install -y --no-install-recommends libopus0 > /tmp/voice.log 2>&1 || fail "install libopus0"
+apt-get install -y --no-install-recommends libasound2t64 >> /tmp/voice.log 2>&1 || apt-get install -y --no-install-recommends libasound2 >> /tmp/voice.log 2>&1 || { tail -20 /tmp/voice.log; fail "install libasound2"; }
 v="$(/usr/bin/trellis-voiced version)" || fail "trellis-voiced does not run or misses a library: $v"
 [ -f /usr/lib/systemd/system/trellis-voiced.service ] && [ -f /usr/lib/udev/rules.d/70-trellis-voice.rules ] || fail "voice unit or udev rule missing"
 # The voice service takes packets from any device: it must not be in the
 # group that opens meshd's API.
 grep -q '^Group=trellis-voice$' /usr/lib/systemd/system/trellis-voiced.service || fail "trellis-voiced is not in its own group"
 grep -Eq '^(Group|SupplementaryGroups)=(.* )?trellis( |$)' /usr/lib/systemd/system/trellis-voiced.service && fail "trellis-voiced is in the trellis group: meshd's API is open to it"
-ok "trellis-voice installed with its libraries: $v"
-apt-get remove -y trellis-voice > /tmp/voice-rm.log 2>&1 || { tail -20 /tmp/voice-rm.log; fail "remove trellis-voice"; }
-[ ! -e /usr/bin/trellis-voiced ] || fail "trellis-voiced left after remove"
-dpkg -s trellis >/dev/null 2>&1 || fail "removing trellis-voice removed trellis"
-ok "trellis-voice removed, trellis kept"
+ok "voice is in the trellis package and runs with its libraries: $v"
 
 echo "== downgrade (what a rollback does)"
 apt-get install -y --allow-downgrades --no-install-recommends "$old" > /tmp/down.log 2>&1 || { tail -40 /tmp/down.log; fail "downgrade"; }
@@ -129,7 +140,7 @@ ok "downgrade"
 
 echo "== remove"
 apt-get remove -y trellis trellis-batman-adv-dkms > /tmp/remove.log 2>&1 || { tail -40 /tmp/remove.log; fail "remove"; }
-[ ! -e /usr/bin/trellis ] || fail "binary left after remove"
+[ ! -e /usr/bin/trellis ] && [ ! -e /usr/bin/trellis-voiced ] || fail "binary left after remove"
 [ "$(sums)" = "$before" ] || fail "remove changed the configuration"
 [ ! -e /etc/udev/rules.d/85-trellis-regulatory.rules ] || fail "regulatory udev rule left after remove"
 /usr/share/trellis/scripts/install-regulatory.sh --status 2>/dev/null | grep -q 'set aside' && fail "regulatory.db still set aside after remove"

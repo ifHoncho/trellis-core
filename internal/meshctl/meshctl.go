@@ -139,6 +139,8 @@ Commands:
 		}
 	case "version":
 		fmt.Fprintln(stdout, version)
+	case "batman", "trellis":
+		err = cmdEgg(rest[0], stdout)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", rest[0])
 		fs.Usage()
@@ -1327,6 +1329,8 @@ func printGateway(w io.Writer, st *status.Status) {
 	wan := "no uplink of its own"
 	if g.WAN != "" {
 		switch {
+		case g.WebCheck == "portal":
+			wan = fmt.Sprintf("WAN %s BEHIND A LOGIN PAGE (%s), not shared", g.WAN, orDash(g.WebCheckDetail))
 		case g.WANHealthy:
 			wan = fmt.Sprintf("WAN %s healthy (%.0f ms, %d%% loss)", g.WAN, g.RTTms, g.LossPct)
 		case !g.WANKnown:
@@ -1340,9 +1344,12 @@ func printGateway(w io.Writer, st *status.Status) {
 	}
 	sel := "NONE: clients reach the mesh only"
 	if s := g.Selected; s != nil {
-		if s.Self {
+		switch {
+		case s.Self && g.WebCheck == "portal":
+			sel = "this node, for its own clients (to sign in)"
+		case s.Self:
 			sel = "this node (sharing it, announced " + g.Announced + ")"
-		} else {
+		default:
 			sel = fmt.Sprintf("%s %s, %.1f Mbit/s path", s.Callsign, s.Address, s.ThroughputMbps)
 		}
 		sel += fmt.Sprintf(" for %s", time.Since(s.Since).Round(time.Second))

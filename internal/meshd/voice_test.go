@@ -52,7 +52,7 @@ func TestVoiceConfig(t *testing.T) {
 	}
 }
 
-// Voice on without the package says so, and how to install it.
+// Voice on where the package carries none (armhf) says so.
 func TestVoiceNotInstalled(t *testing.T) {
 	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\nvoice: {enable: true}\n", "profile.yaml": testProfile})
 	d.opts.NoHostConfig = false
@@ -60,7 +60,7 @@ func TestVoiceNotInstalled(t *testing.T) {
 	voiceUnitFile = filepath.Join(t.TempDir(), "none.service")
 	t.Cleanup(func() { voiceUnitFile = was })
 	st, err := d.Voice(context.Background())
-	if err != nil || !st.Enabled || st.Installed || st.Running || !strings.Contains(st.Error, "trellis-deploy --voice") {
+	if err != nil || !st.Enabled || st.Installed || st.Running || !strings.Contains(st.Error, "arm64 and amd64 only") {
 		t.Errorf("%+v %v", st, err)
 	}
 }
@@ -193,5 +193,29 @@ func TestBeforeVoice(t *testing.T) {
 		if beforeVoice(ver) != want {
 			t.Errorf("%q: %v", ver, !want)
 		}
+	}
+}
+
+// Voice's libraries are looked for where Debian puts them; the missing
+// ones are named by package.
+func TestVoiceLibsMissing(t *testing.T) {
+	was := voiceLibDirs
+	t.Cleanup(func() { voiceLibDirs = was })
+	root := t.TempDir()
+	voiceLibDirs = []string{filepath.Join(root, "usr/lib/*")}
+	if m := voiceLibsMissing(); len(m) != 2 {
+		t.Fatalf("none there: %v", m)
+	}
+	dir := filepath.Join(root, "usr/lib/aarch64-linux-gnu")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "libopus.so.0"), nil, 0o644)
+	if m := voiceLibsMissing(); len(m) != 1 || !strings.HasPrefix(m[0], "libasound2t64") {
+		t.Fatalf("libopus there: %v", m)
+	}
+	os.WriteFile(filepath.Join(dir, "libasound.so.2"), nil, 0o644)
+	if m := voiceLibsMissing(); len(m) != 0 {
+		t.Fatalf("both there: %v", m)
 	}
 }

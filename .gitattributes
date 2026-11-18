@@ -1,0 +1,2 @@
+# meshctl's easter eggs: Brainfuck, not Befunge (both use .bf).
+internal/meshctl/egg/*.bf linguist-language=Brainfuck

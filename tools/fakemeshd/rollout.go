@@ -17,7 +17,8 @@ import (
 // read for their version and architecture; the rollout then plays out
 // over some 40 s: every node fetches at once, then one at a time upgrades.
 // A version containing "bad" rolls back on the second node and halts the
-// rest. scout-7 runs a release too old to take part; bravo-5 is armhf, so
+// rest; one containing "stall" has the second node never answer, so the
+// rest halt on it (at once here; after 15 min on a mesh). scout-7 runs a release too old to take part; bravo-5 is armhf, so
 // it is skipped unless an armhf package is given.
 
 type fakeRollout struct {
@@ -153,6 +154,7 @@ func (f *fake) rolloutStatus(now time.Time) *status.Rollout {
 		st.Packages = append(st.Packages, status.RolloutPackage{Arch: k.Arch, SHA256: k.SHA256, Size: k.Size})
 	}
 	bad := strings.Contains(p.Version, "bad")
+	stall := strings.Contains(p.Version, "stall")
 	halted, haltWhy := false, ""
 	var ended time.Time
 	for _, pn := range p.Nodes {
@@ -169,6 +171,11 @@ func (f *fake) rolloutStatus(now time.Time) *status.Rollout {
 		switch {
 		case halted:
 			n.Phase, n.Reason, n.Since = "halted", haltWhy, start.Add(-6*time.Second)
+		case stall && pn.Position == 2:
+			// Never heard of it: no phase. From its turn, the rest halt on it.
+			if !at.Before(start) {
+				halted, haltWhy = true, pn.Callsign+" did not move on its turn for 15 min (never heard of the rollout)"
+			}
 		case cancelled:
 			n.Phase, n.Reason, n.Since = "halted", "the rollout was cancelled", r.cancelled
 		case at.Before(r.started.Add(time.Second + time.Duration(pn.Position)*300*time.Millisecond)):

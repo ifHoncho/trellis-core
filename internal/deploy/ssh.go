@@ -109,7 +109,9 @@ var proxyCmdExe = runtime.GOOS == "windows"
 
 // quoteCmd makes s one argument on a cmd.exe command line, as Windows
 // programs split it: in double quotes, a quote inside escaped with a
-// backslash.
+// backslash. cmd.exe still replaces %NAME% when NAME is an environment
+// variable: inside double quotes it has no escape for that (said in the
+// reference, under --ssh-option).
 func quoteCmd(s string) string {
 	if s != "" && !strings.ContainsAny(s, " \t\"&|<>^()") {
 		return s

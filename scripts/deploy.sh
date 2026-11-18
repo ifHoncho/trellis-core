@@ -4,7 +4,6 @@
 #   scripts/deploy.sh [options] [user@host ...]
 #   FAST=1 scripts/deploy.sh        no health check: quicker iterations
 #   DRY_RUN=1 scripts/deploy.sh     build, and show what would be done
-#   VOICE=1 scripts/deploy.sh       install push-to-talk voice on every node
 #
 # Hosts come from the arguments, or from deploy.hosts in the repo root (one
 # user@host per line, mesh=ADDRESS optional; # comments allowed). The
@@ -297,18 +296,19 @@ rm -rf dist/deploy
 mkdir -p "$OUT"
 # Every architecture: trellis-deploy gives each node the one it needs (one
 # build for every 32-bit ARM board, the Pi Zero's ARMv6 included).
+# Push-to-talk voice (trellis-voiced) goes in the same package on the
+# architectures it is built for (arm64, amd64).
 for t in arm64:arm64: armhf:arm:6 amd64:amd64:; do
   IFS=: read -r a goarch goarm <<<"$t"
   CGO_ENABLED=0 GOOS=linux GOARCH=$goarch GOARM=$goarm go build -trimpath \
     -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-$a" ./cmd/trellis
-  go run ./tools/mkdeb trellis --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-$a" --out "$OUT" --key "$DEVKEY" --sign-dev
-done
-# Voice (trellis-voice), for the architectures it is built for: nodes that
-# have it are upgraded; VOICE=1 installs it everywhere.
-for a in arm64 amd64; do
-  CGO_ENABLED=0 GOOS=linux GOARCH=$a go build -trimpath \
-    -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-voiced-$a" ./cmd/trellis-voiced
-  go run ./tools/mkdeb voice --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-voiced-$a" --out "$OUT" --key "$DEVKEY" --sign-dev
+  voiced=()
+  if [ "$a" = arm64 ] || [ "$a" = amd64 ]; then
+    CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -trimpath \
+      -ldflags "-s -w -X main.version=$VERSION" -o "dist/deploy/trellis-voiced-$a" ./cmd/trellis-voiced
+    voiced=(--voiced "dist/deploy/trellis-voiced-$a")
+  fi
+  go run ./tools/mkdeb trellis --version "$VERSION" --arch "$a" --binary "dist/deploy/trellis-$a" "${voiced[@]}" --out "$OUT" --key "$DEVKEY" --sign-dev
 done
 # The batman-adv package needs the pinned release's tarball, fetched once.
 # Without it (no network here) nodes keep, or fetch, their own copy.
@@ -328,7 +328,6 @@ deploy_tool
 args=(--from "$OUT" --trust dev_key.pub --node-key dev_key.pub --any-version --yes "${TOOL_ARGS[@]}")
 [ -f mesh-profile.yaml ] && args+=(--profile mesh-profile.yaml)
 [ -n "${FAST:-}" ] && args+=(--no-health-check)
-[ -n "${VOICE:-}" ] && args+=(--voice)
 [ -n "${DRY_RUN:-}" ] && args+=(--dry-run)
 say "Deploy $VERSION"
 rc=0

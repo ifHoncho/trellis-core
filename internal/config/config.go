@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -566,6 +567,11 @@ type GatewayConfig struct {
 	// is healthy while any of them answers (architecture §8.2).
 	ProbeTargets    []string `yaml:"probe_targets,omitempty" json:"probe_targets"`
 	ProbeIntervalMS int      `yaml:"probe_interval_ms,omitempty" json:"probe_interval_ms"`
+	// WebCheck (default on) also asks WebCheckURLs, out of the WAN, for an
+	// empty 204 answer: a WAN whose web traffic gets another answer is
+	// behind a login page and is not shared (architecture §8.2).
+	WebCheck     *bool    `yaml:"web_check,omitempty" json:"web_check"`
+	WebCheckURLs []string `yaml:"web_check_urls,omitempty" json:"web_check_urls"`
 	// Announced uplink capacity in Mbit/s (batman-adv gw_bandwidth).
 	DownMbit int `yaml:"down_mbit,omitempty" json:"down_mbit"`
 	UpMbit   int `yaml:"up_mbit,omitempty" json:"up_mbit"`
@@ -573,6 +579,31 @@ type GatewayConfig struct {
 
 // DefaultProbeTargets are well-known anycast resolvers on separate networks.
 var DefaultProbeTargets = []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}
+
+// DefaultWebCheckURLs answer 204 with an empty body; they are the
+// connectivity checks phones and desktops use, on separate networks.
+var DefaultWebCheckURLs = []string{
+	"http://connectivitycheck.gstatic.com/generate_204",
+	"http://cp.cloudflare.com/generate_204",
+	"http://connectivity-check.ubuntu.com/",
+}
+
+// validWebURL reports why u cannot be a web check target, or "".
+func validWebURL(u string) string {
+	p, err := url.Parse(u)
+	switch {
+	case err != nil:
+		return "not a URL"
+	case p.Scheme != "http":
+		return "must start with http:// (a login page cannot answer for https)"
+	case p.Host == "" || p.User != nil || strings.ContainsAny(p.Host, " "):
+		return "needs a host"
+	}
+	return ""
+}
+
+// WebChecking reports whether the web check is on.
+func (g GatewayConfig) WebChecking() bool { return g.WebCheck == nil || *g.WebCheck }
 
 // Field error -----------------------------------------------------------------
 
@@ -825,6 +856,9 @@ func (n *Node) ApplyDefaults() {
 	if n.Gateway.ProbeIntervalMS == 0 {
 		n.Gateway.ProbeIntervalMS = 1000
 	}
+	if len(n.Gateway.WebCheckURLs) == 0 {
+		n.Gateway.WebCheckURLs = append([]string{}, DefaultWebCheckURLs...)
+	}
 	if n.Gateway.DownMbit == 0 {
 		n.Gateway.DownMbit = 20
 	}
@@ -1028,6 +1062,14 @@ func (n *Node) Validate() error {
 		if a, err := netip.ParseAddr(t); err != nil || !a.Is4() {
 			es.add(fmt.Sprintf("gateway.probe_targets[%d]", i), "must be an IPv4 address (got %q)", t)
 		}
+	}
+	for i, u := range n.Gateway.WebCheckURLs {
+		if why := validWebURL(u); why != "" {
+			es.add(fmt.Sprintf("gateway.web_check_urls[%d]", i), "%s (got %q)", why, u)
+		}
+	}
+	if len(n.Gateway.WebCheckURLs) > 8 {
+		es.add("gateway.web_check_urls", "at most 8 (got %d)", len(n.Gateway.WebCheckURLs))
 	}
 	if n.Gateway.ProbeIntervalMS < 200 || n.Gateway.ProbeIntervalMS > 10000 {
 		es.add("gateway.probe_interval_ms", "must be 200–10000 (got %d)", n.Gateway.ProbeIntervalMS)

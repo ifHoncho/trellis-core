@@ -66,7 +66,6 @@ func run() int {
 	keepGoing := fs.Bool("keep-going", false, "go on with the other upgrades after one goes back")
 	trust := fs.String("trust", "", "also trust the release keys in this file (development builds)")
 	nodeKey := fs.String("node-key", "", "make the nodes trust the release key in this file too (/etc/trellis/release-keys/deploy-dev.pub): a development key")
-	withVoice := fs.Bool("voice", false, "also install push-to-talk voice (trellis-voice) on every node; nodes that have it are upgraded either way")
 	fast := fs.Bool("no-health-check", false, "upgrade with apt, without meshctl upgrade's health check and rollback: faster, for development")
 	anyVersion := fs.Bool("any-version", false, "install over a newer version too (development builds do not sort)")
 	logs := fs.String("logs", "", "where each node's log goes (default: trellis-deploy-logs/<time>)")
@@ -232,7 +231,7 @@ func run() int {
 		return 1
 	}
 
-	runner := &deploy.Runner{SSH: ssh, Release: r, Profile: profile, Reboot: !*noReboot, Jobs: *jobs, KeepGoing: *keepGoing, Fast: *fast, Voice: *withVoice, Out: os.Stdout,
+	runner := &deploy.Runner{SSH: ssh, Release: r, Profile: profile, Reboot: !*noReboot, Jobs: *jobs, KeepGoing: *keepGoing, Fast: *fast, Out: os.Stdout,
 		DropNodeKey: *nodeKey == "" && *trust == ""}
 	if *nodeKey != "" {
 		b, err := os.ReadFile(*nodeKey)

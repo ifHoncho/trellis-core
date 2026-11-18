@@ -72,6 +72,18 @@ type rolloutRecord struct {
 	Ended time.Time `json:"ended,omitzero"`
 	// Dropped: over; kept so that the same rollout is not taken again.
 	Dropped bool `json:"dropped,omitempty"`
+	// Received is when this node got the rollout, by its own clock (the
+	// origin's start time is by the origin's): turns and expiry count from
+	// it. Zero in a record kept by an earlier build: Started is used.
+	Received time.Time `json:"received,omitzero"`
+}
+
+// received is when this node got the rollout.
+func (c *rolloutRecord) received() time.Time {
+	if c.Received.IsZero() {
+		return c.Rollout.Started
+	}
+	return c.Received
 }
 
 type rolloutState struct {
@@ -93,13 +105,22 @@ type rolloutState struct {
 	srv     *http.Server
 	srvAddr string
 
+	// names: callsigns of the nodes seen in gossip, kept while one is away
+	// (upgrading, restarting) so that progress still names it.
+	names map[string]string
+
 	upOnce sync.Once
 	up     rolloutUpgrader
 }
 
 // rolloutCheckEvery is how often the node re-reads whether it takes
-// rollouts: a release key may be added, the package installed.
-const rolloutCheckEvery = 5 * time.Minute
+// rollouts: a release key may be added, the package installed. A "no" is
+// read again sooner: meshd restarts inside dpkg's configure step of an
+// upgrade, when the package is "half-configured" for a few seconds.
+const (
+	rolloutCheckEvery = 5 * time.Minute
+	rolloutRecheckNo  = 20 * time.Second
+)
 
 type rolloutSelf struct {
 	mu        sync.Mutex
@@ -130,7 +151,11 @@ func (d *Daemon) rolloutSelfCheck(ctx context.Context) (arch string, accepts boo
 	s := &d.rolloutSelf
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.checkedAt.IsZero() && time.Since(s.checkedAt) < rolloutCheckEvery {
+	every := rolloutCheckEvery
+	if !s.accepts {
+		every = rolloutRecheckNo
+	}
+	if !s.checkedAt.IsZero() && time.Since(s.checkedAt) < every {
 		return s.arch, s.accepts, s.why
 	}
 	s.checkedAt = time.Now()
@@ -264,14 +289,15 @@ func (r *rolloutReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	now := time.Now()
 	d.noteOthers(c, now)
 	d.rolloutStep(ctx, c, mac, now)
-	// Over: every node in the order finished.
-	if c.Ended.IsZero() && d.rolloutOver(c, mac) {
+	// Over: every node in the order finished, or it stopped and the nodes
+	// still out have been silent for the stall time.
+	if c.Ended.IsZero() && rollout.Over(&c.Rollout, mac, c.Phase, c.received(), s.others, now) {
 		c.Ended = now
 		_ = d.saveRollout(c)
 		d.log.Info("mesh-wide upgrade over", "id", c.Rollout.ID, "version", c.Rollout.Version)
 	}
 	drop := (!c.Ended.IsZero() && now.Sub(c.Ended) > rolloutShowFor) ||
-		(now.Sub(c.Rollout.Started) > rolloutKeep && c.Phase != rollout.Upgrading)
+		(now.Sub(c.received()) > rolloutKeep && c.Phase != rollout.Upgrading)
 	if drop {
 		c.Dropped = true
 		_ = d.saveRollout(c)
@@ -296,7 +322,13 @@ func (r *rolloutReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 		res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "rollout-serve",
 			Message: fmt.Sprintf("cannot serve the mesh-wide upgrade's package to other nodes: %v", err)})
 	}
-	res.RequeueAfter = rolloutPass
+	// Quick passes while it runs; once over, it is only shown.
+	s.mu.Lock()
+	running := s.cur != nil && !s.cur.Dropped && s.cur.Ended.IsZero()
+	s.mu.Unlock()
+	if running {
+		res.RequeueAfter = rolloutPass
+	}
 	return res, nil
 }
 
@@ -319,26 +351,19 @@ func (d *Daemon) noteOthers(c *rolloutRecord, now time.Time) {
 	}
 }
 
-// rolloutOver: every node in the order has finished (s.mu held).
-func (d *Daemon) rolloutOver(c *rolloutRecord, me string) bool {
-	for _, m := range c.Rollout.Order {
-		if m == me {
-			if !c.Phase.Final() {
-				return false
-			}
-			continue
-		}
-		if !d.rollouts.others[m].Phase.Final() {
-			return false
-		}
-	}
-	return true
-}
-
-// rolloutName is a node's callsign for the reasons, or its MAC.
+// rolloutName is a node's callsign for the reasons, or its MAC (s.mu
+// held).
 func (d *Daemon) rolloutName(mac string) string {
+	s := &d.rollouts
 	if p, ok := d.peers.ByMAC(mac); ok && p.Record.Callsign != "" {
+		if s.names == nil {
+			s.names = map[string]string{}
+		}
+		s.names[strings.ToLower(mac)] = p.Record.Callsign
 		return p.Record.Callsign
+	}
+	if n, ok := s.names[strings.ToLower(mac)]; ok {
+		return n
 	}
 	if me := d.identity(); me != nil && strings.EqualFold(me.MAC, mac) {
 		cur, _ := d.conf()
@@ -372,7 +397,7 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 			d.setPhase(c, rollout.Fetching, "")
 		}
 	case rollout.Fetching, rollout.Ready:
-		dec := rollout.Turn(&c.Rollout, me, s.others, d.rolloutName, now)
+		dec := rollout.Turn(&c.Rollout, me, c.received(), s.others, d.rolloutName, now)
 		if dec.Action == rollout.Halt {
 			d.setPhase(c, rollout.Halted, dec.Why)
 			return
@@ -651,7 +676,7 @@ func (d *Daemon) handleRollout(key, pkt []byte) error {
 		s.notMine[r.ID] = true
 		return nil
 	}
-	n := &rolloutRecord{Rollout: r, Since: time.Now()}
+	n := &rolloutRecord{Rollout: r, Since: time.Now(), Received: time.Now()}
 	if err := d.saveRollout(n); err != nil {
 		return err
 	}

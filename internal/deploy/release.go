@@ -27,10 +27,8 @@ type Release struct {
 	Batman  string            // the trellis-batman-adv-dkms package file, if there is one
 	// BatmanVersion is its Debian version.
 	BatmanVersion string
-	// Voice is the trellis-voice package for each Debian architecture.
-	Voice     map[string]string
-	SignedBy  string // the key that signed them, as its comment says ("1")
-	Checksums bool   // SHA256SUMS was there and matched
+	SignedBy      string // the key that signed them, as its comment says ("1")
+	Checksums     bool   // SHA256SUMS was there and matched
 }
 
 // maxPackage bounds a package read into memory: the largest is about 6 MB.
@@ -41,7 +39,7 @@ const maxPackage = 64 << 20
 // package must be the same version; a package that fails a check fails the
 // whole release.
 func LoadRelease(dir string, keys []deb.PublicKey, requireSums bool) (*Release, error) {
-	r := &Release{Dir: dir, Arches: map[string]string{}, Voice: map[string]string{}}
+	r := &Release{Dir: dir, Arches: map[string]string{}}
 	sums, err := readSums(filepath.Join(dir, "SHA256SUMS"))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -98,8 +96,6 @@ func LoadRelease(dir string, keys []deb.PublicKey, requireSums bool) (*Release, 
 			r.Arches[info.Get("Architecture")] = f
 		case "trellis-batman-adv-dkms":
 			r.Batman, r.BatmanVersion = f, info.Get("Version")
-		case "trellis-voice":
-			r.Voice[info.Get("Architecture")] = f
 		}
 	}
 	if len(r.Arches) == 0 {

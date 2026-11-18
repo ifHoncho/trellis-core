@@ -53,7 +53,8 @@ go run ./tools/mkdeb keygen --out "$W/key" --comment "deploy-test" > "$W/key.pub
 for v in 0.9.0 0.9.1; do
   mkdir -p "$W/rel-$v"
   CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$v" -o "$W/trellis-$v" ./cmd/trellis
-  go run ./tools/mkdeb trellis --version "$v" --arch "$arch" --binary "$W/trellis-$v" --out "$W/rel-$v" --key "$W/key" --sign-dev >/dev/null
+  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$v" -o "$W/trellis-voiced-$v" ./cmd/trellis-voiced
+  go run ./tools/mkdeb trellis --version "$v" --arch "$arch" --binary "$W/trellis-$v" --voiced "$W/trellis-voiced-$v" --out "$W/rel-$v" --key "$W/key" --sign-dev >/dev/null
   go run ./tools/mkdeb batman-adv --source "$tarball" --out "$W/rel-$v" --key "$W/key" >/dev/null
   ( cd "$W/rel-$v" && sha256sum -- *.deb > SHA256SUMS )
 done
@@ -112,13 +113,18 @@ for i in 0 1; do
   [ "$(on "$n" 'stat -c %a /etc/trellis/profile.yaml')" = 600 ] || fail "$n: mesh profile missing or not 0600"
   on "$n" "grep -q 'callsign: alpha-$((i + 1))' /etc/trellis/node.yaml" || fail "$n: node.yaml without its callsign"
   on "$n" '[ ! -e /home/op/.trellis-deploy ]' || fail "$n: the copied files were left behind"
+  # Voice is in the package; its libraries (recommended) come with the install.
+  if ! on "$n" 'trellis-voiced version' | grep -q 'libopus .*libasound loaded'; then
+    grep -h -A12 'libraries voice needs' "$W"/logs/* | tail -30
+    fail "$n: voice is not there with its libraries: $(on "$n" 'trellis-voiced version' 2>&1)"
+  fi
 done
 on "${NAMES[0]}" "grep -q 'node_id: 11' /etc/trellis/node.yaml" || fail "id=11 not in node.yaml"
 echo "$out" | grep -q 'sudo asks for a password on: alpha-2' || fail "the plan does not name the node that needs a sudo password"
 echo "$out" | grep -E 'gone .*skipped: unreachable' >/dev/null || { echo "$out" | tail -15; fail "the unreachable node is not reported as skipped"; }
 grep -rq 'sae_passphrase\|secret' "$W/logs" && fail "the mesh secret reached a log"
 grep -rq "$PASSWORD" "$W/logs" && fail "the sudo password reached a log"
-ok "installed 0.9.0 on both (profile 0600, callsigns, node ID), the unreachable node skipped, no secret in the logs"
+ok "installed 0.9.0 on both (profile 0600, callsigns, node ID, voice with its libraries), the unreachable node skipped, no secret in the logs"
 
 echo "== 2. an upgrade to 0.9.1"
 # meshctl upgrade takes only a package signed by a key the node trusts (as
