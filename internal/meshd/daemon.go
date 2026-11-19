@@ -111,6 +111,12 @@ type Daemon struct {
 	radios    *radioReconciler
 	meshlink  *meshLinkReconciler
 	morelinks *moreLinksReconciler
+	sitelink  *siteLinkReconciler
+	// identWriteMu serialises changes to the identity: the reconcile loop
+	// changes the node ID and MAC (setIdentityFromLoop), the API the site
+	// link key (SiteLinkNewKey). Each is made from the identity as it is
+	// under this lock, so neither undoes the other.
+	identWriteMu sync.Mutex
 	// movedAt is when a peer's leftover entry was last removed, by
 	// interface and address (peermove.go; reconcile loop only).
 	movedAt map[string]time.Time
@@ -127,6 +133,7 @@ type Daemon struct {
 	gnss    *gnss.Watcher
 
 	meshChanges meshChanges    // mesh-wide profile changes (meshchange.go)
+	meshSendMu  sync.Mutex     // one SetMeshProfile at a time (meshchange.go)
 	survey      surveyState    // channel load and surveys (survey.go)
 	findMesh    findMesh       // a node alone looking for its mesh (findmesh.go)
 	roster      roster         // the nodes heard lately, kept across restarts (roster.go)
@@ -307,6 +314,24 @@ func (d *Daemon) applyPending() bool {
 // even before the next pass swaps it in. A client that saves and reads back
 // at once gets what it saved, not the configuration it replaced.
 func (d *Daemon) Config() api.ConfigResult {
+	node, profile, setup := d.confWritten()
+	out := api.ConfigResult{Node: node.Redacted(), Profile: profile.Redacted(), Setup: setup,
+		NodeDigest: node.Digest(), ProfileDigest: profile.Digest()}
+	if c := d.meshChangeState(); c != nil && c.State == "pending" {
+		if p, err := config.ParseProfile([]byte(c.YAML)); err == nil {
+			r := p.Redacted()
+			out.PendingProfile = &r
+		}
+	}
+	return out
+}
+
+// confWritten is the configuration as written: the one a reload has
+// accepted, even before the next pass swaps it in, else the one in force.
+// A change is measured against it, and takes the secrets it leaves out
+// from it: against the one in force, a second change made before the
+// swap would bring back what the first replaced.
+func (d *Daemon) confWritten() (*config.Node, *config.Profile, status.Setup) {
 	node, profile := d.conf()
 	setup := d.setupState()
 	d.pendingMu.Lock()
@@ -314,7 +339,18 @@ func (d *Daemon) Config() api.ConfigResult {
 		node, profile, setup = p.node, p.profile, p.setup
 	}
 	d.pendingMu.Unlock()
-	return api.ConfigResult{Node: node.Redacted(), Profile: profile.Redacted(), Setup: setup}
+	return node, profile, setup
+}
+
+// checkBase refuses a change made from a configuration the node no longer
+// has: base is the digest the client read (GET /config), now the digest
+// of what it would read at this moment. A client that gives none is not
+// checked.
+func checkBase(base, now, what string) error {
+	if base == "" || base == now {
+		return nil
+	}
+	return api.Conflict("%s changed on the node since this change was started (from another browser, another node or meshctl): nothing was changed. Read it again, and make the change again", what)
 }
 
 // stopping reports whether meshd is shutting down: its context, which is
@@ -383,7 +419,8 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.radios = newRadioReconciler(d)
 	d.meshlink = newMeshLinkReconciler(d, 0)
 	d.morelinks = &moreLinksReconciler{d: d}
-	recs := []reconcile.Reconciler{newHostReconciler(d), newFirewallReconciler(d), d.radios, d.meshlink, d.morelinks}
+	d.sitelink = newSiteLinkReconciler(d)
+	recs := []reconcile.Reconciler{newHostReconciler(d), newFirewallReconciler(d), d.radios, d.meshlink, d.morelinks, d.sitelink}
 	d.batman = newBatmanReconciler(d)
 	d.bridge = newBridgeReconciler(d)
 	d.ports = newPortsReconciler(d)
@@ -396,6 +433,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.time = newTimeReconciler(d)
 	d.gnss = &gnss.Watcher{}
 	d.peers = gossip.NewTable(ident.MAC)
+	d.peers.Extra = d.siteTunnelMACs
 	d.peers.SetBoot(d.gossip.boot)
 	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d})
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
@@ -538,9 +576,11 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 		FreqMHz: config.LinkFrequencyMHz(profile.Radio, country), WidthMHz: profile.Radio.Width, Prefix: profile.Prefix,
 		PinnedBatman: profile.Batman.PinnedVersion, MinBatman: profile.Batman.MinVersion, OrigIntervalMS: profile.Batman.OrigIntervalMS,
 		PositionsShared: profile.Positions.Shared(),
+		Revision:        profile.Revision, Digest: profile.Digest(),
 	}
 	if id := d.identity(); id != nil {
 		st.Node = status.Node{Callsign: node.Callsign, NodeID: id.NodeID, NodeIDSource: id.NodeIDSource, MAC: id.MAC}
+		st.Node.ConfigDigest = node.Digest()
 	}
 
 	var meshIfindex, batIfindex, brIfindex, apIfindex int
@@ -731,6 +771,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	if d.bat != nil && batIfindex != 0 {
 		d.collectBatman(st, batIfindex)
 	}
+	d.siteLinkStatus(st, profile)
 	if brIfindex != 0 {
 		if links, err := netlink.LinkList(); err == nil {
 			for _, l := range links {

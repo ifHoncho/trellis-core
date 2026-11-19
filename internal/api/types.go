@@ -52,6 +52,16 @@ type ConfigResult struct {
 	Node    config.Node    `json:"node"`
 	Profile config.Profile `json:"profile"`
 	Setup   status.Setup   `json:"setup"`
+	// NodeDigest and ProfileDigest name these versions of the two: a
+	// change made from them is sent back with the one it was made from
+	// (base), and refused when the node has moved on since, so that an
+	// edit made from an old copy never undoes someone else's.
+	NodeDigest    string `json:"node_digest"`
+	ProfileDigest string `json:"profile_digest"`
+	// PendingProfile is the profile of the mesh-wide change on its way,
+	// while there is one: what an operator who replaces that change starts
+	// from. Secrets redacted, as Profile's.
+	PendingProfile *config.Profile `json:"pending_profile,omitempty"`
 }
 
 // ApplyResult answers a configuration change, or a dry run of one.
@@ -81,6 +91,12 @@ type MeshProfileInput struct {
 	// DelaySeconds is how long from now every node switches (default 60;
 	// 15 to 900): long enough for the profile to reach every node.
 	DelaySeconds int `json:"delay_s,omitempty"`
+	// Replace sends it although another mesh-wide change is on its way:
+	// that one is dropped, and what it set that this profile does not is
+	// lost. Without it such a change is refused (409). With it, a profile
+	// that is the one in force is sent too: it cancels the change on its
+	// way.
+	Replace bool `json:"replace,omitempty"`
 }
 
 // ProfileExport is the mesh profile with its secret, in every form another
@@ -100,6 +116,10 @@ type ProfileInput struct {
 	Profile *config.Profile `json:"profile,omitempty"` // the document itself; sae_passphrase "<redacted>" keeps the current one
 	// New asks for a new mesh instead: a profile with a fresh secret.
 	New *NewProfile `json:"new,omitempty"`
+	// Base is the profile_digest of the configuration this change was
+	// made from (GET /config). Given, the change is refused (409) when the
+	// node's profile is no longer that one. Left out, that is not checked.
+	Base string `json:"base,omitempty"`
 }
 
 // NewProfile describes a mesh to create. Zero values take the defaults.
@@ -292,6 +312,11 @@ func Invalid(format string, args ...any) *Error {
 	return Errorf(http.StatusBadRequest, format, args...)
 }
 
+// Conflict is a 409: the request was made from a state the node has left.
+func Conflict(format string, args ...any) *Error {
+	return Errorf(http.StatusConflict, format, args...)
+}
+
 // Forbidden is a 403.
 func Forbidden(format string, args ...any) *Error {
 	return Errorf(http.StatusForbidden, format, args...)
@@ -350,4 +375,17 @@ type VoiceState struct {
 type VoiceTestInput struct {
 	Kind    string `json:"kind"`
 	Channel string `json:"channel,omitempty"`
+}
+
+// SiteKeyInput asks for a new site link key.
+type SiteKeyInput struct {
+	// Force: even when the node is a member of the site link.
+	Force bool `json:"force,omitempty"`
+}
+
+// SiteKey is the node's site link key after a change.
+type SiteKey struct {
+	PublicKey string `json:"public_key"`
+	// Was is the key it replaced.
+	Was string `json:"was"`
 }

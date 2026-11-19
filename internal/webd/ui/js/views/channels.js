@@ -7,7 +7,8 @@ import { get, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, button, notice } from '../ui.js';
 import { meshLinks, linkName, linkWidth, carried, plural } from '../fmt.js';
-import { loadConfig, saveMeshProfile } from '../config.js';
+import { loadConfig, saveMeshProfile, editProfile } from '../config.js';
+import { stamp } from '../time.js';
 
 const ui = { survey: undefined, timer: null, busy: false };
 
@@ -54,7 +55,7 @@ function startSurvey() {
 async function moveLink(n, ch) {
   if (!state.config) await loadConfig();
   if (!state.config) { toast('The configuration is not loaded.', 'bad'); return; }
-  const p = JSON.parse(JSON.stringify(state.config.profile));
+  const p = JSON.parse(JSON.stringify(editProfile()));
   if (n === 1) p.radio.channel = ch; else p.links[n - 2].channel = ch;
   try { await saveMeshProfile({ profile: p }, 60); } catch (e) { toast(e.message.split('\n')[0], 'bad', 7000); }
 }
@@ -137,7 +138,7 @@ export function channelsSection(st) {
       'Busy is the share of time a channel is taken at a node: by other networks, interference, or the mesh itself. Each node measures its links’ channels all the time; a survey has every node listen across the whole band for a few seconds, and finds the clearest channel for each link.'),
     sv ? h('p', { style: { fontSize: '14px', marginTop: '8px' } },
       running ? `Surveying: ${answered} of ${sv.nodes.length} nodes have answered…`
-        : `Last survey ${new Date(sv.started).toLocaleTimeString()}: ${answered} of ${plural(sv.nodes.length, 'node')} answered.`,
+        : `Last survey ${stamp(sv.started)}: ${answered} of ${plural(sv.nodes.length, 'node')} answered.`,
       sv.nodes.filter((n) => !['answered', 'asked'].includes(n.state)).map((n) => h('span.faint', ` ${n.callsign}: ${n.state}.`)))
       : h('p.faint', { style: { fontSize: '14px', marginTop: '8px' } }, 'No survey yet.'));
   const cards = links.map((l, i) => {

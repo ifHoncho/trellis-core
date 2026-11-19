@@ -42,9 +42,14 @@ type meshConflict struct {
 }
 
 // latestProfile is the newest profile this node has: a mesh-wide change
-// waiting to switch, or the one it runs.
+// waiting to switch, or the one it runs. The one it runs is the profile
+// as written (confWritten): a change that has just switched is in the
+// file, and accepted, a pass before it is in force, and a change sent in
+// that moment must follow it, not the profile before it. Built on that
+// one, it would not count the change just made among its earlier ones,
+// and would later be taken for a change made apart.
 func (d *Daemon) latestProfile() *config.Profile {
-	_, cur := d.conf()
+	_, cur, _ := d.confWritten()
 	m := &d.meshChanges
 	m.mu.Lock()
 	c := m.cur

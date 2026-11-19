@@ -92,10 +92,11 @@ These endpoints exist on `webd` only.
 | `GET /health` | `{ok, time, api}` |
 | `GET /status` | The node's whole state: identity, profile in force, regulatory mode, radios and plan, mesh links and peers, batman-adv tables and multicast path, bridge, client AP and its stations, DHCP leases, gateway state and candidates, how the node keeps time (`clock`) and its GNSS receiver (`gnss`: fix, position, accuracy, satellites, PPS), ports, the other nodes (from gossip), warnings, the control loop. The types are in `internal/status/status.go`; that file is the reference for every field. |
 | `GET /radios` | `{radios, plan}`: the radio part of the status |
+| (in `GET /status`) | `site_link`: `{public_key, member, members, site, address, port, endpoint, peers, error, guard_dropped}`. `guard_dropped` counts packets addressed as a tunnel's that did not come through WireGuard, and were dropped. `public_key` is this node's, member or not; `endpoint` its own in the profile. Each peer: `{name, callsign, site, public_key, endpoint, resolved, current, interface, address, last_handshake, up, rx_bytes, tx_bytes, batman, neighbors, note}`; `endpoint` is the profile's, `current` where WireGuard reaches the peer now, `up` a handshake within 180 s, `batman` its tunnel an active batman-adv interface, `callsign` the node that holds the key when this node hears it, `note` why the tunnel is not up, in words. Each entry of `nodes` carries that node's `site_key`. `profile.digest` changes whenever the profile in force does: a client that holds `GET /config` reads it again then. `site_link.roster` lists every member the profile names, on any node: `{name, site, public_key, endpoint, self, heard, callsign, reported, up, peers}`; `heard` when a node this one hears holds the key, `up` of `peers` tunnels as that node reports them (`reported`). Each entry of `nodes` that is a member carries `site_link`: `{site, up, peers}`. |
 | `GET /voice` | `{enabled, installed, running, error, status}`: push-to-talk; `installed` is false where the `trellis` package has no voice (armhf), and `error` says why voice is not running (no voice here, its libraries missing, the service down). `status` is `trellis-voiced`'s own: per group `{number, name, addr, listening, busy, talker, sending, received, lost, late}`, per channel `{name, group, ear, volume, ptt, sending}`, and the last events (`talk-sent`, `talk-heard`, `talk-ended`, `ptt-refused`). |
 | `POST /voice/test` | `{kind, channel}`: a headset check on this node only: `tone` (1 kHz for 1 s in channel `a`'s or `b`'s ear), `loopback` (the microphone played back for 10 s), `stop`. 409 when voice is off. |
 | `GET /voice/config` | `{enable, config, problems}`: what `trellis-voiced` runs with, built from the profile's `voice` and node.yaml's `voice`; `problems` names groups the node refers to that the profile lacks. meshd keeps the same in `/run/trellis/voice.json` for `trellis-voiced`, which cannot use this API. |
-| `GET /config` | `{node, profile, setup}`: the configuration in force, secrets redacted. `node` is the document `PUT /config/node` takes. |
+| `GET /config` | `{node, profile, setup, node_digest, profile_digest, pending_profile}`: the configuration in force, secrets redacted. `node` is the document `PUT /config/node` takes. The two digests name these versions of the node config and the profile: a change made from them is sent back with the one it was made from (`base`, below). |
 | `GET /channels` | What a mesh link may ask for, the same on every node: `{widths, max_channel, s1g}`. `widths` per band in MHz (`"5g": [20, 40, 80, 160]`); Wi-Fi channel numbers run from 1 to `max_channel[band]`; `s1g` holds the HaLow channels per country and width (`{"US": {"2": [2, 6, …]}, …}`). A radio may still lack a channel, and the regulatory domain forbid one: the node reports that in its warnings, and a link's `running_width_mhz` in `GET /status` is the width it actually runs. |
 | `GET /ap` | How a phone joins this node's Wi-Fi: `{enabled, ssid, passphrase, band, channel, wifi_qr, qr, note}`. `wifi_qr` is the text of the QR code; `qr` is the symbol itself. |
 | `GET /topology` | The mesh as a graph (below) |
@@ -114,7 +115,8 @@ four light modules around.
   wan_healthy, reported, report_age_ms, clients, selected_gateway}`. `id` is
   the node's identity MAC.
 - A link: `{a, b, ab_mbps, ba_mbps, a_signal_dbm, b_signal_dbm, medium,
-  a_mac, b_mac, mesh_link}`: throughput as each end estimates it towards the
+  a_mac, b_mac, mesh_link}`. `medium` is `wifi`, `wired`, or `site` (a site
+  link's tunnel over the internet): throughput as each end estimates it towards the
   other, the signal each end receives, and the mesh link the two meet on,
   numbered from 1 in the profile's order as `mesh_link.index` is (absent
   when wired, or when neither end runs a release that reports it). Two
@@ -173,6 +175,26 @@ Add `?dry_run=1` to try a change. The answer is the same in both cases:
   Each node's radios are in `GET /status` under `nodes[].mesh_radios`: the
   bands of each radio that can carry a mesh link, `[["2g","5g"],["s1g"]]`.
 - `changed: false` means the node already runs this; nothing is written.
+- **A change made from an old copy is refused.** A client that edits what
+  `GET /config` gave it sends the digest it read: `?base=<node_digest>` on
+  `PUT /config/node`, `"base": "<profile_digest>"` in the body of `PUT
+  /profile` and `POST /profile/mesh`. When the node's configuration is no
+  longer that one (another browser, another node, `meshctl`), the answer
+  is `409` and nothing changes: saving would have undone the other
+  change. Without a `base` that is not checked (a file pushed by hand);
+  the dry run then says when the profile given is older than the mesh's
+  (`profile-older`).
+- **A mesh-wide change on its way is replaced only on purpose.** `POST
+  /profile/mesh` while another change waits for its switch is refused
+  (`409`) unless the body says `"replace": true`; a dry run without a
+  `base` is still answered, with what it would replace
+  (`mesh-change-replaced`). With `replace`, the profile in force is sent
+  too, though it changes nothing: it cancels the change on its way
+  (`mesh-change-cancelled`, `changed: false`, `applied: true`). While a
+  change is on its way `GET /config` carries its profile as
+  `pending_profile`, to start a replacement from.
+  `GET /status` carries `profile.digest` and `node.config_digest`: when
+  one changes, read `GET /config` again.
 
 | Request | Body |
 |---|---|
@@ -186,7 +208,10 @@ gateway are all node config: `radios.roles.mesh` is `"auto"`, `"disabled"`,
 A **profile code** is the mesh profile as one line of text
 (`TRP1:` + base64url of the deflated document), short enough for a
 57-module QR code and safe to paste into a message. It holds the mesh
-secret.
+secret, name, links and routing settings; not the talk groups or the
+site link, which would not fit. Given to a node that is on that mesh
+already, the node keeps its own; a node new to the mesh gets them over
+the mesh.
 
 ## Setting a node up
 
@@ -209,6 +234,7 @@ password`).
 
 | Request | Body | Does |
 |---|---|---|
+| `POST /site-link/key` | `{"force": false}` | gives the node a new site link key: `{public_key, was}`. `409` when the node is a member under its current key, unless `force`: it leaves the link until the profile lists the new key. |
 | `POST /radios/identify` | `{"fingerprint": "…", "seconds": 10}` | blinks that radio's LED. `409` when the driver exposes none (`led: false` in the status). |
 | `POST /reconcile` | | asks the control loop for a pass now |
 | `POST /reload` | | re-reads the configuration files (after editing them by hand) |

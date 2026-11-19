@@ -30,6 +30,9 @@ type Status struct {
 	// Positions: this node on the team's ATAK map, and the last known
 	// positions of nodes that left the mesh.
 	Positions Positions `json:"positions"`
+	// SiteLink: this node's part in joining parts of the mesh in
+	// different places over the internet.
+	SiteLink SiteLink `json:"site_link"`
 	// MeshChange is a mesh-wide profile change on its way, or the last one
 	// for a while after it is in force (meshd meshchange.go); nil when none.
 	MeshChange *MeshChange `json:"mesh_change,omitempty"`
@@ -62,6 +65,9 @@ type Node struct {
 	NodeIDSource string `json:"node_id_source"` // config, derived or claimed
 	MAC          string `json:"mac"`
 	Address      string `json:"address"` // CIDR on br-mesh
+	// ConfigDigest changes whenever the node's own configuration does:
+	// whoever holds a copy knows to read it again.
+	ConfigDigest string `json:"config_digest,omitempty"`
 }
 
 // Profile is the mesh profile in force, without secrets.
@@ -80,6 +86,12 @@ type Profile struct {
 	OrigIntervalMS int     `json:"orig_interval_ms"`
 	// PositionsShared: the profile lets nodes share their positions.
 	PositionsShared bool `json:"positions_shared"`
+	// Revision counts the mesh-wide changes that made this profile; Digest
+	// changes whenever the profile in force does (a mesh-wide change, an
+	// install on this node), so that whoever holds a copy of the
+	// configuration knows to read it again.
+	Revision uint64 `json:"revision,omitempty"`
+	Digest   string `json:"digest,omitempty"`
 }
 
 // Regulatory shows the requested mode and what is actually in force.
@@ -225,6 +237,82 @@ type Batman struct {
 	Gateways       []Gateway      `json:"gateways"`
 	Settings       map[string]any `json:"settings"`
 	Multicast      Multicast      `json:"multicast"`
+}
+
+// SiteLink is this node's part in the site link (architecture §13, Site link).
+type SiteLink struct {
+	// PublicKey is this node's WireGuard key: listed in the profile's
+	// site_link.members, it makes the node a member.
+	PublicKey string `json:"public_key"`
+	Member    bool   `json:"member"`
+	// Members counts the profile's members, all sites.
+	Members int    `json:"members"`
+	Site    string `json:"site,omitempty"`
+	// Address is this node's tunnel address; Port its UDP port.
+	Address string `json:"address,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	// Endpoint is where the profile says the other sites reach this node;
+	// empty when it only dials out.
+	Endpoint string     `json:"endpoint,omitempty"`
+	Peers    []SitePeer `json:"peers"`
+	Error    string     `json:"error,omitempty"`
+	// GuardDropped counts packets for or from this node's tunnel address
+	// that were not inside WireGuard, and were dropped: someone on the
+	// uplink or the client network sending as a tunnel would.
+	GuardDropped uint64 `json:"guard_dropped,omitempty"`
+	// Roster is every member the profile lists, with what this node knows
+	// of it: the same on a node that is no member, so that the link's
+	// state shows anywhere in the mesh.
+	Roster []SiteMemberState `json:"roster"`
+}
+
+// SiteMemberState is a member of the site link as this node sees it.
+type SiteMemberState struct {
+	Name      string `json:"name,omitempty"`
+	Site      string `json:"site"`
+	PublicKey string `json:"public_key"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	// Self: this node. Heard: a node this one hears holds the key
+	// (Callsign); a member of a site not joined is not heard.
+	Self     bool   `json:"self,omitempty"`
+	Heard    bool   `json:"heard"`
+	Callsign string `json:"callsign,omitempty"`
+	// Reported: the node says how its tunnels are (Up of Peers). A member
+	// not heard, or on an older version, does not.
+	Reported bool `json:"reported"`
+	Up       int  `json:"up"`
+	Peers    int  `json:"peers"`
+}
+
+// SitePeer is a member of another site this node tunnels to.
+type SitePeer struct {
+	Name string `json:"name,omitempty"`
+	// Callsign is the node that holds this key, when it is one this node
+	// hears (over the link, or without it).
+	Callsign  string `json:"callsign,omitempty"`
+	Site      string `json:"site"`
+	PublicKey string `json:"public_key"`
+	// Endpoint is the profile's; Resolved its address when it is a name;
+	// Current where WireGuard sends to now (the peer's address as last
+	// seen, behind NAT too).
+	Endpoint  string `json:"endpoint,omitempty"`
+	Resolved  string `json:"resolved,omitempty"`
+	Current   string `json:"current,omitempty"`
+	Interface string `json:"interface"`
+	Address   string `json:"address"`
+	// LastHandshake is zero when there has been none.
+	LastHandshake time.Time `json:"last_handshake,omitzero"`
+	// Up: a handshake within the last 180 s (WireGuard's session life).
+	Up      bool   `json:"up"`
+	RxBytes uint64 `json:"rx_bytes"`
+	TxBytes uint64 `json:"tx_bytes"`
+	// Batman: the tunnel is an active batman-adv interface, and the
+	// neighbours batman-adv hears over it.
+	Batman    bool `json:"batman"`
+	Neighbors int  `json:"neighbors"`
+	// Note says why the tunnel is not up, or what is odd about it, in
+	// words; empty when there is nothing to say.
+	Note string `json:"note,omitempty"`
 }
 
 // HardIf is a batman-adv hard interface.
@@ -487,7 +575,7 @@ type TopoLink struct {
 	// wired.
 	ASignalDBm int    `json:"a_signal_dbm,omitempty"`
 	BSignalDBm int    `json:"b_signal_dbm,omitempty"`
-	Medium     string `json:"medium"` // wifi or wired
+	Medium     string `json:"medium"` // wifi, wired, or site (a site link tunnel)
 	AMAC       string `json:"a_mac"`  // each end's interface address
 	BMAC       string `json:"b_mac"`
 	// MeshLink is the mesh link the two meet on, numbered from 1 in the
@@ -518,6 +606,20 @@ type MeshNode struct {
 	WANHealthy  bool      `json:"wan_healthy"` // and it is healthy
 	HeardAgoMS  int64     `json:"heard_ago_ms"`
 	IDConflict  bool      `json:"id_conflict,omitempty"`
+	// SiteKey is the node's site link key (its WireGuard public key):
+	// what the profile's site_link.members lists it by.
+	SiteKey string `json:"site_key,omitempty"`
+	// SiteLink is the node's part in the site link, as it reports it:
+	// nil when it is not a member, or runs a version that does not say.
+	SiteLink *NodeSiteLink `json:"site_link,omitempty"`
+}
+
+// NodeSiteLink is another node's part in the site link: its site, the
+// members of other sites it tunnels to, and how many tunnels are up.
+type NodeSiteLink struct {
+	Site  string `json:"site"`
+	Up    int    `json:"up"`
+	Peers int    `json:"peers"`
 }
 
 // GatewayState is this node's gateway role and its choice of gateway

@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"meridian/trellis/internal/fsutil"
+	"meridian/trellis/internal/wg"
 )
 
 // File names under the state directory.
@@ -35,6 +36,10 @@ type Identity struct {
 	// APPassphrase is the generated client-AP passphrase, used when the node
 	// config sets none. Generated once so phones stay joined across restarts.
 	APPassphrase string `yaml:"ap_passphrase,omitempty"`
+	// SiteKey is the node's WireGuard private key for the site link
+	// (base64), generated once. Its public key is what the profile's
+	// site_link.members lists.
+	SiteKey string `yaml:"site_key,omitempty"`
 
 	// Recovered says, when EnsureIdentity had to restore the identity from
 	// its backup, what was wrong with the file. Not stored.
@@ -277,6 +282,13 @@ func EnsureIdentity(dir string, pinnedID int) (*Identity, bool, error) {
 		}
 		id.APPassphrase, changed = p, true
 	}
+	if _, err := wg.ParseKey(id.SiteKey); err != nil {
+		k, err := wg.GeneratePrivateKey()
+		if err != nil {
+			return nil, false, err
+		}
+		id.SiteKey, changed = k.String(), true
+	}
 	switch {
 	case pinnedID != 0:
 		if id.NodeID != pinnedID || id.NodeIDSource != IDConfig {
@@ -303,7 +315,7 @@ func EnsureIdentity(dir string, pinnedID int) (*Identity, bool, error) {
 
 func sameIdentity(a, b *Identity) bool {
 	return a.MAC == b.MAC && a.NodeID == b.NodeID && a.NodeIDSource == b.NodeIDSource &&
-		a.Created.Equal(b.Created) && a.APPassphrase == b.APPassphrase
+		a.Created.Equal(b.Created) && a.APPassphrase == b.APPassphrase && a.SiteKey == b.SiteKey
 }
 
 // RadioRecord is what the node remembers about one radio.

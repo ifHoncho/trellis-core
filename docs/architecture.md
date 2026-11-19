@@ -1252,6 +1252,16 @@ Validation-first keeps a bad config from ever reaching a running node.
     behind take its own; the same, and the link goes back and leaves that
     channel alone for half an hour. HaLow links are not scanned: their
     beacons come too seldom to catch passing by.
+    The profile's own channels are never visited (every link has the
+    same mesh ID, and a radio hears the other links). And nothing is
+    looked for while a member in reach (this node included) says a site
+    link tunnel (§13) that was up within the last day is down: the nodes
+    behind it are missing like nodes that moved, but no channel leads to
+    them. A member merely out of reach does not count: a node left alone
+    on an old channel hears no member either, and it is the one that must
+    look. Nor does a tunnel that never came up (two members that cannot
+    dial each other, one switched off for good): nothing went missing
+    with it.
   - **Changed apart.** Two parts of a mesh that each changed the profile
     while apart find out when they meet: neither profile counts the
     other's change among its earlier ones. The change that took effect
@@ -1263,6 +1273,13 @@ Validation-first keeps a bad config from ever reaching a running node.
     and an alert names it and says how to send it again. A change made on
     one node only keeps the record of the change it came from, so it is
     never taken for a branch.
+  - **A change on its way.** Until its switch, no other change is sent
+    to every node: it would take the first one's place and drop what
+    that one sets. Replacing it is asked for by name (`replace`): a
+    corrected profile, started from the one on its way, or the profile
+    in force, which cancels it (the nodes switch to what they already
+    run, as a new revision). There is no other cancel: a node that has
+    taken a change follows the newest one it is offered.
 - **Dry runs.** Every change can be tried first. The answer lists what it
   would do to the running node (the mesh link moves, the node leaves the
   mesh, devices must rejoin the Wi-Fi), worked out from the radios present,
@@ -1334,8 +1351,110 @@ Validation-first keeps a bad config from ever reaching a running node.
   in the last 250 ms is busy and refuses PTT. Packets are marked DSCP EF,
   which batman-adv carries as 802.11 priority 5 (video); its multicast
   forwarding keeps it with Trellis's batman-adv patch.
-- **Site linking (later).** WireGuard + VXLAN added to `bat0` as a batman hard
-  interface, merging separate meshes into one.
+- **Site link.** Parts of one mesh in different places, each with internet
+  somewhere, joined into one flat mesh over the internet (§13.1).
+
+### 13.1 Site link
+
+Parts of one mesh in different places, joined over the internet into one
+flat mesh: one client network, gossip, gateways, ATAK and voice across
+all of them. The parts share one profile (secret, prefix, node IDs unique
+across them); a site link does not merge two different meshes.
+
+**Members.** The profile's `site_link.members` lists the nodes that hold
+the link: each with its site's name, its WireGuard public key and, where
+the other sites can reach it, an endpoint (`host:port`). A node whose own
+key is listed is a member, and tunnels to every member of every other
+site; members of one site meet over the air. A member without an endpoint
+(behind NAT) dials out, so the members it tunnels to need one. Two members
+per site keep the link when one fails: batman-adv moves to the other
+tunnel within seconds.
+
+**Keys.** Every node has its own key, made once and kept in its identity
+file (`meshctl site` prints the public key). A key per node, not per site:
+WireGuard holds one endpoint per key, and two nodes sharing one would fight
+over it. A node tells the mesh its public key in gossip, so that members
+are named, and a node already in the mesh is added to the list by name. A
+member also tells its site and how many of its tunnels are up, so that any
+node can say how the link stands.
+
+**The link.** On a member:
+- `site0`, a WireGuard interface (UDP port `site_link.port`, default
+  51873; MTU 1420), with a peer for each member of another site, keepalive
+  25 s so NAT mappings stay open and a dead peer is noticed;
+- a tunnel address per member, 169.254.a.b from a hash of its key (the
+  profile is refused when two collide);
+- a gretap per peer (`site-<6 hex>`) between the two tunnel addresses,
+  MTU 1382, added to `bat0` as a hard interface. batman-adv fragments
+  larger unicast frames itself; a larger broadcast frame (flooded
+  multicast included), which it does not split, crosses as fragments of
+  the tunnel's own packet, inside WireGuard. A gretap reports no speed: batman-adv is told
+  `site_link.mbit` (default 10 Mbit/s), a figure to rank paths by, not
+  a measurement or a limit. Each tunnel also takes a hop penalty of its
+  own, worked out from that figure and the mesh's hop penalty: one
+  crossing, the only way between sites, keeps what it can (3.1 Mbit/s at
+  the defaults); a path out of a site by one tunnel and back in by
+  another is worth under 1 Mbit/s, below the slowest radio link (HaLow
+  at 1 MHz), so traffic between two parts of a site stays on the air.
+  A site's own gateway stays ahead of one across the internet. The web
+  UI shows site links as "over the internet", never with the figure.
+  Its MAC comes from a hash of the two keys, so every node with the
+  profile knows whose tunnel a batman-adv address is without the member
+  listing its tunnels in gossip.
+
+**Routing.** All in rules and tables of meshd's own; the main table is
+never touched:
+- the tunnel addresses are routed into `site0` by a table consulted for
+  169.254.0.0/16 only (a lookup with no route there goes on to main, so a
+  real link-local network on another port still works);
+- WireGuard's own packets carry a mark. Main routes them when it can
+  (the uplink); otherwise the auto WAN's table, or nowhere: never the
+  mesh's gateway, which could be on the far side of the very tunnel they
+  carry.
+
+**Firewall.** A closed node (§11) that is a member opens its UDP port, and
+treats `site0` as inside: a peer is a member of the mesh, and WireGuard
+lets through only what each key's tunnel address sends.
+
+**Guard.** A tunnel is matched by its two addresses alone, and the kernel
+takes a packet for a local address on any interface: left at that, a host
+on a member's uplink network, or a device on the client network, could
+send GRE between the two addresses and put frames into the mesh with no
+key. A member therefore holds a table of its own (`inet trellis_site`),
+whether its firewall is open or closed:
+- nothing reaches its tunnel address except through `site0`;
+- nothing leaves from its tunnel address except through `site0`, so a
+  tunnel's packet never goes out of the uplink in the clear, whatever
+  the routes say at that moment;
+- nothing is routed into or out of `site0`.
+The tunnels are not set up without it, and come down when it cannot be
+put back. It is checked on every pass, rules and all: a table emptied of
+its rules is written again.
+
+**Budget.** What one site broadcasts reaches every node of the others,
+over their radios. Each tunnel carries at most `site_link.multicast_kbit`
+(default 1000 kbit/s) of batman-adv's broadcast and multicast packets each
+way, enough for ATAK and voice, not for video: a tc policer on the tunnel's
+ingress and egress, matched on the packet type. Routing packets and
+unicast (multicast to a few listeners included, which batman-adv sends as
+unicast copies) pass.
+
+**Status.** `site_link` in the status: the node's key, whether it is a
+member, and each peer's endpoints (the profile's, and where WireGuard
+reaches it now), last handshake, traffic, and batman-adv's view of its
+tunnel. A tunnel that is not up says why (`note`): no endpoint at either
+end, an endpoint whose name does not resolve, no uplink on this node that
+leads to it, or no answer, with what to check. A peer that is also a
+direct neighbour without the tunnel is at this node's site, and says so.
+A peer with no handshake for 180 s is a warning, in the same words.
+
+**Review.** Before a profile is sent, the review names the members that
+join or leave, two sites none of whose members has an endpoint, and
+members listed at different sites that the mesh already holds without a
+link (nodes at one place: they take one site name).
+
+**Later:** a coordination server (Tailscale or Headscale) as an option for
+finding members. A Tailscale address already works as an endpoint.
 
 ## 14. Platforms and delivery
 

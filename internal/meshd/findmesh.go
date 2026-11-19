@@ -45,6 +45,13 @@ import (
 //
 // A channel whose visit found nothing to take is not visited again for
 // half an hour.
+//
+// Two things are never taken for the rest of the mesh. The profile's own
+// channels: every link has the same mesh ID, and a radio hears the other
+// links' beacons (a neighbour's, or this node's own second radio). And
+// nodes at another site: when the site link is down, the nodes behind it
+// are missing from gossip like nodes that moved, but no channel leads to
+// them (siteLinkApart).
 
 const (
 	findMeshCheck      = 5 * time.Second  // how often the reconciler looks
@@ -145,6 +152,19 @@ func (r *findMeshReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		known[mac] = r.Callsign
 	}
 	wanted := searchWanted(len(known), len(records))
+	// Missing because the site link is down: nothing to find by radio.
+	if wanted {
+		var own *gossip.SiteState
+		if d.sitelink != nil {
+			own = d.siteLinkGossip()
+		}
+		if siteLinkApart(profile.SiteLink, own, records) {
+			wanted = false
+			missing := len(known) - len(records)
+			warn("info", "mesh-apart", "%d of the %d other nodes heard in the last day %s not in reach, and the site link is not whole: they are taken to be at another site, and this node does not look for them on other channels",
+				missing, len(known), map[bool]string{true: "is", false: "are"}[missing == 1])
+		}
+	}
 
 	fm := &d.findMesh
 	fm.mu.Lock()
@@ -289,7 +309,7 @@ func (d *Daemon) findMeshScan(profile *config.Profile) {
 		fm.mu.Lock()
 		for _, h := range heard {
 			all = append(all, fmt.Sprintf("link %d: %s", t.link, h.plan().Name()))
-			if h.band == rp.Band && h.channel == rp.Channel || fm.checkedLately(link, h.band, h.channel, now) {
+			if onProfile(profile, h.band, h.channel) || fm.checkedLately(link, h.band, h.channel, now) {
 				continue
 			}
 			c := choice{link: link, plan: h.plan(), heard: h}
@@ -318,6 +338,48 @@ func (d *Daemon) findMeshScan(profile *config.Profile) {
 	fm.visit = v
 	d.log.Warn("most of the mesh is missing; this mesh was heard elsewhere: the link visits there to see",
 		"link", best.link+1, "profile", from.Name(), "visits", best.plan.Name(), "signal_dbm", best.heard.signal, "heard", fmt.Sprint(all))
+}
+
+// onProfile reports whether a channel is one of the profile's own links.
+// The mesh heard there is this part of it, on its other link: not the
+// rest of the mesh, and nowhere to visit.
+func onProfile(p *config.Profile, band string, channel int) bool {
+	for _, l := range p.AllLinks() {
+		if l.Band == band && l.Channel == channel {
+			return true
+		}
+	}
+	return false
+}
+
+// siteLinkApart reports whether the site link is what keeps nodes out of
+// reach: the profile links two sites or more, and a member in reach (own
+// is this node's part, nil when it is no member; live the records heard
+// now) says a tunnel that was up in the last day is down. The nodes
+// behind it went missing with it, and no channel leads to them. Only that
+// evidence counts:
+//   - a member merely out of reach is also what a node stranded on an old
+//     channel sees, hearing no one, and that node must look for the mesh;
+//   - a tunnel that never came up (two members behind NAT, a member
+//     switched off for good) has no nodes behind it that were ever in
+//     reach, and would stand the search down for as long as it is listed.
+func siteLinkApart(plan config.SiteLinkPlan, own *gossip.SiteState, live map[string]gossip.Record) bool {
+	sites := map[string]bool{}
+	for _, m := range plan.Members {
+		sites[m.Site] = true
+	}
+	if len(sites) < 2 {
+		return false
+	}
+	if own != nil && own.Lost > 0 {
+		return true
+	}
+	for _, r := range live {
+		if r.Site != nil && r.Site.Lost > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // heardNet is this mesh heard on one channel.

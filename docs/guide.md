@@ -105,6 +105,8 @@ and use whichever node has an internet uplink. For ATAK, see
   profile → **Every node**. Make changes while every node is up.
 - **Firewall:** from your LAN, new nodes answer only SSH and ping (the
   mesh side is not filtered); Settings → Access opens more.
+- **Link sites:** parts of the mesh in different places join over the
+  internet: Internet → Site link ([reference.md](reference.md#linking-sites-over-the-internet)).
 
 ## Troubleshooting
 

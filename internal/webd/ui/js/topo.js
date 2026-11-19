@@ -50,6 +50,10 @@ export const hasPins = () => Object.keys(pins).length > 0;
 // (by a factor of four is common). The slower direction is what
 // the link reliably carries, so that is the figure; a direction an end has
 // not reported (0) is left out. The node tooltip shows both.
+// A site link is the exception: its figure is the profile's
+// (site_link.mbit), told to batman-adv because a tunnel reports no speed,
+// not a measurement, so the map neither prints nor judges it (isSite).
+const isSite = (l) => l.medium === 'site';
 const rate = (l) => {
   const ab = l.ab_mbps || 0, ba = l.ba_mbps || 0;
   return ab > 0 && ba > 0 ? Math.min(ab, ba) : Math.max(ab, ba);
@@ -83,7 +87,8 @@ function layout(topo, H) {
   const springs = topo.links.filter((l) => pos.has(l.a) && pos.has(l.b)).map((l) => ({
     a: pos.get(l.a), b: pos.get(l.b),
     // 130 for an excellent link, up to 330 for a marginal one.
-    len: 130 + 200 * (1 - Math.min(rate(l), 100) / 100),
+    // A site link at the longest: its sites are apart.
+    len: isSite(l) ? 330 : 130 + 200 * (1 - Math.min(rate(l), 100) / 100),
   }));
   const pts = ids.map((id) => pos.get(id));
   const steps = cold ? 420 : 160;
@@ -217,9 +222,10 @@ export function topology(topo, opts = {}) {
   for (const l of topo.links) {
     const a = pos.get(l.a), b = pos.get(l.b);
     if (!a || !b) continue;
+    const site = isSite(l);
     const t = rate(l);
     const q = linkQuality(t, Math.min(l.a_signal_dbm || 0, l.b_signal_dbm || 0));
-    const half = !(l.ab_mbps > 0 && l.ba_mbps > 0);
+    const half = !site && !(l.ab_mbps > 0 && l.ba_mbps > 0);
     const dim = focus && !touches(l);
     // A second link between the same two nodes (dual backhaul) bows out.
     const pair = [l.a, l.b].sort().join('|');
@@ -230,13 +236,13 @@ export function topology(topo, opts = {}) {
     const bow = nth === 0 ? 0 : (nth % 2 ? 1 : -1) * 26 * Math.ceil(nth / 2);
     const cx = mx - dy / len * bow, cy = my + dx / len * bow;
     const d = `M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
-    const width = (1.6 + 5 * Math.sqrt(Math.min(t, 150) / 150)) * (big > 1 ? 1.25 : 1);
+    const width = (site ? 2.4 : 1.6 + 5 * Math.sqrt(Math.min(t, 150) / 150)) * (big > 1 ? 1.25 : 1);
     const key = l.a_mac + l.b_mac;
-    linkEls.push(h('path', { class: `link q${q}${half ? ' half' : ''}${dim ? ' dimmed' : ''}`, d, 'stroke-width': width.toFixed(1), key: 'l' + key }));
+    linkEls.push(h('path', { class: `link ${site ? 'site' : 'q' + q}${half ? ' half' : ''}${dim ? ' dimmed' : ''}`, d, 'stroke-width': width.toFixed(1), key: 'l' + key }));
     const flow = flows.get(l);
     if (flow && !dim) flowEls.push(h('path', { class: 'flow' + (flow === 'rev' ? ' rev' : ''), d, key: 'f' + key }));
     if (showLabels || (focus && touches(l))) {
-      labelEls.push(h('text', { class: 'linklabel' + (dim ? ' dimmed' : ''), x: ((mx + cx) / 2).toFixed(1), y: ((my + cy) / 2 + 3.5).toFixed(1), key: 't' + key }, mbps(t)));
+      labelEls.push(h('text', { class: 'linklabel' + (dim ? ' dimmed' : ''), x: ((mx + cx) / 2).toFixed(1), y: ((my + cy) / 2 + 3.5).toFixed(1), key: 't' + key }, site ? 'internet' : mbps(t)));
     }
   }
 
@@ -317,10 +323,12 @@ export function topology(topo, opts = {}) {
       h('div', fn.address || ''),
       h('div.dim', plural(mine.length, 'link'), fn.reported ? ` · ${plural(fn.clients || 0, 'device')}` : ''),
       // Each link both ways, as each end measures what it can send.
-      mine.length ? h('div.tip-links', [...mine].sort((x, y) => rate(y) - rate(x)).map((l) => {
+      mine.length ? h('div.tip-links', [...mine].sort((x, y) => isSite(x) - isSite(y) || rate(y) - rate(x)).map((l) => {
         const out = l.a === fn.id ? l.ab_mbps : l.ba_mbps, back = l.a === fn.id ? l.ba_mbps : l.ab_mbps;
         const other = byId.get(l.a === fn.id ? l.b : l.a);
-        return h('div', h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a)), h('span.faint', edgeName(l)),
+        const name = h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a));
+        if (isSite(l)) return h('div', name, h('span.faint', edgeName(l)), h('span.faint.tip-span', 'over the internet, not measured'));
+        return h('div', name, h('span.faint', edgeName(l)),
           h('span.num', out > 0 ? `→ ${mbps(out)}` : '→ –'), h('span.num', back > 0 ? `← ${mbps(back)}` : '← –'));
       })) : null,
       fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'shares its uplink' : 'uplink down') : null,
@@ -338,16 +346,42 @@ export function topology(topo, opts = {}) {
 
 // edgeName names the link an edge of the map is on, by its band and
 // channel as everywhere in the UI ("5 GHz · ch 149"), from the mesh link
-// the nodes report it on; "wired" for a cable, empty when neither end says.
+// the nodes report it on; "wired" for a cable, "site link" for a tunnel
+// over the internet, empty when neither end says.
 function edgeName(l) {
   if (l.medium === 'wired') return 'wired';
+  if (l.medium === 'site') return 'site link';
   const link = state.status && linkAt(state.status, l.mesh_link);
   return link ? linkName(link, state.status) : '';
 }
 
-export function legend() {
+// acrossSites gives the node IDs this map shows on the far side of a site
+// link from this node: on no link at all from here but through a site
+// link. null when the map has no site link, or does not show this node.
+// A node with no link on the map is on neither side.
+export function acrossSites(topo) {
+  if (!topo || !topo.links.some(isSite)) return null;
+  const self = topo.nodes.find((n) => n.self);
+  if (!self) return null;
+  const near = new Set([self.id]), todo = [self.id];
+  while (todo.length) {
+    const id = todo.pop();
+    for (const l of topo.links) {
+      if (isSite(l) || (l.a !== id && l.b !== id)) continue;
+      const o = l.a === id ? l.b : l.a;
+      if (!near.has(o)) { near.add(o); todo.push(o); }
+    }
+  }
+  const linked = new Set(topo.links.flatMap((l) => [l.a, l.b]));
+  return new Set(topo.nodes.filter((n) => n.node_id && linked.has(n.id) && !near.has(n.id)).map((n) => n.node_id));
+}
+
+// The site link's entry only where the map has one.
+export function legend(topo) {
+  const sites = !!topo && topo.links.some(isSite);
   return h('div.topo-legend',
     h('span', h('i'), 'strong link'), h('span', h('i.q1'), 'fair'), h('span', h('i.q0'), 'weak'),
     h('span', h('i.half'), 'one end reporting'),
+    sites ? h('span', { title: 'A tunnel over the internet. Its speed is not measured: the figure batman-adv is given is the profile\'s, not shown.' }, h('i.site'), 'site link (not measured)') : null,
     h('span', '◆ this node'), h('span', '↑ shares uplink'), h('span', '• device'), h('span', 'Mbit/s: the slower direction'));
 }

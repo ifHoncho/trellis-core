@@ -222,7 +222,7 @@ Notes:
 - What the lab can't show: the systemd units themselves (`DynamicUser`,
   the socket unit), and a browser. Both need real nodes.
 
-### Mesh-wide profile changes (P1–P2)
+### Mesh-wide profile changes (P1–P5)
 
 Each node first gets its own copy of the lab profile (otherwise the first
 node to switch would write the shared file for all of them).
@@ -231,6 +231,9 @@ node to switch would write the shared file for all of them).
 |---|---|
 | P1 | Node 1 sends revision 1 (`batman.orig_interval_ms` 500 → 600) to switch in 15 s: every other node (node 9 from W5 included, when it is up) has it before the switch, and all switch to revision 1 with 600 within 3 s of each other |
 | P2 | Node 3 is stopped; node 2 sends revision 2 (back to 500). Nodes 1 and 2 switch; node 3, started again on revision 1, asks another node for revision 2 and switches to it |
+| P3 | Node 1 sends a change to switch in 60 s. From node 2, `meshctl profile push --yes` is refused while it waits, the review says to add `--replace`, and with `--replace` node 2's profile goes instead: every node runs it, none ever ran node 1's |
+| P4 | Node 1 sends another; node 3 pushes the profile it runs with `--replace`: the change is cancelled, and every node keeps its profile as a new revision |
+| P5 | `meshctl profile edit` with a script as `$EDITOR`: the edit is sent with the version it was made from. A second edit, during which another node's change comes into force, is refused, and its edits are kept in a file |
 
 Not in the lab: nodes left on a channel the mesh has left looking for it
 (`findmesh.go`). The lab's links are cables, which have no channels to
@@ -340,6 +343,43 @@ a key made for the run. Node 4 sends them. About 3 min.
 The air side's veth ends are set to MTU 1600: meshd raises a mesh port's
 MTU for batman-adv's header, and full-size frames (a package over HTTP)
 would otherwise be dropped there.
+
+### Site link (`make lab-sites`)
+
+`lab/sites.sh`: two sites of three nodes, each on its own air bridge, and
+an "internet" namespace. Site hq's nodes 1 and 2 have public uplinks
+(node 1 with its firewall closed); site field's node 4 is behind a NAT
+router. Needs `wireguard` loaded as well as `batman_adv`. About 5 min.
+
+- S0 each site forms alone;
+- S1 the members' keys read with `meshctl site`; a mistaken list (two
+  nodes of one site as two sites, no endpoints) is called out by the
+  review, nothing sent; the profile with the members pushed at hq (`meshctl profile push`) and hq's file installed on field-4
+  (`meshctl profile install`), which nodes 5 and 6 take from it; field-4
+  dials out to hq-1 and hq-2, each tunnel up and a batman-adv interface;
+  node 3 is no member; before the field has the list, hq-1's quiet
+  tunnel says what it waits for;
+- S2 one mesh: every node sees the other five; gossip names them all;
+  each tunnel names the node at its far end and has no note while up; no
+  node reports a profile conflict;
+- S3 a device in hq reaches one in the field; 1400-byte pings cross
+  (batman-adv fragments over the tunnel); 50 ATAK SA datagrams cross;
+- S4 WireGuard's packets leave by the uplink, and are unreachable without
+  it rather than sent into the mesh;
+- S5 node 1's closed firewall lets its tunnel in; the members settle (no
+  tunnel route changes, the loop converged); the guard stands on the
+  members only, drops GRE sent to a tunnel address from a member's
+  uplink, and is put back when its rules are flushed; hq's two members
+  joined by 3 Mbit/s only still reach each other over it, not out
+  through the field and back (the tunnels' hop penalty);
+- S6 the hq member carrying the field's traffic to node 3 is cut off: the
+  devices keep talking through the other (the longest gap is printed);
+- S8 at `multicast_kbit: 100` (and flood mode, so multicast is
+  broadcast), a 520 kbit/s multicast flood is cut at hq's tunnels; the
+  tunnels and unicast are untouched; full-size flooded multicast (1450
+  bytes, larger than a tunnel) crosses;
+- S7 the members taken out of the profile: tunnels, `site0`, rules and
+  the guard gone, the sites apart again.
 
 ### Scale lab (`make lab-scale`)
 

@@ -27,20 +27,24 @@ const nmConfPath = "/etc/NetworkManager/conf.d/90-trellis.conf"
 // has the given number of mesh links. mesh0 and mesh1 are always listed, so
 // that the files below do not change (and NetworkManager and networkd are
 // not reloaded) on a node with one or two links; a third link and up add
-// mesh2, mesh3, ….
-func trellisIfnames(links int) []string {
+// mesh2, mesh3, …. A member of the site link adds site0 and its tunnels
+// (site-* matches every one).
+func trellisIfnames(links int, site bool) []string {
 	names := []string{meshIfname(0), meshIfname(1), APIfname, BatIfname, BridgeIfname, "anycast0"}
 	for i := 2; i < links && i < config.MaxMeshLinks; i++ {
 		names = append(names, meshIfname(i))
+	}
+	if site {
+		names = append(names, SiteIfname, siteIfPrefix+"*")
 	}
 	return names
 }
 
 // nmConf tells NetworkManager to leave Trellis interfaces alone, and the
 // wired ports node.yaml gives to Trellis (client, mesh, auto).
-func nmConf(links int, ports []string) string {
+func nmConf(links int, site bool, ports []string) string {
 	var specs []string
-	for _, n := range append(trellisIfnames(links), ports...) {
+	for _, n := range append(trellisIfnames(links, site), ports...) {
 		specs = append(specs, "interface-name:"+n)
 	}
 	return "# Written by trellis meshd. Interfaces owned by Trellis must not be managed\n# by NetworkManager.\n[keyfile]\nunmanaged-devices=" +
@@ -52,9 +56,9 @@ func nmConf(links int, ports []string) string {
 // rule matches by wildcard.
 const networkdConfPath = "/etc/systemd/network/00-trellis-unmanaged.network"
 
-func networkdConf(links int, ports []string) string {
+func networkdConf(links int, site bool, ports []string) string {
 	return "# Written by trellis meshd. Interfaces owned by Trellis must not be managed\n# by systemd-networkd.\n[Match]\nName=" +
-		strings.Join(append(trellisIfnames(links), ports...), " ") + "\n\n[Link]\nUnmanaged=yes\n"
+		strings.Join(append(trellisIfnames(links, site), ports...), " ") + "\n\n[Link]\nUnmanaged=yes\n"
 }
 
 func (h *hostReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) {
@@ -77,7 +81,7 @@ func (h *hostReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 	}
 	if st, err := os.Stat(filepath.Dir(nmConfPath)); err == nil && st.IsDir() {
 		cur, _ := os.ReadFile(nmConfPath)
-		want := nmConf(1+len(h.d.profile.Links), h.d.cfg.OwnedPorts())
+		want := nmConf(1+len(h.d.profile.Links), h.d.siteLinkPort(h.d.profile) != 0, h.d.cfg.OwnedPorts())
 		if string(cur) != want {
 			if err := os.WriteFile(nmConfPath, []byte(want), 0o644); err != nil {
 				res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "nm-conf", Message: "cannot write " + nmConfPath + ": " + err.Error()})
@@ -93,7 +97,7 @@ func (h *hostReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 	}
 	if st, err := os.Stat(filepath.Dir(networkdConfPath)); err == nil && st.IsDir() {
 		cur, _ := os.ReadFile(networkdConfPath)
-		want := networkdConf(1+len(h.d.profile.Links), h.d.cfg.OwnedPorts())
+		want := networkdConf(1+len(h.d.profile.Links), h.d.siteLinkPort(h.d.profile) != 0, h.d.cfg.OwnedPorts())
 		if string(cur) != want {
 			if err := os.WriteFile(networkdConfPath, []byte(want), 0o644); err != nil {
 				res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "networkd-conf", Message: "cannot write " + networkdConfPath + ": " + err.Error()})

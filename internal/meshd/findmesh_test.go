@@ -164,3 +164,71 @@ func TestOnClock(t *testing.T) {
 		t.Errorf("zero: %v", got)
 	}
 }
+
+// The profile's own channels are never "the mesh heard elsewhere": every
+// link has the same mesh ID, and a radio hears the other links.
+func TestOnProfile(t *testing.T) {
+	p := &config.Profile{Radio: config.RadioPlan{Band: config.Band5G, Channel: 149, Width: 80},
+		Links: []config.RadioPlan{{Band: config.Band2G, Channel: 6, Width: 20}}}
+	for _, c := range []struct {
+		band string
+		ch   int
+		want bool
+	}{
+		{config.Band5G, 149, true},
+		{config.Band2G, 6, true}, // the other link: this part of the mesh, not the rest
+		{config.Band2G, 11, false},
+		{config.Band5G, 36, false},
+		{config.Band6G, 6, false},
+	} {
+		if got := onProfile(p, c.band, c.ch); got != c.want {
+			t.Errorf("%s channel %d: %v", c.band, c.ch, got)
+		}
+	}
+}
+
+// Nodes missing while the site link is not whole are at another site: no
+// channel leads to them.
+func TestSiteLinkApart(t *testing.T) {
+	const hq, field = "aGVhZHF1YXJ0ZXJzLWtleS1mb3ItdGhlLXRlc3QtMDE=", "ZmllbGQtc2l0ZS1rZXktZm9yLXRoZS10ZXN0LTAwMDI="
+	plan := config.SiteLinkPlan{Members: []config.SiteMember{{Site: "hq", PublicKey: hq}, {Site: "field", PublicKey: field}}}
+	oneSite := config.SiteLinkPlan{Members: []config.SiteMember{{Site: "hq", PublicKey: hq}}}
+	live := func(rs ...gossip.Record) map[string]gossip.Record {
+		m := map[string]gossip.Record{}
+		for _, r := range rs {
+			m[r.MAC] = r
+		}
+		return m
+	}
+	member := func(up, lost, peers int) gossip.Record {
+		return gossip.Record{MAC: "02:00:00:00:00:02", SiteKey: hq, Site: &gossip.SiteState{Site: "hq", Up: up, Lost: lost, Peers: peers}}
+	}
+	plain := gossip.Record{MAC: "02:00:00:00:00:03"}
+	for _, c := range []struct {
+		name string
+		plan config.SiteLinkPlan
+		own  *gossip.SiteState
+		live map[string]gossip.Record
+		want bool
+	}{
+		{"no site link", config.SiteLinkPlan{}, nil, live(plain), false},
+		{"one site only", oneSite, &gossip.SiteState{Site: "hq", Up: 0, Peers: 0}, live(plain), false},
+		{"whole: the member here has its tunnel up", plan, nil, live(member(1, 0, 1), plain), false},
+		{"the member here lost its tunnel", plan, nil, live(member(0, 1, 1), plain), true},
+		{"this node is the member, tunnel lost", plan, &gossip.SiteState{Site: "hq", Up: 0, Lost: 1, Peers: 1}, live(plain), true},
+		{"this node is the member, tunnel up", plan, &gossip.SiteState{Site: "hq", Up: 1, Peers: 1}, live(plain), false},
+		// A tunnel that never came up, or went down more than a day ago:
+		// nothing went missing with it.
+		{"the member here has a tunnel that never came up", plan, nil, live(member(1, 0, 2), plain), false},
+		{"this node is the member, a tunnel never up", plan, &gossip.SiteState{Site: "hq", Up: 1, Peers: 2}, live(plain), false},
+		{"one tunnel never up, another lost", plan, nil, live(member(0, 1, 2), plain), true},
+		// Stranded on an old channel: no member in reach, so no evidence
+		// that the link is down. It must search.
+		{"stranded: hears no one", plan, nil, live(), false},
+		{"stranded with another node, no member", plan, nil, live(plain), false},
+	} {
+		if got := siteLinkApart(c.plan, c.own, c.live); got != c.want {
+			t.Errorf("%s: %v", c.name, got)
+		}
+	}
+}

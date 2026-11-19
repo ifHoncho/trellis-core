@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"meridian/trellis/internal/wg"
 )
 
 func TestEnsureIdentityStable(t *testing.T) {
@@ -175,5 +177,31 @@ func TestLoadRadiosDamaged(t *testing.T) {
 	r, err := LoadRadios(dir)
 	if err == nil || r == nil || len(r.Radios) != 0 {
 		t.Errorf("damaged radio memory: %v %v", r, err)
+	}
+}
+
+// Every node gets a site link key once, kept across restarts, and an
+// identity from before the site link gains one.
+func TestSiteKey(t *testing.T) {
+	dir := t.TempDir()
+	id, _, err := EnsureIdentity(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := wg.ParseKey(id.SiteKey)
+	if err != nil || k.IsZero() {
+		t.Fatalf("site key %q: %v", id.SiteKey, err)
+	}
+	again, changed, err := EnsureIdentity(dir, 0)
+	if err != nil || changed || again.SiteKey != id.SiteKey {
+		t.Fatalf("not kept: changed=%v %v", changed, err)
+	}
+	old := filepath.Join(t.TempDir(), IdentityFile)
+	if err := os.WriteFile(old, []byte("mac: \"02:00:00:00:00:07\"\nnode_id: 7\nnode_id_source: derived\nap_passphrase: abcdefghjkmn\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	up, changed, err := EnsureIdentity(filepath.Dir(old), 0)
+	if err != nil || !changed || up.MAC != "02:00:00:00:00:07" || up.APPassphrase != "abcdefghjkmn" || up.SiteKey == "" {
+		t.Fatalf("old identity: changed=%v %+v %v", changed, up, err)
 	}
 }

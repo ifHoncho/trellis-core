@@ -101,3 +101,30 @@ func TestRenderFirewall(t *testing.T) {
 		t.Error("the mesh side is not accepted first")
 	}
 }
+
+// The guard lets a tunnel's packets through the WireGuard interface and
+// nowhere else, in or out, and routes nothing through it.
+func TestSiteGuardRender(t *testing.T) {
+	s := SiteGuard{If: "site0", Addr: "169.254.10.1"}.Render()
+	for _, want := range []string{
+		"table inet trellis_site\ndelete table inet trellis_site\n",
+		"hook input priority -10",
+		`iifname != { "site0", "lo" } ip daddr 169.254.10.1 counter drop`,
+		"hook output priority -10",
+		`oifname != { "site0", "lo" } ip saddr 169.254.10.1 counter drop`,
+		"hook forward priority -10",
+		`iifname "site0" counter drop`,
+		`oifname "site0" counter drop`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("guard lacks %q:\n%s", want, s)
+		}
+	}
+	if strings.Count(s, RuleSiteGuard) != 4 {
+		t.Errorf("every drop rule carries the guard's comment (counted by it):\n%s", s)
+	}
+	// The count the guard is checked against is the count written.
+	if n := strings.Count(s, "counter drop"); n != SiteGuardRules {
+		t.Errorf("the guard writes %d rules, SiteGuardRules says %d", n, SiteGuardRules)
+	}
+}

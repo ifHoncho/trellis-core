@@ -3,6 +3,7 @@
 package meshctl
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -13,7 +14,9 @@ import (
 	"io"
 	"maps"
 	"math/big"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -59,9 +62,13 @@ Commands:
   profile install [FILE|-]       validate a profile, install it on this node and apply it live
   survey [--start]               the last mesh-wide channel survey; --start runs one (each radio
                                  leaves its channel briefly) and waits for the answers
-  profile push [--in S] [--yes] FILE
-                                 send a profile to every node: all switch to it in S seconds (default 60);
-                                 without --yes, only show what it would do
+  profile push [--in S] [--yes] [--replace] FILE
+                                 send a profile file to every node: all switch to it in S seconds (default 60);
+                                 without --yes, only show what it would do. While another change is on
+                                 its way it is refused, unless --replace (that change is dropped)
+  profile edit [--in S] [--yes] [--replace]
+                                 change the profile the mesh runs, in $EDITOR, and send it to every node;
+                                 refused if the profile changed on the node while it was being edited
   profile same FILE1 FILE2       exit 0 if the two profiles mean the same, else name the settings that differ
   node new --callsign NAME [--id N] [-o FILE [--force]]
                                  node config skeleton (stdout, or FILE)
@@ -72,6 +79,8 @@ Commands:
   web wan-access on|off          also serve the web UI on the node's uplink network
   clients [--json]               devices joined to this node: AP clients and DHCP leases
   voice [--json]                 push-to-talk: talk groups, who is talking, this node's channels
+  site [--json]                  the site link: this node's key, and its tunnels to other sites
+  site --new-key [--force]       give this node a new site link key
   upgrade FILE.deb               install a release; the node goes back to the old one if it is not healthy after
   upgrade --status|--rollback|--resume
   reconcile                      ask meshd for a pass now
@@ -117,6 +126,8 @@ Commands:
 		err = cmdClients(ctx, client, rest[1:], stdout)
 	case "voice":
 		err = cmdVoice(ctx, client, rest[1:], stdout)
+	case "site":
+		err = cmdSite(ctx, client, rest[1:], stdout)
 	case "web":
 		err = cmdWeb(ctx, client, rest[1:], stdout, stderr)
 	case "upgrade":
@@ -320,6 +331,10 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	printPorts(w, st)
 	printClientNet(w, st)
 	printGateway(w, st)
+	if st.SiteLink.Member {
+		fmt.Fprintln(w)
+		printSiteLink(w, st.SiteLink)
+	}
 
 	if st.Reconcile.LastPass.IsZero() {
 		fmt.Fprintf(w, "\nreconcile: first pass still running\n")
@@ -464,6 +479,9 @@ func cmdProfile(ctx context.Context, client *api.Client, args []string, stdout i
 	}
 	if len(args) > 0 && args[0] == "push" {
 		return cmdProfilePush(ctx, client, args[1:], stdout)
+	}
+	if len(args) > 0 && args[0] == "edit" {
+		return cmdProfileEdit(client, args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "same" {
 		return cmdProfileSame(args[1:], stdout)
@@ -786,6 +804,14 @@ func cmdProfileInstall(ctx context.Context, client *api.Client, args []string, s
 		// A profile code (meshctl profile share, or the web UI): install
 		// it as the file it stands for.
 		if p, err = config.DecodeProfileCode(string(data)); err == nil {
+			// A code for the mesh the node is on keeps the talk groups
+			// and site link of the profile in place (a code has neither).
+			if cur, cerr := config.LoadProfile(profileTarget(*target)); cerr == nil {
+				p.KeepUncoded(cur)
+				err = p.Validate()
+			}
+		}
+		if err == nil {
 			data, err = p.YAML("Trellis mesh profile, installed from a profile code. It holds the mesh secret: keep it private.")
 		}
 	} else {
@@ -794,13 +820,7 @@ func cmdProfileInstall(ctx context.Context, client *api.Client, args []string, s
 	if err != nil {
 		return fmt.Errorf("profile rejected, nothing installed: %w", err)
 	}
-	dst := *target
-	if dst == "" {
-		dst = config.DefaultProfilePath
-		if n, err := config.LoadNode(config.DefaultNodePath); err == nil && n.ProfilePath != "" {
-			dst = n.ProfilePath
-		}
-	}
+	dst := profileTarget(*target)
 	if cur, err := os.ReadFile(dst); err == nil && bytes.Equal(cur, data) {
 		fmt.Fprintf(stdout, "%s unchanged (%s ch %d)\n", dst, p.Radio.Band, p.Radio.Channel)
 		return nil
@@ -821,6 +841,18 @@ func cmdProfileInstall(ctx context.Context, client *api.Client, args []string, s
 	}
 	fmt.Fprintln(stdout, "meshd is applying it now")
 	return nil
+}
+
+// profileTarget is the file profile install writes: the one given, else
+// the node configuration's, else the default.
+func profileTarget(target string) string {
+	if target != "" {
+		return target
+	}
+	if n, err := config.LoadNode(config.DefaultNodePath); err == nil && n.ProfilePath != "" {
+		return n.ProfilePath
+	}
+	return config.DefaultProfilePath
 }
 
 // meshRadioMaxDBm returns the known maximum transmit power of the mesh radio
@@ -1489,17 +1521,18 @@ func cmdProfilePush(ctx context.Context, client *api.Client, args []string, stdo
 	fs := flag.NewFlagSet("profile push", flag.ContinueOnError)
 	in := fs.Int("in", 60, "seconds from now at which every node switches (15 to 900)")
 	yes := fs.Bool("yes", false, "send it (without: only show what it would do)")
+	replace := fs.Bool("replace", false, "send it although another change is on its way: that change is dropped")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: meshctl profile push [--in SECONDS] [--yes] FILE")
+		return errors.New("usage: meshctl profile push [--in SECONDS] [--yes] [--replace] FILE")
 	}
 	data, err := os.ReadFile(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	input := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: string(data)}, DelaySeconds: *in}
+	input := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: string(data)}, DelaySeconds: *in, Replace: *replace}
 	if config.IsProfileCode(strings.TrimSpace(string(data))) {
 		input.ProfileInput = api.ProfileInput{Code: strings.TrimSpace(string(data))}
 	}
@@ -1507,19 +1540,206 @@ func cmdProfilePush(ctx context.Context, client *api.Client, args []string, stdo
 	if err != nil {
 		return err
 	}
-	if !res.Changed {
-		fmt.Fprintln(stdout, "nothing to change: the mesh runs this profile")
+	if nothingToSend(res, stdout) {
 		return nil
+	}
+	if !*yes {
+		fmt.Fprintln(stdout, "\nNothing sent. "+howToSend(res, *replace))
+		return nil
+	}
+	sentLine(res, stdout)
+	return nil
+}
+
+// nothingToSend prints the review of a mesh-wide change, and reports
+// whether there is nothing to send: the mesh runs this profile, and no
+// change on its way would be cancelled by sending it.
+func nothingToSend(res *api.ApplyResult, stdout io.Writer) bool {
+	if !res.Changed && !hasEffectCode(res, "mesh-change-cancelled") {
+		fmt.Fprintln(stdout, "nothing to change: the mesh runs this profile")
+		return true
 	}
 	for _, e := range res.Effects {
 		fmt.Fprintf(stdout, "  [%s] %s\n", strings.ToUpper(e.Level), e.Message)
 	}
-	if !*yes {
-		fmt.Fprintln(stdout, "\nNothing sent. Add --yes to send it to every node.")
+	return false
+}
+
+func hasEffectCode(res *api.ApplyResult, code string) bool {
+	for _, e := range res.Effects {
+		if e.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// howToSend says what a review needs to become a change: --yes, and
+// --replace too when another change is on its way.
+func howToSend(res *api.ApplyResult, replace bool) string {
+	if hasEffectCode(res, "mesh-change-replaced") && !replace {
+		return "Another change is on its way: add --yes --replace to send this in its place, or wait for the switch."
+	}
+	return "Add --yes to send it to every node."
+}
+
+func sentLine(res *api.ApplyResult, stdout io.Writer) {
+	fmt.Fprintf(stdout, "\nsent as revision %d; every node switches at %s. Follow it with: meshctl status\n", res.Revision, res.ApplyAt.Local().Format("15:04:05"))
+}
+
+// cmdProfileEdit changes the profile the mesh runs: the profile in force
+// in the operator's editor, reviewed, and sent to every node with the
+// version it was made from, so that it is refused when the profile changed
+// on the node meanwhile (as a web UI editor's is). profile push sends a
+// file as it is; this starts from the mesh.
+func cmdProfileEdit(client *api.Client, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("profile edit", flag.ContinueOnError)
+	in := fs.Int("in", 60, "seconds from now at which every node switches (15 to 900)")
+	yes := fs.Bool("yes", false, "send it without asking")
+	replace := fs.Bool("replace", false, "send it although another change is on its way: that change is dropped")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: meshctl profile edit [--in SECONDS] [--yes] [--replace]")
+	}
+	// Each request has its own time limit: the editor is open for as long
+	// as the operator likes.
+	call := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), 30*time.Second)
+	}
+	ctx, cancel := call()
+	cfg, err := client.Config(ctx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if cfg.Setup.Needed {
+		return errors.New("this node has no mesh yet: install a profile on it first (meshctl profile install)")
+	}
+	orig, err := cfg.Profile.YAML(fmt.Sprintf("The profile mesh %q runs, revision %d. Change it, save and quit: the change\nis reviewed, and sent to every node once you confirm.\nThe secret is not shown: leave sae_passphrase as it is.", cfg.Profile.Name, cfg.Profile.Revision))
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp("", "trellis-profile-*.yaml")
+	if err != nil {
+		return err
+	}
+	path := f.Name()
+	keep := false
+	defer func() {
+		if !keep {
+			os.Remove(path)
+		}
+	}()
+	if _, err = f.Write(orig); err == nil {
+		err = f.Close()
+	}
+	if err != nil {
+		return err
+	}
+	stdin := bufio.NewReader(os.Stdin)
+	var input api.MeshProfileInput
+	var res *api.ApplyResult
+	for {
+		if err := runEditor(path); err != nil {
+			return err
+		}
+		edited, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if bytes.Equal(edited, orig) {
+			fmt.Fprintln(stdout, "no changes made: nothing sent")
+			return nil
+		}
+		p, err := config.ParseProfile(edited)
+		if err == nil {
+			input = api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: p, Base: cfg.ProfileDigest}, DelaySeconds: *in, Replace: *replace}
+			ctx, cancel := call()
+			res, err = client.SetMeshProfile(ctx, input, true)
+			cancel()
+		}
+		if err == nil {
+			break
+		}
+		// Made from a profile the node no longer has, or while another
+		// change is on its way: editing again would not help.
+		var ae *api.Error
+		if errors.As(err, &ae) && ae.Status == http.StatusConflict {
+			keep = true
+			return fmt.Errorf("%w\nNothing sent. Your edits are kept in %s", err, path)
+		}
+		fmt.Fprintf(stdout, "error: %v\n", err)
+		if *yes || !ask(stdin, stdout, "Edit again?", true) {
+			keep = true
+			return fmt.Errorf("nothing sent; your edits are kept in %s", path)
+		}
+	}
+	if nothingToSend(res, stdout) {
 		return nil
 	}
-	fmt.Fprintf(stdout, "\nsent as revision %d; every node switches at %s. Follow it with: meshctl status\n", res.Revision, res.ApplyAt.Local().Format("15:04:05"))
+	if !*yes && !ask(stdin, stdout, "\nSend this to every node?", false) {
+		keep = true
+		fmt.Fprintf(stdout, "Nothing sent. Your edits are kept in %s\n", path)
+		return nil
+	}
+	ctx, cancel = call()
+	res, err = client.SetMeshProfile(ctx, input, false)
+	cancel()
+	if err != nil {
+		keep = true
+		return fmt.Errorf("%w\nNothing sent. Your edits are kept in %s", err, path)
+	}
+	sentLine(res, stdout)
 	return nil
+}
+
+// runEditor opens path in the operator's editor ($VISUAL, $EDITOR, else
+// the first of sensible-editor, nano, vi) on this terminal, and waits.
+func runEditor(path string) error {
+	var argv []string
+	for _, v := range []string{"VISUAL", "EDITOR"} {
+		if argv = strings.Fields(os.Getenv(v)); len(argv) > 0 {
+			break
+		}
+	}
+	if len(argv) == 0 {
+		for _, e := range []string{"sensible-editor", "nano", "vi"} {
+			if _, err := exec.LookPath(e); err == nil {
+				argv = []string{e}
+				break
+			}
+		}
+	}
+	if len(argv) == 0 {
+		return errors.New("no editor found: set EDITOR (for example EDITOR=nano meshctl profile edit)")
+	}
+	cmd := exec.Command(argv[0], append(argv[1:], path)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("the editor (%s) failed: %w", argv[0], err)
+	}
+	return nil
+}
+
+// ask puts a yes/no question on the terminal; an empty answer is def. No
+// answer at all (the input has ended: no terminal) is no, whatever def
+// is, so that a question asked again and again comes to an end.
+func ask(in *bufio.Reader, out io.Writer, question string, def bool) bool {
+	fmt.Fprintf(out, "%s %s ", question, map[bool]string{true: "[Y/n]", false: "[y/N]"}[def])
+	line, err := in.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		fmt.Fprintln(out)
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	}
+	return def
 }
 
 // meshChangeLine describes a mesh-wide change: "revision 4 from relay-1:

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -119,15 +120,39 @@ func (d *Daemon) currentRevision() uint64 {
 // SetMeshProfile sends a profile to every node of the mesh (POST
 // /profile/mesh).
 func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryRun bool) (*api.ApplyResult, error) {
-	cur, curProfile := d.conf()
-	setup := d.setupState()
+	// One at a time: two sent at the same moment would both find no
+	// change on its way, and the second replace the first unasked.
+	d.meshSendMu.Lock()
+	defer d.meshSendMu.Unlock()
+	cur, curProfile, setup := d.confWritten()
 	if setup.Needed {
 		return nil, api.Invalid("this node has no mesh yet: install a profile on it first")
+	}
+	// A change made in an editor (it says what it was made from) never
+	// undoes one already in force that the editor has not seen.
+	if in.Base != "" {
+		if err := checkBase(in.Base, d.Config().ProfileDigest, "The mesh profile"); err != nil {
+			return nil, err
+		}
+	}
+	// Nor does any change undo one on its way, which it would replace
+	// without holding what that one changes, unless it says so. A review
+	// from a file (no base) is still shown, with what it would replace.
+	pending := d.meshChangeState()
+	if pending != nil && pending.State != "pending" {
+		pending = nil
+	}
+	if pending != nil && !in.Replace && (in.Base != "" || !dryRun) {
+		return nil, api.Conflict("a mesh-wide change from %s is on its way (every node switches at %s): sending this now would replace it and drop what it changes. Wait for the switch, or replace it on purpose (Replace it in the web UI; meshctl profile push --replace)", pending.From, pending.ApplyAt.Format("15:04:05"))
 	}
 	p, err := d.profileFrom(in.ProfileInput, curProfile, false)
 	if err != nil {
 		return nil, err
 	}
+	// A profile from a file or a code is the whole profile as it was when
+	// the file was made: older than the mesh's, it undoes what changed
+	// since.
+	given := *p
 	if p.MeshID != curProfile.MeshID || p.SAEPassphrase != curProfile.SAEPassphrase {
 		return nil, api.Invalid("a mesh-wide change cannot change the mesh ID or the secret: nodes that switched and nodes that did not could no longer hear each other (that is a re-key, not built yet). Change them on each node instead")
 	}
@@ -177,9 +202,17 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s %s a version that cannot follow a mesh-wide change: install the profile there by hand, or %s keep the old one.",
 			listAnd(behind), map[bool]string{true: "runs", false: "run"}[len(behind) == 1], map[bool]string{true: "it will", false: "they will"}[len(behind) == 1]))
 	}
-	// A profile with talk groups is not one a release before voice reads
-	// (profiles are read strictly): those nodes refuse the whole change.
+	// A profile with talk groups or a site link is not one a release
+	// before them reads (profiles are read strictly): those nodes refuse
+	// the whole change.
+	var newer []string
 	if len(p.Voice.Groups) > 0 || p.Voice.Bitrate != 0 {
+		newer = append(newer, "talk groups")
+	}
+	if !reflect.ValueOf(p.SiteLink).IsZero() {
+		newer = append(newer, "a site link")
+	}
+	if len(newer) > 0 {
 		var old []string
 		for _, peer := range d.peers.Peers() {
 			if r := peer.Record; meshChangeFromPeer(r) && beforeVoice(r.Version) {
@@ -188,8 +221,8 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		}
 		if len(old) > 0 {
 			slices.Sort(old)
-			res.Effects = append(res.Effects, effect("warning", "mesh-change-voice-old", "%s %s a release from before voice (0.3.0), which cannot read a profile with talk groups: %s this change and keep the old profile. Upgrade every node first.",
-				listAnd(old), map[bool]string{true: "runs", false: "run"}[len(old) == 1], map[bool]string{true: "it will refuse", false: "they will refuse"}[len(old) == 1]))
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-voice-old", "%s %s a release from before 0.3.0, which cannot read a profile with %s: %s this change and keep the old profile. Upgrade every node first.",
+				listAnd(old), map[bool]string{true: "runs", false: "run"}[len(old) == 1], listAnd(newer), map[bool]string{true: "it will refuse", false: "they will refuse"}[len(old) == 1]))
 		}
 	}
 	// Nodes heard in the last day but not now (roster.go) will miss it.
@@ -212,11 +245,35 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	if c := d.time.Clock(); !c.Synced {
 		res.Effects = append(res.Effects, effect("warning", "mesh-change-clock", "This node's clock is not synchronised (%s): nodes switch when their own clocks reach the moment, so they may switch apart.", c.Note))
 	}
-	if m := d.meshChangeState(); m != nil && m.State == "pending" {
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-replaced", "This replaces the change from %s due at %s.", m.From, m.ApplyAt.Format("15:04:05")))
+	// cancels: the profile in force, sent in the place of a change on its
+	// way.
+	cancels := pending != nil && in.Replace && !res.Changed
+	if pending != nil {
+		what := ""
+		if st := d.meshChangeStatus(); st != nil && st.Summary != "" {
+			what = " (" + st.Summary + ")"
+		}
+		if cancels {
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-cancelled", "This cancels the change from %s due at %s%s: every node keeps the profile it runs now, as a new revision.", pending.From, pending.ApplyAt.Format("15:04:05"), what))
+		} else {
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-replaced", "This replaces the change from %s due at %s%s: what that change sets and this profile does not is dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what))
+		}
+	}
+	if in.New == nil && res.Changed {
+		switch {
+		case given.Revision > 0 && given.Revision < curProfile.Revision:
+			res.Effects = append(res.Effects, effect("warning", "profile-older", "This profile is revision %d, and the mesh runs revision %d: sent, it undoes what the mesh-wide changes since then set. Start from the profile the mesh runs (meshctl profile show) unless that is meant.", given.Revision, curProfile.Revision))
+		case given.Revision == curProfile.Revision && given.ChangeID() != "" && curProfile.ChangeID() != "" && given.ChangeID() != curProfile.ChangeID():
+			res.Effects = append(res.Effects, effect("warning", "profile-older", "This profile comes from another change than the one the mesh runs (both revision %d): sent, it undoes what that one set.", given.Revision))
+		}
 	}
 	sortEffects(res.Effects)
-	if dryRun || !res.Changed {
+	// Said at the review, not found out after "sent": a profile too large
+	// for one offer reaches no node.
+	if err := profileFits(p); err != nil {
+		return nil, err
+	}
+	if dryRun || (!res.Changed && !cancels) {
 		return res, nil
 	}
 
@@ -253,6 +310,51 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	d.log.Info("mesh-wide profile change sent", "revision", c.Rev, "apply_at", at.Format(time.RFC3339), "nodes", strings.Join(res.Nodes, " "))
 	res.Applied, res.Revision = true, c.Rev
 	return res, nil
+}
+
+// profileFits refuses a profile that does not fit one offer
+// (gossip.MaxOfferPacket): nodes pass a profile to each other whole, as a
+// mesh-wide change or when one asks for it, so one that does not fit
+// stays on the node it was installed on. Measured with the longest change
+// record a profile can come to carry, so that a profile that fits today
+// still fits after any number of changes.
+func profileFits(p *config.Profile) error {
+	trial := *p
+	earlier := make([]string, config.MaxEarlierChanges)
+	for i := range earlier {
+		earlier[i] = "ffffffffffffffff"
+	}
+	trial.Revision = 1 << 40
+	trial.Change = &config.ChangeInfo{ID: "ffffffffffffffff", At: time.Now().UTC().Truncate(time.Second), By: strings.Repeat("x", 63), Earlier: earlier}
+	data, err := trial.YAML("")
+	if err != nil {
+		return err
+	}
+	o := &gossip.Offer{V: 1, MAC: "ff:ff:ff:ff:ff:ff", Callsign: strings.Repeat("x", 63), Rev: trial.Revision,
+		ApplyAtMS: time.Now().Add(24 * time.Hour).UnixMilli(), InMS: 24 * 3600 * 1000, Profile: string(data)}
+	if _, err := gossip.SealOffer(make([]byte, 32), o); err != nil {
+		var es config.Errors
+		field := "(document)"
+		switch {
+		case len(p.SiteLink.Members) > 8:
+			field = "site_link.members"
+		case len(p.Voice.Groups) > 8:
+			field = "voice.groups"
+		}
+		es = append(es, &config.FieldError{Field: field, Msg: fmt.Sprintf("the profile is too large to pass from node to node: %d bytes as a file, and about %d fit (one message carries a whole profile). Shorten the site link's members (names, endpoints) or the talk groups", len(data), len(data)-overCap(err))})
+		return es
+	}
+	return nil
+}
+
+// overCap is by how many bytes a sealed message missed its cap; 0 when
+// the error does not say.
+func overCap(err error) int {
+	var size, limit int
+	if _, serr := fmt.Sscanf(err.Error(), "gossip message is %d bytes, over the %d-byte cap", &size, &limit); serr != nil {
+		return 0
+	}
+	return size - limit
 }
 
 // highestPeerRevision is the highest revision another node says it runs.
@@ -685,6 +787,9 @@ func (d *Daemon) meshChangeStatus() *status.MeshChange {
 		var links []string
 		for _, l := range p.AllLinks() {
 			links = append(links, fmt.Sprintf("%s at %d MHz", l.Name(), l.Width))
+		}
+		if n := len(p.SiteLink.Members); n > 0 {
+			links = append(links, fmt.Sprintf("site link with %d member%s", n, map[bool]string{true: "", false: "s"}[n == 1]))
 		}
 		st.Summary = strings.Join(links, ", ")
 	}

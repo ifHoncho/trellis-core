@@ -18,6 +18,7 @@
 #   make deploy     check, build and update every node in deploy.hosts
 #   make lab-scale  scale lab: 50 nodes, ID convergence and gossip volume (~6 min)
 #   make lab-rollout  rollout lab: a mesh-wide upgrade through 4 nodes (~3 min)
+#   make lab-sites  site link lab: two 3-node sites joined over WireGuard (~3 min)
 #   make nodes      show meshctl status from every node in deploy.hosts
 #   make band BAND=2g [CHANNEL=6]   switch mesh-profile.yaml to a band and push it to every node
 #   make profile    push mesh-profile.yaml to every node and apply it live
@@ -36,7 +37,7 @@ ARCHES   = arm64 arm armv6 amd64
 # and tested on these only.
 VOICE_ARCHES = arm64 amd64
 
-.PHONY: static lab-voice lab-rollout all build cross deb deb-test apt-repo apt-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: static lab-voice lab-rollout lab-sites all build cross deb deb-test apt-repo apt-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -151,6 +152,9 @@ lab-voice: build
 lab-rollout: build
 	./lab/rollout.sh
 
+lab-sites: build
+	./lab/sites.sh
+
 fmt:
 	@test -z "$$(gofmt -l cmd internal lab tools 2>/dev/null)" || { gofmt -l cmd internal lab tools; echo "run gofmt -w"; exit 1; }
 
@@ -178,7 +182,8 @@ gen:
 	  --enum nl80211_mntr_flags --enum nl80211_plink_state --enum nl80211_mesh_power_mode \
 	  --enum nl80211_survey_info --enum nl80211_bss \
 	  > internal/nl80211/consts_gen.go
-	gofmt -w internal/batadv/consts_gen.go internal/nl80211/consts_gen.go
+	python3 -I tools/genconst/genconst.py --header /usr/include/linux/wireguard.h --package wg > internal/wg/consts_gen.go
+	gofmt -w internal/batadv/consts_gen.go internal/nl80211/consts_gen.go internal/wg/consts_gen.go
 
 clean:
 	rm -rf bin dist

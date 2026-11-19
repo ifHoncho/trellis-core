@@ -93,3 +93,46 @@ func TestIsNodeAddress(t *testing.T) {
 		}
 	}
 }
+
+// A node ID change worked out from an identity read a moment earlier
+// keeps the site link key the API made meanwhile.
+func TestLoopIdentityChangeKeepsNewKey(t *testing.T) {
+	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile})
+	d.ident = &nodestate.Identity{MAC: "02:00:00:00:00:01", NodeID: 1, NodeIDSource: nodestate.IDDerived, SiteKey: "old-key"}
+	// The loop reads the identity, and decides on a new node ID.
+	next := *d.identity()
+	next.NodeID = 9
+	// Meanwhile the API gives the node a new key.
+	k, err := d.SiteLinkNewKey(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.setIdentityFromLoop(&next); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.sitePublicKey(); got != k.PublicKey || d.identity().NodeID != 9 {
+		t.Errorf("after both: key %q (the API answered %q), node ID %d", got, k.PublicKey, d.identity().NodeID)
+	}
+}
+
+// A new site link key is not a new address: the AP and the client ports,
+// which restart when the node is re-addressed, are left alone.
+func TestNewSiteKeyIsNotReaddressing(t *testing.T) {
+	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile})
+	d.ident = &nodestate.Identity{MAC: "02:00:00:00:00:01", NodeID: 1, NodeIDSource: nodestate.IDDerived, SiteKey: "old-key"}
+	gen := d.identityGen()
+	if _, err := d.SiteLinkNewKey(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.identityGen(); got != gen {
+		t.Errorf("a new site link key counted as a re-addressing (generation %d -> %d)", gen, got)
+	}
+	next := *d.identity()
+	next.NodeID = 9
+	if err := d.setIdentityFromLoop(&next); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.identityGen(); got == gen {
+		t.Error("a new node ID did not count as a re-addressing")
+	}
+}

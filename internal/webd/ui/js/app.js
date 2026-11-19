@@ -15,7 +15,8 @@ import { voice } from './views/voice.js';
 import { alertsView } from './views/alerts.js';
 import { settings } from './views/settings.js';
 import { gate } from './views/gate.js';
-import { refreshConfig } from './config.js';
+import { refreshConfig, followProfile, unsavedOn, pendingChange, replacing, startReplacing, stopReplacing, cancelPending } from './config.js';
+import { clock } from './time.js';
 
 const ROUTES = [
   { id: 'overview', label: 'Overview', icon: 'overview', view: overview, tab: true },
@@ -57,6 +58,7 @@ async function pollVoice() {
 
 function onStatus(st) {
   state.status = st;
+  followProfile(st);
   noteAlerts(st.warnings);
   if (st.regulatory.active_mode !== 'unrestricted' && regDismissed(st)) setRegDismissed(st, false);
   state.statusAt = Date.now();
@@ -151,7 +153,22 @@ function navLink(r, cls = '') {
   const n = r.id === 'alerts' ? alerts() : [];
   const bad = n.some((w) => w.level === 'error');
   return h('a', { href: '#/' + r.id, 'aria-current': state.route === r.id ? 'page' : null, class: cls },
-    icon(r.icon), h('span', r.label), n.length ? h('span.count', { class: bad ? 'bad' : '' }, n.length) : null);
+    icon(r.icon), h('span', r.label), n.length ? h('span.count', { class: bad ? 'bad' : '' }, n.length) : null,
+    // Edits on that page that are not saved or sent yet.
+    unsavedOn(r.id) ? h('span.unsaved', { title: 'Changes on this page are not saved yet', role: 'img', 'aria-label': 'changes not saved' }) : null);
+}
+
+// setTitle names the browser tab after the node and the page, with the
+// alerts that need attention in front: several nodes in several tabs stay
+// apart.
+function setTitle() {
+  const st = state.status;
+  const who = st ? st.node.callsign : (state.session && state.session.callsign) || '';
+  const r = ROUTES.find((x) => x.id === state.route);
+  const n = st && state.session && state.session.authenticated ? alerts().length : 0;
+  const t = [who, r ? r.label : '', 'Trellis'].filter(Boolean).join(' · ');
+  const title = (n ? `(${n}) ` : '') + t;
+  if (document.title !== title) document.title = title;
 }
 
 function rail() {
@@ -237,6 +254,27 @@ function banners() {
   const st = state.status;
   const out = [];
   if (state.problem) out.push(h('div.banner.bad', dot('bad'), h('span', h('b', 'No status: '), state.problem, '.')));
+  // A mesh-wide change on its way shows on every page: until the switch,
+  // no other change is sent to every node (it would replace this one).
+  const mc = pendingChange(st);
+  if (mc) {
+    const secs = Math.max(0, Math.round((Date.parse(mc.apply_at) - Date.now()) / 1000));
+    const cancelled = state.ui.sent && state.ui.sent.what === 'cancel' && state.ui.sent.revision === mc.revision && mc.sender;
+    out.push(h('div.banner', dot('warn'), h('span', h('b', cancelled ? 'A change was cancelled. ' : 'Mesh-wide change on its way. '),
+      cancelled
+        ? `Every node keeps the profile it runs, as revision ${mc.revision}, at ${clock(mc.apply_at)} (in ${duration(secs)}). `
+        : `Revision ${mc.revision} of the profile from ${mc.sender ? 'this node' : mc.from}: every node switches at ${clock(mc.apply_at)} (in ${duration(secs)}). `,
+      replacing(st)
+        ? h('span', 'Replacing it: the editors show its profile. Correct it and send, and yours goes in its place. ')
+        : h('a', { href: '#/settings/profile' }, 'Where it stands')),
+    // A wrong change can be put right before it lands: replaced by a
+    // corrected one, or cancelled.
+    cancelled ? null : replacing(st)
+      ? h('span.banner-actions', h('button.btn.small.ghost', { type: 'button', onclick: stopReplacing, title: 'Leave the change on its way as it is' }, 'Keep it'))
+      : h('span.banner-actions',
+        h('button.btn.small.ghost', { type: 'button', onclick: startReplacing, title: 'Open the editors on this change’s profile, to send a corrected one in its place' }, 'Replace it…'),
+        h('button.btn.small.ghost', { type: 'button', onclick: cancelPending, title: 'Every node keeps the profile it runs now' }, 'Cancel it…'))));
+  }
   if (st && st.regulatory.active_mode === 'unrestricted') {
     if (!regDismissed(st)) {
       out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted regulatory mode. '), REG_TEXT,
@@ -255,7 +293,7 @@ function dialog() {
   const d = state.dialog;
   if (!d) return null;
   return h('div.scrim', { onpointerdown: (e) => { if (e.target === e.currentTarget && !d.modal) closeDialog(); } },
-    h('div.dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': d.title },
+    h('div.dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': d.title, tabindex: '-1' },
       h('div.dialog-head', h('h2', d.title)),
       h('div.dialog-body', d.body ? d.body() : null),
       h('div.dialog-foot', (d.actions || []).map((a) => button(a.label, a.run, a.kind || '', { disabled: a.disabled && a.disabled() })))));
@@ -288,6 +326,7 @@ function app() {
         h('main.main', { key: state.route }, needsStatus && !state.status ? waiting() : state.route === 'more' ? more() : r.view()),
         tabbar()));
   }
+  setTitle();
   return h('div', { id: 'app-root' }, body, dialog(), toasts());
 }
 
@@ -314,6 +353,21 @@ window.addEventListener('hashchange', () => {
 document.addEventListener('visibilitychange', () => { if (!document.hidden) pollTopology(); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.dialog && !state.dialog.modal) closeDialog();
+  // Tab stays inside an open dialog.
+  if (e.key === 'Tab' && state.dialog) {
+    const box = document.querySelector('.dialog');
+    if (!box) return;
+    const els = [...box.querySelectorAll('button, a[href], input, select, textarea')].filter((x) => !x.disabled && x.offsetParent !== null);
+    if (!els.length) { e.preventDefault(); return; }
+    const first = els[0], last = els[els.length - 1];
+    if (!box.contains(document.activeElement) || document.activeElement === box) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+});
+// Leaving the page with changes not saved or not sent: the browser asks.
+window.addEventListener('beforeunload', (e) => {
+  if (unsavedOn('settings') || unsavedOn('internet') || unsavedOn('voice')) { e.preventDefault(); e.returnValue = ''; }
 });
 // Ages ("last report 9 s ago") move on even when nothing arrives.
 setInterval(() => { if (state.session && state.session.authenticated) redraw(); }, 1000);

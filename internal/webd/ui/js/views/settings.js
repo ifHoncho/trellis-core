@@ -4,11 +4,12 @@ import { get, put, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill } from '../ui.js';
 import { bandName, since, duration, count, plural, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
-import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig } from '../config.js';
+import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig, changeLock, editProfile, sentPending, noteUnsaved } from '../config.js';
 import { channelsSection } from './channels.js';
 import { appearanceSection } from './appearance.js';
 import { softwarePanel, meshUpgradePanel } from './software.js';
 import { linkFields, linkLine, linkOrder, nextLink } from '../links.js';
+import { clock, stamp } from '../time.js';
 
 const SECTIONS = [
   ['node', 'Node'], ['wifi', 'Wi-Fi'], ['internet', 'Internet'], ['ports', 'Ports'],
@@ -139,8 +140,8 @@ function meshChangePanel(mc) {
   const at = new Date(mc.apply_at);
   const secs = Math.max(0, Math.round((at - Date.now()) / 1000));
   const when = mc.state === 'pending'
-    ? `Every node switches at ${at.toLocaleTimeString()} (in ${secs} s).`
-    : mc.state === 'applied' ? `In force since ${at.toLocaleTimeString()}.` : `It failed here: ${mc.error}`;
+    ? `Every node switches at ${clock(at)} (in ${secs} s).`
+    : mc.state === 'applied' ? `In force since ${clock(at)}.` : `It failed here: ${mc.error}`;
   const nodes = mc.nodes || [];
   const have = nodes.filter((n) => n.state === 'has it').length;
   return panel('Mesh-wide change', { meta: `revision ${mc.revision} · from ${mc.sender ? 'this node' : mc.from}` },
@@ -156,14 +157,17 @@ function profileSection(d, st) {
   // A change goes to every node unless the operator chooses this node only
   // (or no other node is known).
   ui.scope ||= (st.nodes || []).length ? 'mesh' : 'node';
-  const cur = state.config.profile;
+  const cur = editProfile();
   if (!ui.draft || ui.for !== JSON.stringify(cur)) { ui.draft = JSON.parse(JSON.stringify(cur)); ui.for = JSON.stringify(cur); ui.fields = {}; }
   const p = ui.draft;
   const changed = JSON.stringify(p) !== ui.for;
+  // Only a change this editor sent makes its draft "sent".
+  const mine = sentPending('profile', st);
+  noteUnsaved('profile', changed && !mine);
   const send = async (input, scope = 'node') => {
     ui.busy = true; ui.fields = {}; redraw();
     try {
-      const res = scope === 'mesh' ? await saveMeshProfile(input, ui.delay) : await saveProfile(input);
+      const res = scope === 'mesh' ? await saveMeshProfile(input, ui.delay, 'profile') : await saveProfile(input);
       if (res && res.applied) { ui.replace = false; ui.code = ''; }
     } catch (e) {
       for (const f of e.fields || []) ui.fields[f.field] = f.message;
@@ -171,6 +175,10 @@ function profileSection(d, st) {
     }
     ui.busy = false; redraw();
   };
+  // A mesh-wide change on its way: another sent to every node now would
+  // replace it and drop what it changes (the node refuses that). Changing
+  // this node only stays possible.
+  const waits = !!changeLock(st) && ui.scope === 'mesh';
   const unrestricted = p.regulatory.mode === 'unrestricted';
   // Which of the profile's links this node has a radio for, and what the
   // other nodes say about their radios: what a channel change has to fit.
@@ -191,6 +199,13 @@ function profileSection(d, st) {
           h('div', linkLine({ ...l, running_width_mhz: live[i] && live[i].running_width_mhz }), here(i))))],
         ['Regulatory', cur.regulatory.mode === 'unrestricted' ? h('span.warn', 'unrestricted') : `country (${cur.regulatory.country})`],
         ['Addresses', cur.prefix],
+        // The site link is part of the profile: its members are edited
+        // on the Internet page, where its state shows.
+        ['Site link', (cur.site_link && (cur.site_link.members || []).length)
+          ? h('span', `${cur.site_link.members.length} member${cur.site_link.members.length === 1 ? '' : 's'} at ${new Set(cur.site_link.members.map((m) => m.site)).size} site${new Set(cur.site_link.members.map((m) => m.site)).size === 1 ? '' : 's'}`,
+              h('span.faint', '  ·  '), h('a', { href: '#/internet' }, 'state and members →'))
+          : h('span', h('span.sans.dim', 'none'), h('span.faint', '  ·  '), h('a', { href: '#/internet' }, 'set one up →'))],
+        ['Revision', h('span', String(cur.revision || 0), h('span.sans.dim', cur.change && cur.change.by ? `  ·  last changed for every node from ${cur.change.by}, ${stamp(cur.change.at)}` : '  ·  never changed for every node at once'))],
         ['Secret', h('span.sans.dim', 'kept on the node; shared only through “Share with another node”')],
       ]),
       // A node that cannot carry every link uses some of them only.
@@ -239,8 +254,9 @@ function profileSection(d, st) {
               h('select.select', { value: String(ui.delay), onchange: (e) => { ui.delay = Number(e.target.value); } },
                 [[30, '30 seconds'], [60, '1 minute'], [120, '2 minutes'], [300, '5 minutes']].map(([v, l]) => h('option', { value: String(v) }, l)))) : null),
           h('div.row',
-            changed ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
-            button(ui.busy ? 'Checking…' : ui.scope === 'mesh' ? 'Review and send' : 'Review and change', () => send({ profile: p }, ui.scope), 'primary', { disabled: !changed || ui.busy }))))),
+            changed && !mine ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
+            button(ui.busy ? 'Checking…' : waits ? 'Waiting for the switch…' : ui.scope === 'mesh' ? 'Review and send' : 'Review and change', () => send({ profile: p }, ui.scope), 'primary',
+              { disabled: !changed || ui.busy || waits, title: waits ? 'A mesh-wide change is on its way: a second one now would replace it and drop what it changes' : null }))))),
     panel('Move this node to another mesh', {},
       ui.replace
         ? h('div.form',

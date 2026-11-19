@@ -33,12 +33,22 @@ export function toast(message, tone = 'ok', ms = 4500) {
 }
 
 // dialog: {title, body: () => Node[], actions: [{label, kind, run}]}
-export function openDialog(d) { state.dialog = d; redraw(); }
+// The keyboard goes into a dialog when it opens (Tab then walks its
+// controls, Escape closes it) and back to where it was when it closes.
+let focusBefore = null;
+export function openDialog(d) {
+  if (!state.dialog) focusBefore = document.activeElement;
+  state.dialog = d;
+  redraw();
+  requestAnimationFrame(() => { const el = document.querySelector('.dialog'); if (el && !el.contains(document.activeElement)) el.focus(); });
+}
 export function closeDialog() {
   const d = state.dialog;
   state.dialog = null;
   if (d && d.onclose) d.onclose();
   redraw();
+  if (!state.dialog && focusBefore && document.contains(focusBefore)) { try { focusBefore.focus(); } catch (e) { /* gone */ } }
+  if (!state.dialog) focusBefore = null;
 }
 
 const HIST = 90; // three minutes at one sample every two seconds

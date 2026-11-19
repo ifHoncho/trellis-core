@@ -274,7 +274,21 @@ func IsProfileCode(text string) bool {
 	return strings.HasPrefix(strings.TrimSpace(text), ProfileCodePrefix)
 }
 
-// DecodeProfileCode parses, defaults and validates a profile code.
+// KeepUncoded gives p, decoded from a profile code, what a code does not
+// carry: the talk groups and the site link of cur, when cur is the same
+// mesh. A code is small enough to scan and holds the mesh's name, secret,
+// links and routing settings only; installed or sent on a mesh that has
+// talk groups or a site link, it would otherwise take them away. A node
+// new to the mesh gets them over the mesh, with the next change.
+func (p *Profile) KeepUncoded(cur *Profile) {
+	if cur == nil || cur.MeshID != p.MeshID {
+		return
+	}
+	p.Voice, p.SiteLink = cur.Voice, cur.SiteLink
+}
+
+// DecodeProfileCode parses, defaults and validates a profile code. See
+// KeepUncoded for what a code leaves out.
 func DecodeProfileCode(code string) (*Profile, error) {
 	code = strings.TrimSpace(code)
 	if !strings.HasPrefix(code, ProfileCodePrefix) {

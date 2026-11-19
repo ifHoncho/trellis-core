@@ -4,6 +4,7 @@ import { state, history } from '../state.js';
 import { panel, stat, table, pill, spark, kv, dot } from '../ui.js';
 import { mbps, ago, since } from '../fmt.js';
 import { internetSummary } from './overview.js';
+import { siteLink } from './sitelink.js';
 
 function path(st) {
   const g = st.gateway;
@@ -94,5 +95,7 @@ export function internet() {
         ['Devices ask', h('span', '10.73.0.1'.replace('10.73.0.1', st.client_network.anycast.address || '–'), h('span.sans.dim', ' (this node, at the address every node answers on)'))],
         ['.mesh names', h('span.sans', 'answered here, from what the nodes tell each other')],
         ['Other names', (g.dns || []).length ? h('span', g.dns.join(', '), h('span.sans.dim', g.selected && !g.selected.self ? ' (the gateway in use)' : ' (this node’s own resolvers)')) : h('span.sans.warn', 'nowhere to send them: they fail at once')],
-      ])));
+      ])),
+
+    siteLink(st));
 }

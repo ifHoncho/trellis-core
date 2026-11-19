@@ -26,6 +26,9 @@ type Table struct {
 	selfBoot uint64 // this node's boot value; 0: unknown, clones not detected
 	clone    *Peer  // last record from another node carrying self's MAC
 	now      func() time.Time
+	// Extra, when set, gives more originator addresses of a node than its
+	// record lists: ones every node can work out (site link tunnels).
+	Extra func(Record) []string
 }
 
 // NewTable creates a table that ignores records carrying selfMAC.
@@ -145,10 +148,20 @@ func (t *Table) Peers() []Peer {
 // interface) MAC.
 func (t *Table) ByOriginator(orig string) (Peer, bool) {
 	orig = strings.ToLower(orig)
-	for _, p := range t.Peers() {
+	peers := t.Peers()
+	for _, p := range peers {
 		for _, o := range p.Record.Orig {
 			if strings.ToLower(o) == orig {
 				return p, true
+			}
+		}
+	}
+	if t.Extra != nil {
+		for _, p := range peers {
+			for _, o := range t.Extra(p.Record) {
+				if strings.ToLower(o) == orig {
+					return p, true
+				}
 			}
 		}
 	}

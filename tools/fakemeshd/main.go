@@ -11,6 +11,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -100,6 +102,9 @@ type fake struct {
 	// A mesh-wide change this node sent (SetMeshProfile).
 	meshChange     *status.MeshChange
 	meshChangeSent time.Time
+	meshChangeTo   *config.Profile // the profile every node switches to
+	// siteKey is the demo node's site link key (SiteLinkNewKey changes it).
+	siteKey string
 	// oneRadio is a node with one dual-band USB adapter in a two-link
 	// profile: it meshes on one link, the other has no radio here.
 	oneRadio bool
@@ -135,6 +140,18 @@ func newFake(setup bool, password string, links int, bare bool) *fake {
 	}
 	p.Voice = config.VoicePlan{Groups: []config.VoiceGroup{{Number: 1, Name: "Command", Priority: true}, {Number: 2, Name: "Alpha"}, {Number: 3, Name: "Bravo"}, {Number: 4, Name: "Medevac"}}}
 	if !bare {
+		p.SiteLink = config.SiteLinkPlan{Members: []config.SiteMember{
+			{Name: "relay-1", Site: "hq", PublicKey: fakeSiteKeys[0], Endpoint: "hq.example.org:51873"},
+			{Name: "relay-2", Site: "hq", PublicKey: fakeSiteKeys[1], Endpoint: "198.51.100.23:51873"},
+			{Name: "truck-3", Site: "field", PublicKey: fakeSiteKeys[2]},
+			{Name: "ridge-9", Site: "ridge", PublicKey: fakeSiteKeys[3], Endpoint: "relay.example.net:51873"},
+			{Name: "depot-8", Site: "depot", PublicKey: fakeSiteKeys[4], Endpoint: "depot.example.com:51873"},
+		}}
+		// The depot, reached only over the site link: its member and a
+		// node behind it on its own air.
+		nodes = append(nodes, depotNodes...)
+	}
+	if !bare {
 		vol := 70
 		n.Voice = config.VoiceNode{Enable: true, Channels: config.VoiceChannels{A: config.VoiceChannel{Group: 1, Ear: "left", Volume: &vol}, B: config.VoiceChannel{Group: 2, Ear: "right"}}, Listen: []int{4}}
 	}
@@ -143,7 +160,7 @@ func newFake(setup bool, password string, links int, bare bool) *fake {
 		n.Callsign = "trellis-node"
 		n.NodeID = 0
 	}
-	return &fake{started: time.Now().Add(-3*time.Hour - 17*time.Minute), node: n, profile: p, setup: setup, password: password, mcast: 48211}
+	return &fake{started: time.Now().Add(-3*time.Hour - 17*time.Minute), node: n, profile: p, setup: setup, password: password, mcast: 48211, siteKey: fakeSiteKeys[0]}
 }
 
 // oneRadioNode makes the demo node one with a single dual-band adapter, on
@@ -153,6 +170,137 @@ func (f *fake) oneRadioNode() {
 	f.profile.Radio = config.RadioPlan{Band: config.Band2G, Channel: 6, Width: 20}
 	f.profile.Links = []config.RadioPlan{{Band: config.Band5G, Channel: 149, Width: 80}}
 	f.node.Radios.Devices = nil
+}
+
+// fakeSiteKeys are made-up WireGuard public keys; the first is this node's.
+var fakeSiteKeys = []string{
+	"q2Lw8mJ4c1vN0xTfR7yH3kPzS5aG9dE6uB4iO2nM1lY=",
+	"Zt5Wn3Xr8Kp1Qv7Lm2Hd9Fs4Gj6Bc0Ay3Ue5Io8Pk7M=",
+	"Rf4Tg7Yh2Uj5Ik8Ol1Pz3Xc6Vb9Nm0Qa4Ws7Ed2Rt5Y=",
+	"Mn8Bv5Cx2Zl9Kj6Hg3Fd0Sa7Pq4Wo1Ei8Ru5Ty2Ui9M=",
+	"Hx3Jc6Nv9Bq2Wd5Ef8Gr1Ty4Uk7Il0Om3Pa6Sd9Fg2E=",
+}
+
+// depotNodes are the depot site's: depot-8 holds the site link there, with
+// its tunnel to the demo node up; yard-9 is on the depot's air only. Not
+// in a bare demo (no site link).
+var depotNodes = []fnode{
+	{"depot-8", 150, "6a:dc:ee:10:00:08", "a0:b0:c0:80:3e:41", true, true, 2, 150},
+	{"yard-9", 151, "6a:dc:ee:10:00:09", "a0:b0:c0:90:61:c7", false, false, 3, 150},
+}
+
+// depotLink is the radio link between the depot's two nodes (indexes into
+// nodes once the depot is added).
+var depotLink = flink{7, 8, 36, 33, -60, -61}
+
+// siteKeyOf is the site link key a demo node tells the mesh: truck-3's is
+// the one the demo profile lists, the others' are made up from their
+// names. scout-7, on an older build, tells none.
+func siteKeyOf(callsign string) string {
+	switch callsign {
+	case "relay-1":
+		return fakeSiteKeys[0]
+	case "truck-3":
+		return fakeSiteKeys[2]
+	case "depot-8":
+		return fakeSiteKeys[4]
+	case "scout-7":
+		return ""
+	}
+	sum := sha256.Sum256([]byte("site key of " + callsign))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// siteLink is the demo node's part in the site link: a member at hq, one
+// peer up behind NAT, one not answering. A member added in the UI gets
+// no answer, with meshd's words for why.
+func (f *fake) siteLink(now time.Time) status.SiteLink {
+	sl := status.SiteLink{PublicKey: f.siteKey, Members: len(f.profile.SiteLink.Members), Peers: []status.SitePeer{}}
+	if _, ok := f.profile.SiteLink.Member(f.siteKey); !ok {
+		return sl
+	}
+	me, _ := f.profile.SiteLink.Member(f.siteKey)
+	sl.Member, sl.Site, sl.Address, sl.Port, sl.Endpoint = true, me.Site, config.SiteAddr(f.siteKey).String(), f.profile.SiteLink.ListenPort(), me.Endpoint
+	here := "this node"
+	if me.Endpoint != "" {
+		here += " (" + me.Endpoint + ")"
+	}
+	for _, m := range f.profile.SiteLink.Peers(f.siteKey) {
+		p := status.SitePeer{Name: m.Name, Site: m.Site, PublicKey: m.PublicKey, Endpoint: m.Endpoint, Interface: config.SiteIfname(m.PublicKey), Address: config.SiteAddr(m.PublicKey).String()}
+		check := ": check that the node there is up, has internet and has this profile, and that UDP reaches "
+		switch {
+		case m.PublicKey == fakeSiteKeys[2]:
+			p.Callsign = "truck-3"
+			p.Current, p.LastHandshake, p.Up = "203.0.113.77:41822", now.Add(-time.Duration(20+rand.IntN(90))*time.Second), true
+			p.RxBytes, p.TxBytes, p.Batman, p.Neighbors = 48_211_904+uint64(now.Sub(f.started).Seconds())*900, 31_870_115, true, 1
+		case m.PublicKey == fakeSiteKeys[4]:
+			p.Callsign, p.Resolved = "depot-8", "203.0.113.150"
+			p.Current, p.LastHandshake, p.Up = "203.0.113.150:51873", now.Add(-time.Duration(5+rand.IntN(100))*time.Second), true
+			p.RxBytes, p.TxBytes, p.Batman, p.Neighbors = 9_310_552+uint64(now.Sub(f.started).Seconds())*300, 7_204_118, true, 1
+		case m.PublicKey == fakeSiteKeys[3]:
+			p.Resolved, p.Current, p.LastHandshake = "192.0.2.61", "192.0.2.61:51873", now.Add(-47*time.Minute)
+			p.TxBytes = 412_330
+			p.Note = "it stopped answering 47m0s ago" + check + "it at " + m.Endpoint + ", or " + here + " from there (one of the two routers must forward the port)"
+		case m.Endpoint == "" && me.Endpoint == "":
+			p.Note = "neither this node nor it has an endpoint in the profile, so neither can dial the other: one of the two needs its public address and port there"
+		case m.Endpoint == "":
+			p.Note = "no answer yet" + check + here + fmt.Sprintf(" from there (it has no endpoint, so it dials; this node's router must forward UDP port %d to it)", sl.Port)
+		default:
+			p.Current, p.TxBytes = m.Endpoint, 14_800
+			p.Note = "no answer yet" + check + "it at " + m.Endpoint + " (its router must forward that port to it)"
+		}
+		// A node of the demo mesh listed at another site: next door.
+		for _, n := range nodes[1:] {
+			if k := siteKeyOf(n.callsign); k != "" && k == m.PublicKey && n.callsign != "truck-3" {
+				p.Callsign = n.callsign
+				p.Note = "it is a direct neighbour of this node (on mesh0): the two are at one place, and need no link over the internet. Members of one site take the same site name. Besides, " + p.Note
+			}
+		}
+		sl.Peers = append(sl.Peers, p)
+	}
+	return sl
+}
+
+// siteRoster is every member of the demo profile as the demo node knows
+// it: itself, the nodes of its mesh, and members it does not hear.
+func (f *fake) siteRoster(sl status.SiteLink) []status.SiteMemberState {
+	out := []status.SiteMemberState{}
+	for _, m := range f.profile.SiteLink.Members {
+		ms := status.SiteMemberState{Name: m.Name, Site: m.Site, PublicKey: m.PublicKey, Endpoint: m.Endpoint}
+		if m.PublicKey == f.siteKey {
+			ms.Self, ms.Heard, ms.Callsign, ms.Reported, ms.Peers = true, true, f.node.Callsign, true, len(sl.Peers)
+			for _, p := range sl.Peers {
+				if p.Up {
+					ms.Up++
+				}
+			}
+		}
+		for _, n := range nodes[1:] {
+			if k := siteKeyOf(n.callsign); k != "" && k == m.PublicKey {
+				ms.Heard, ms.Callsign = true, n.callsign
+				if s := f.nodeSite(n.callsign); s != nil {
+					ms.Reported, ms.Up, ms.Peers = true, s.Up, s.Peers
+				}
+			}
+		}
+		out = append(out, ms)
+	}
+	return out
+}
+
+// nodeSite is what a demo node says of its own part in the site link:
+// truck-3 has its tunnel to hq up, a node of this mesh listed in the UI
+// has none.
+func (f *fake) nodeSite(callsign string) *status.NodeSiteLink {
+	m, ok := f.profile.SiteLink.Member(siteKeyOf(callsign))
+	if !ok {
+		return nil
+	}
+	s := &status.NodeSiteLink{Site: m.Site, Peers: len(f.profile.SiteLink.Peers(m.PublicKey))}
+	if callsign == "truck-3" && s.Peers > 0 {
+		s.Up = 1
+	}
+	return s
 }
 
 // drift moves a figure by up to pct percent, differently every call.
@@ -165,13 +313,17 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	defer f.mu.Unlock()
 	now := time.Now()
 	f.mcast += uint64(rand.IntN(9))
+	// A mesh-wide change in force from its moment on.
+	if f.meshChangeTo != nil && f.meshChange != nil && now.After(f.meshChange.ApplyAt) {
+		f.profile, f.meshChangeTo = *f.meshChangeTo, nil
+	}
 	self := nodes[0]
 	st := &status.Status{
 		Version: "demo", Hostname: "relay-1", Time: now, StartedAt: f.started,
-		Node: status.Node{Callsign: f.node.Callsign, NodeID: self.id, NodeIDSource: "config", MAC: self.mac, Address: "10.73.12.1/16"},
+		Node: status.Node{Callsign: f.node.Callsign, NodeID: self.id, NodeIDSource: "config", MAC: self.mac, Address: "10.73.12.1/16", ConfigDigest: f.node.Digest()},
 		Profile: status.Profile{Name: f.profile.Name, MeshID: f.profile.MeshID, Band: f.profile.Radio.Band, Channel: f.profile.Radio.Channel,
 			FreqMHz: config.LinkFrequencyMHz(f.profile.Radio, f.profile.Regulatory.Country), WidthMHz: f.profile.Radio.Width, Prefix: f.profile.Prefix, PinnedBatman: "2026.3", MinBatman: "2024.0", OrigIntervalMS: 1000,
-			PositionsShared: f.profile.Positions.Shared()},
+			PositionsShared: f.profile.Positions.Shared(), Revision: f.profile.Revision, Digest: f.profile.Digest()},
 		// As on a node where trellis crda answers the kernel: the mode in
 		// force follows the profile.
 		Regulatory: status.Regulatory{RequestedMode: f.profile.Regulatory.Mode, Country: f.profile.Regulatory.Country, ActiveMode: f.profile.Regulatory.Mode,
@@ -270,6 +422,16 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: drift(far.tput, 6), Best: true})
 	}
 	st.Batman.Originators = append(st.Batman.Originators, status.Originator{MAC: nodes[4].orig, NextHop: nodes[3].orig, Via: "mesh0", LastSeenMS: 420, ThroughputMbps: drift(31, 6)})
+	// The depot, over the site link: the tunnel at the profile's figure,
+	// the paths through it at what the tunnels' hop penalty leaves of it.
+	if len(nodes) > 7 {
+		tun, depot, yard := config.SiteIfname(fakeSiteKeys[4]), nodes[7].orig, nodes[8].orig
+		mbit := float64(f.profile.SiteLink.ThroughputMbit())
+		st.Batman.Neighbors = append(st.Batman.Neighbors, status.Neighbor{MAC: depot, Via: tun, LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: mbit})
+		st.Batman.Originators = append(st.Batman.Originators,
+			status.Originator{MAC: depot, NextHop: depot, Via: tun, LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: 3.1, Best: true},
+			status.Originator{MAC: yard, NextHop: depot, Via: tun, LastSeenMS: uint32(rand.IntN(900)), ThroughputMbps: 3.1, Best: true})
+	}
 	// Neighbours on the last link too: batman-adv lists a node once per
 	// link it is heard on.
 	if k := len(st.MoreLinks); k > 0 && !f.oneRadio {
@@ -401,7 +563,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	}
 	for _, n := range nodes[1:] {
 		st.Nodes = append(st.Nodes, status.MeshNode{Callsign: n.callsign, NodeID: n.id, Address: fmt.Sprintf("10.73.%d.1", n.id), MAC: n.mac, Originators: []string{n.orig, linkMAC(n.orig)},
-			Version: "demo", Gateway: n.gw, WANHealthy: n.wanOK, HeardAgoMS: int64(rand.IntN(30000)), MeshRadios: n.radios()})
+			Version: "demo", Gateway: n.gw, WANHealthy: n.wanOK, HeardAgoMS: int64(rand.IntN(30000)), MeshRadios: n.radios(), SiteKey: siteKeyOf(n.callsign)})
 	}
 	st.Nodes[5].Version = "4a48da6+1104.072526"
 	// Each node's channel load per link, as gossip carries it; scout-7, on
@@ -422,6 +584,22 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	st.Reconcile = status.Reconcile{Passes: passes, LastPass: now.Add(-time.Duration(rand.IntN(14000)) * time.Millisecond), LastDuration: "118ms", Converged: true}
 	for _, name := range []string{"host", "radios", "meshlink", "meshlink2", "batman", "ports", "bridge", "filters", "anycast", "gateway", "gossip", "ap", "dhcp"} {
 		st.Reconcile.Reconcilers = append(st.Reconcile.Reconcilers, status.ReconcilerInfo{Name: name, LastChanged: f.started.Add(6 * time.Second), Changes: 1})
+	}
+	st.SiteLink = f.siteLink(now)
+	st.SiteLink.Roster = f.siteRoster(st.SiteLink)
+	// As meshd: a tunnel that is not up is an alert, in the peer's words.
+	for _, p := range st.SiteLink.Peers {
+		if !p.Up && p.Note != "" && (now.Sub(f.started) > 3*time.Minute) {
+			name := p.Name
+			if name == "" {
+				name = p.Callsign
+			}
+			st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Source: "sitelink", Code: "site-link-down",
+				Message: fmt.Sprintf("site link peer %s (site %s): %s", name, p.Site, p.Note)})
+		}
+	}
+	for i := range st.Nodes {
+		st.Nodes[i].SiteLink = f.nodeSite(st.Nodes[i].Callsign)
 	}
 	st.Process = status.Process{PID: 790, OpenFiles: 31, Goroutines: 34}
 	st.Warnings = append(st.Warnings,
@@ -460,7 +638,21 @@ func (f *fake) apJoin() *status.APJoin {
 func (f *fake) Config() api.ConfigResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return api.ConfigResult{Node: f.node.Redacted(), Profile: f.profile.Redacted(), Setup: status.Setup{Needed: f.setup, NodeConfig: !f.setup, Profile: !f.setup}}
+	out := api.ConfigResult{Node: f.node.Redacted(), Profile: f.profile.Redacted(), Setup: status.Setup{Needed: f.setup, NodeConfig: !f.setup, Profile: !f.setup},
+		NodeDigest: f.node.Digest(), ProfileDigest: f.profile.Digest()}
+	if f.meshChange != nil && f.meshChange.State == "pending" && f.meshChangeTo != nil {
+		r := f.meshChangeTo.Redacted()
+		out.PendingProfile = &r
+	}
+	return out
+}
+
+// stale is meshd's refusal of a change made from an old copy.
+func stale(base, now, what string) error {
+	if base == "" || base == now {
+		return nil
+	}
+	return api.Conflict("%s changed on the node since this change was started (from another browser, another node or meshctl): nothing was changed. Read it again, and make the change again", what)
 }
 
 func (f *fake) Kick(string)   {}
@@ -476,9 +668,12 @@ func eff(level, code, msg string) status.Warning {
 	return status.Warning{Level: level, Code: code, Message: msg}
 }
 
-func (f *fake) SetNode(ctx context.Context, raw []byte, dryRun bool) (*api.ApplyResult, error) {
+func (f *fake) SetNode(ctx context.Context, raw []byte, base string, dryRun bool) (*api.ApplyResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := stale(base, f.node.Digest(), "This node's configuration"); err != nil {
+		return nil, err
+	}
 	n, err := config.ParseNodeJSON(raw)
 	if err != nil {
 		return nil, err
@@ -662,6 +857,16 @@ func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryR
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// As meshd: a change on its way is replaced only on purpose; the
+	// profile in force, sent with replace, cancels it.
+	pending := f.meshChange
+	if pending == nil || pending.State != "pending" || f.meshChangeTo == nil {
+		pending = nil
+	}
+	if pending != nil && !in.Replace && (in.Base != "" || !dryRun) {
+		return nil, api.Conflict("a mesh-wide change from %s is on its way (every node switches at %s): sending this now would replace it and drop what it changes. Wait for the switch, or replace it on purpose (Replace it in the web UI; meshctl profile push --replace)", pending.From, pending.ApplyAt.Format("15:04:05"))
+	}
+	cancels := pending != nil && in.Replace && !res.Changed
 	delay := time.Minute
 	if in.DelaySeconds != 0 {
 		delay = time.Duration(in.DelaySeconds) * time.Second
@@ -687,18 +892,47 @@ func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryR
 		Message: fmt.Sprintf("Every node switches at %s (in %s): this one and ridge-2, truck-3, alpha-4, bravo-5 and ops-6.", at.Format("15:04:05"), delay)},
 		status.Warning{Level: "warning", Code: "mesh-change-old", Message: "scout-7 runs a version that cannot follow a mesh-wide change: install the profile there by hand, or it will keep the old one."})
 	res.ApplyAt, res.Nodes = &at, []string{"alpha-4", "bravo-5", "ops-6", "ridge-2", "truck-3"}
-	if dryRun {
+	if pending != nil {
+		what := ""
+		if pending.Summary != "" {
+			what = " (" + pending.Summary + ")"
+		}
+		if cancels {
+			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-cancelled", Message: fmt.Sprintf("This cancels the change from %s due at %s%s: every node keeps the profile it runs now, as a new revision.", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
+		} else {
+			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-replaced", Message: fmt.Sprintf("This replaces the change from %s due at %s%s: what that change sets and this profile does not is dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
+		}
+	}
+	if dryRun || (!res.Changed && !cancels) {
 		return res, nil
 	}
-	f.meshChange = &status.MeshChange{Revision: 4, ApplyAt: at, From: f.node.Callsign, Sender: true, State: "pending", Summary: "5 GHz · ch 149 at 80 MHz"}
-	f.meshChangeSent = time.Now()
-	res.Applied, res.Revision = true, 4
+	p, err := f.profileFrom(in.ProfileInput)
+	if err != nil {
+		return nil, err
+	}
+	p.Revision = f.profile.Revision + 1
+	if p.Revision < 4 {
+		p.Revision = 4
+	}
+	if pending != nil {
+		p.Revision = pending.Revision + 1
+	}
+	summary := "5 GHz · ch 149 at 80 MHz"
+	if n := len(p.SiteLink.Members); n > 0 {
+		summary += fmt.Sprintf(", site link with %d member%s", n, map[bool]string{true: "", false: "s"}[n == 1])
+	}
+	f.meshChange = &status.MeshChange{Revision: p.Revision, ApplyAt: at, From: f.node.Callsign, Sender: true, State: "pending", Summary: summary}
+	f.meshChangeSent, f.meshChangeTo = time.Now(), p
+	res.Applied, res.Revision = true, p.Revision
 	return res, nil
 }
 
 func (f *fake) SetProfile(ctx context.Context, in api.ProfileInput, dryRun bool) (*api.ApplyResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := stale(in.Base, f.profile.Digest(), "The mesh profile"); err != nil {
+		return nil, err
+	}
 	p, err := f.profileFrom(in)
 	if err != nil {
 		return nil, err
@@ -709,9 +943,9 @@ func (f *fake) SetProfile(ctx context.Context, in api.ProfileInput, dryRun bool)
 	// neighbours are all on its first link, it has one radio per band (so
 	// a second link on a band already used finds none), and the other
 	// nodes report their radios.
-	view := meshd.ProfileView{Peers: make([][]string, 1+len(f.profile.Links))}
+	view := meshd.ProfileView{Peers: make([][]string, 1+len(f.profile.Links)), Callsign: f.node.Callsign, SiteKey: f.siteKey}
 	for _, n := range nodes[1:] {
-		view.Nodes = append(view.Nodes, status.MeshNode{Callsign: n.callsign, MeshRadios: n.radios()})
+		view.Nodes = append(view.Nodes, status.MeshNode{Callsign: n.callsign, MeshRadios: n.radios(), SiteKey: siteKeyOf(n.callsign)})
 	}
 	for _, l := range links {
 		if l.a == 0 {
@@ -819,6 +1053,13 @@ func (f *fake) Topology(ctx context.Context) (*status.Topology, error) {
 		}
 		t.Links = append(t.Links, tl)
 	}
+	if len(nodes) > 7 {
+		mbit := float64(f.profile.SiteLink.ThroughputMbit())
+		t.Links = append(t.Links,
+			status.TopoLink{A: nodes[0].mac, B: nodes[7].mac, ABMbps: mbit, BAMbps: mbit, Medium: "site", AMAC: nodes[0].orig, BMAC: nodes[7].orig},
+			status.TopoLink{A: nodes[7].mac, B: nodes[8].mac, ABMbps: drift(depotLink.ab, 6), BAMbps: drift(depotLink.ba, 6),
+				ASignalDBm: depotLink.sigA, BSignalDBm: depotLink.sigB, Medium: "wifi", AMAC: nodes[7].orig, BMAC: nodes[8].orig, MeshLink: 1})
+	}
 	if k := len(f.profile.Links); k > 0 && !f.oneRadio {
 		for _, l := range lastLinks {
 			t.Links = append(t.Links, status.TopoLink{A: nodes[l.a].mac, B: nodes[l.b].mac, ABMbps: drift(l.ab, 6), BAMbps: drift(l.ba, 6),
@@ -826,6 +1067,20 @@ func (f *fake) Topology(ctx context.Context) (*status.Topology, error) {
 		}
 	}
 	return t, nil
+}
+
+// SiteLinkNewKey gives the demo node a made-up new key, refused for a
+// member without force as meshd does.
+func (f *fake) SiteLinkNewKey(force bool) (*api.SiteKey, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.profile.SiteLink.Member(f.siteKey); ok && !force {
+		return nil, api.Errorf(409, "this node holds the site link for site %q under its current key: with a new one it leaves the link until the profile lists the new key in its place (force to go on)", m.Site)
+	}
+	was := f.siteKey
+	sum := sha256.Sum256([]byte(was + time.Now().String()))
+	f.siteKey = base64.StdEncoding.EncodeToString(sum[:])
+	return &api.SiteKey{PublicKey: f.siteKey, Was: was}, nil
 }
 
 func (f *fake) IdentifyRadio(fp string, seconds int) error {

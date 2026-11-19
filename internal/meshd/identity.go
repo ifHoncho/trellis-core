@@ -39,12 +39,30 @@ func (d *Daemon) setIdentity(next *nodestate.Identity) error {
 	d.identMu.Lock()
 	prev := d.ident
 	d.ident = next
-	d.identGen++
+	// Only a new address is a re-addressing (the AP restarts, client
+	// ports flap so that devices lease again): a new site link key or AP
+	// passphrase is not.
+	if prev == nil || prev.NodeID != next.NodeID || !strings.EqualFold(prev.MAC, next.MAC) {
+		d.identGen++
+	}
 	d.identMu.Unlock()
 	if d.peers != nil && (prev == nil || !strings.EqualFold(prev.MAC, next.MAC)) {
 		d.peers.SetSelf(next.MAC)
 	}
 	return nil
+}
+
+// setIdentityFromLoop is setIdentity for the reconcile loop's changes (a
+// new node ID or MAC), which are worked out from an identity read a
+// moment earlier: the site link key is taken from the identity as it is
+// now, so that a key the API made meanwhile is not lost.
+func (d *Daemon) setIdentityFromLoop(next *nodestate.Identity) error {
+	d.identWriteMu.Lock()
+	defer d.identWriteMu.Unlock()
+	if cur := d.identity(); cur != nil {
+		next.SiteKey = cur.SiteKey
+	}
+	return d.setIdentity(next)
 }
 
 // reapplyNodeID follows a node_id change in a reloaded node.yaml: pinned,
@@ -59,7 +77,7 @@ func (d *Daemon) reapplyNodeID() {
 	if next.NodeID == cur.NodeID && next.NodeIDSource == cur.NodeIDSource {
 		return
 	}
-	if err := d.setIdentity(next); err != nil {
+	if err := d.setIdentityFromLoop(next); err != nil {
 		d.log.Error("cannot apply the new node_id", "err", err)
 		return
 	}

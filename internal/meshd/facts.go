@@ -18,6 +18,8 @@ type Facts struct {
 
 	// Firewall is what the firewall reconciler found in force.
 	Firewall firewallFacts
+	// SiteLink is what the site link reconciler set up (r_sitelink.go).
+	SiteLink siteLinkFacts
 
 	Radios      []*radio.Radio
 	Plan        *radio.Plan

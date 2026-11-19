@@ -72,10 +72,11 @@ func (d *Daemon) localLinks() (links []gossip.Link, more int) {
 	if d.bat == nil || batIfindex == 0 {
 		return nil, 0
 	}
-	local := map[int]string{}
+	local, site := map[int]string{}, map[int]bool{}
 	if hifs, err := d.bat.HardIfs(batIfindex); err == nil {
 		for _, h := range hifs {
 			local[h.Ifindex] = h.Address.String()
+			site[h.Ifindex] = strings.HasPrefix(h.Name, siteIfPrefix)
 		}
 	}
 	signal := map[string]int{}
@@ -94,11 +95,12 @@ func (d *Daemon) localLinks() (links []gossip.Link, more int) {
 	}
 	for _, n := range ns {
 		k := wifi[n.HardIfindex]
-		l := gossip.Link{Local: local[n.HardIfindex], Remote: n.Address.String(), Kbps: uint32(n.Throughput.Kbps()), Wired: k == 0, MeshLink: k}
+		l := gossip.Link{Local: local[n.HardIfindex], Remote: n.Address.String(), Kbps: uint32(n.Throughput.Kbps()),
+			Wired: k == 0 && !site[n.HardIfindex], Site: site[n.HardIfindex], MeshLink: k}
 		if l.Local == "" {
 			continue
 		}
-		if s := signal[l.Remote]; s < 0 && !l.Wired {
+		if s := signal[l.Remote]; s < 0 && k != 0 {
 			l.Signal = max(s, -150)
 		}
 		links = append(links, l)
@@ -306,7 +308,7 @@ func (d *Daemon) Topology(ctx context.Context) (*status.Topology, error) {
 		if r.GW != nil {
 			n.Gateway, n.WANHealthy = true, r.GW.Healthy
 		}
-		for _, o := range r.Orig {
+		for _, o := range d.originatorsOf(r) {
 			owner[strings.ToLower(o)] = id
 		}
 		// A report is used for three rounds, then the node counts as silent.
@@ -343,8 +345,11 @@ func (d *Daemon) Topology(ctx context.Context) (*status.Topology, error) {
 			}
 			key := min(a, b) + "|" + max(a, b)
 			medium := "wifi"
-			if l.Wired {
+			switch {
+			case l.Wired:
 				medium = "wired"
+			case l.Site:
+				medium = "site"
 			}
 			mbps := float64(l.Kbps) / 1000
 			if tl, ok := links[key]; !ok {

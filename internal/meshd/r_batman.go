@@ -39,6 +39,10 @@ type batmanReconciler struct {
 	// plugging a cable in and out does not start its 30 s start-up wait
 	// again each time.
 	blaIfindex int
+	// siteSet is what each site link tunnel was last told (throughput and
+	// hop penalty, by interface index): a module that takes the request
+	// and keeps another value is told once, not on every pass.
+	siteSet map[int][2]uint32
 }
 
 // defaultMcastFanout is batman-adv's own default for multicast_fanout.
@@ -202,7 +206,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 
 	// Hard interfaces.
-	desired := map[string]bool{}
+	desired, sites := map[string]bool{}, map[string]bool{}
 	// Every mesh link is a hard interface: BATMAN_V compares paths across
 	// them by throughput and uses the best one per destination.
 	d.facts.Read(func(f *Facts) {
@@ -213,6 +217,10 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			if l.Ifname != "" {
 				desired[l.Ifname] = true
 			}
+		}
+		for _, n := range f.siteIfnames() {
+			sites[n] = true
+			desired[n] = true
 		}
 	})
 	for _, port := range cfg.MeshPorts() {
@@ -255,7 +263,33 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	if err != nil {
 		return res, err
 	}
+	// A site link tunnel reports no speed, and BATMAN_V would take it for
+	// 1 Mbit/s: it is told the profile's figure (100 kbit/s units), and a
+	// hop penalty of its own, so that a path out of this site by one tunnel
+	// and back by another never beats a radio path within the site.
+	siteTP := uint32(profile.SiteLink.ThroughputMbit() * 10)
+	global := uint8(batadvDefaultHopPenalty)
+	if mesh.Settings.HopPenalty != nil {
+		global = *mesh.Settings.HopPenalty
+	}
+	siteHP := siteHopPenalty(siteTP, global)
+	told := map[int][2]uint32{}
 	for _, h := range hifs {
+		if sites[h.Name] && (h.ThroughputOverride != siteTP || h.HopPenalty != siteHP) {
+			want := [2]uint32{siteTP, uint32(siteHP)}
+			if b.siteSet[h.Ifindex] == want {
+				// Taken on an earlier pass, and not what the module
+				// reports: asking again changes nothing.
+				told[h.Ifindex] = want
+				warn("warning", "site-link-throughput", "batman-adv did not keep %s's settings (throughput %d.%d Mbit/s, hop penalty %d; it reports %d.%d and %d): paths over the site link may be ranked wrongly; a newer batman-adv is needed (meshctl prepare)",
+					h.Name, siteTP/10, siteTP%10, siteHP, h.ThroughputOverride/10, h.ThroughputOverride%10, h.HopPenalty)
+			} else if err := d.bat.SetHardIf(idx, h.Ifindex, nil, &siteTP, &siteHP); err != nil {
+				warn("warning", "site-link-throughput", "cannot set %s's throughput and hop penalty for batman-adv: %v", h.Name, err)
+			} else {
+				told[h.Ifindex] = want
+				res.Changed = true
+			}
+		}
 		if desired[h.Name] {
 			continue
 		}
@@ -267,6 +301,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			res.Changed = true
 		}
 	}
+	b.siteSet = told
 	if len(desired) == 0 {
 		warn("error", "no-hard-interfaces", "%s has no hard interfaces: no mesh radio and no wired mesh ports", BatIfname)
 	}
@@ -387,4 +422,48 @@ func (b *batmanReconciler) Teardown(ctx context.Context) error {
 		b.d.log.Info("removed interface", "name", BatIfname)
 	}
 	return err
+}
+
+// batadvDefaultHopPenalty is batman-adv's own hop penalty (out of 255,
+// mesh-interface.c), which Trellis leaves as it is; used only when the
+// module does not report it.
+const batadvDefaultHopPenalty = 30
+
+// siteRoundTripMax is the most a path may be worth (100 kbit/s units)
+// that leaves a site by one tunnel and comes back to it by another: less
+// than the slowest radio link a mesh carries (HaLow at 1 MHz, about
+// 0.8 Mbit/s), so that traffic between two parts of a site stays on the
+// air rather than crossing the internet twice.
+const siteRoundTripMax = 8
+
+// siteHopPenalty is the hop penalty given to every site link tunnel: the
+// lowest that keeps a round trip through another site at or below
+// siteRoundTripMax, so that one crossing, the only way between sites,
+// keeps as much of the figure as it can. At most 254: 255 would make every
+// path over a tunnel worth 0, which batman-adv drops.
+func siteHopPenalty(tp uint32, global uint8) uint8 {
+	for hp := 0; hp < 255; hp++ {
+		if siteRoundTrip(tp, uint8(hp), global) <= siteRoundTripMax {
+			return uint8(hp)
+		}
+	}
+	return 254
+}
+
+// siteCrossing is what a path from a member of another site is worth on
+// arrival over the tunnel: batman-adv takes a hard interface's own penalty
+// off what arrives on it (bat_v_ogm.c, batadv_v_forward_penalty).
+func siteCrossing(tp uint32, hp uint8) uint32 {
+	return uint32(uint64(tp) * uint64(255-uint32(hp)) / 255)
+}
+
+// siteRoundTrip is what a node's path to another member of its own site is
+// worth when it goes through a member of another site: the far member
+// takes the tunnel's penalty on arrival and batman-adv's own on passing it
+// on; this node takes the tunnel's penalty again. The same integer steps
+// as batman-adv's.
+func siteRoundTrip(tp uint32, hp, global uint8) uint32 {
+	t := siteCrossing(tp, hp)
+	t = uint32(uint64(t) * uint64(255-uint32(global)) / 255)
+	return siteCrossing(min(t, tp), hp)
 }

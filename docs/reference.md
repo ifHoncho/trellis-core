@@ -9,6 +9,7 @@ behaves. Start with the guide; come here when you need to know more.
 - [Setting a device up from a phone](#setting-a-device-up-from-a-phone)
 - [Changing the whole mesh](#changing-the-whole-mesh)
 - [Radios and mesh links](#radios-and-mesh-links)
+- [Linking sites over the internet](#linking-sites-over-the-internet)
 - [Access from outside the mesh](#access-from-outside-the-mesh)
 - [Regulatory modes](#regulatory-modes)
 - [Upgrading a device by itself](#upgrading-a-device-by-itself)
@@ -223,6 +224,31 @@ node.
 To keep the mesh together, send changes when every node is on and in
 reach, and from one place at a time.
 
+One change never undoes another unseen:
+
+- While a change is on its way, every page says so, and no second one
+  is sent to every node until the switch: it would replace the first and
+  drop what that one sets.
+- A wrong change can be put right before it lands. On the banner,
+  **Replace it** opens the editors on that change's profile: correct it
+  and send, and yours goes in its place. **Cancel it** sends the profile
+  the mesh runs now instead, so nothing changes at the switch. From the
+  command line: `meshctl profile push --replace FILE` (the mesh's own
+  profile file cancels).
+- A change made in the web UI from a profile, or from node settings, that
+  have changed on the node since the page read them (another browser,
+  another node, `meshctl`) is refused: the page reads them again and says
+  so. Edits not saved yet stay on the page, to be made again.
+- `meshctl profile edit` opens the profile the mesh runs in your editor
+  (`$EDITOR`), shows what the change does, and sends it once you
+  confirm. Like the web UI, it is refused when the profile changed on
+  the node while you were editing; your edits are kept in a file.
+- `meshctl profile push` with a file sends what the file says: the file
+  is the truth. Its review says when the file is older than the profile
+  the mesh runs (start from `meshctl profile edit`, or `meshctl profile
+  show`), and it is refused while another change is on its way unless
+  you add `--replace`.
+
 ## Radios and mesh links
 
 A mesh profile can have several **links**, each on its own band and
@@ -283,6 +309,93 @@ web addresses answer (a network that blocks them), the pings alone decide.
 
 The requests carry no cookies and no details about the node; the sites
 asked see the uplink's public address, as the ping targets do.
+
+## Linking sites over the internet
+
+Parts of one mesh in different places, each with internet, join into one
+mesh over the internet: one client network, names, gateways, ATAK and
+voice across all of them. The parts share one mesh profile. One or two
+nodes with an uplink at each site hold the link (members); two keep it up
+when one fails.
+
+1. On each member, read its key: `meshctl site`, or Internet → Site link
+   in the web UI. `meshctl site` prints the line to add to the profile.
+2. Add the members to the profile: Internet → Members in the web UI, or
+   the file. The web UI adds this node, and any node this one hears, by
+   name; a node at a site not linked yet goes in by its key.
+
+   ```yaml
+   site_link:
+     members:
+       - {name: hq-1, site: hq, public_key: "…", endpoint: "hq.example.org:51873"}
+       - {name: hq-2, site: hq, public_key: "…", endpoint: "203.0.113.7:51873"}
+       - {name: field-1, site: field, public_key: "…"}
+   ```
+
+   `endpoint` is where the other sites reach the member: its public
+   address or name, and the UDP port forwarded to it. Leave it out for a
+   member behind NAT: it dials out, and the members it links to need an
+   endpoint. Every member links to the members of the other sites.
+3. Send the profile to every node at one site (**Every node**, or
+   `meshctl profile push`).
+4. At each other site, install the same profile on one node:
+   `meshctl profile show > p.yaml` on a node that has it, then `meshctl
+   profile install p.yaml` there. The rest of that site takes it from that
+   node. (Pushing it again at the second site makes a second change; the
+   two are settled when the sites meet, with an alert.)
+5. Check: `meshctl site` on a member, or Internet → Site link, lists each
+   peer with its last handshake and its tunnel's state; `meshctl status`
+   shows the nodes of the other sites. A tunnel that is not up says why,
+   and what to look at: no endpoint at either end, a name that does not
+   resolve, no uplink on this node, or no answer from the other end.
+
+To take a member off, or the whole link down, remove it from the list
+and send the profile again, the same way: from one node while the link is
+up, or at each site. A peer stays listed on a member for as long as the
+profile lists it.
+
+The review before a profile is sent says when two sites could not dial
+each other (no endpoint at either), and when members listed at different
+sites already reach each other without a link: nodes at one place take
+the same site name, and do not link to each other.
+
+| Setting | Default | |
+|---|---|---|
+| `site_link.port` | 51873 | UDP port every member listens on; a member with its firewall closed opens it itself |
+| `site_link.mbit` | 10 | the speed batman-adv ranks a tunnel by, not a limit or a measurement; best left as it is: higher, and a gateway at another site competes with the site's own. Each tunnel also gets a hop penalty from it, so local traffic never goes out to another site and back |
+| `site_link.mtu` | 1420 | WireGuard's MTU; the tunnels inside carry 38 bytes less. Bigger frames still cross: batman-adv splits unicast, and broadcast goes as fragments inside WireGuard |
+| `site_link.multicast_kbit` | 1000 | broadcast and multicast each tunnel carries each way, in kbit/s; the rest is dropped at the tunnel |
+
+- A member's tunnel leaves by its own uplink only, never through the mesh.
+  A member without an uplink keeps trying until it has one.
+- A member needs `nft` (the `nftables` package, installed with Trellis):
+  it drops anything addressed as a tunnel's that did not come through
+  WireGuard, from its uplink network or the client network. `meshctl
+  site` says how many packets that was, when any.
+- A profile is passed from node to node whole, in one message of about
+  8 kB. A members list too long for that (about 40 members with names
+  and endpoints) is refused when it is reviewed, before anything is
+  sent.
+- While a member in reach says a tunnel of the site link that was up in
+  the last day is down, nodes do not look for the missing part of the
+  mesh on other channels (see [Changing the whole
+  mesh](#changing-the-whole-mesh)): the nodes of the other sites are
+  missing because of the link, and Alerts says so. A node that hears no
+  member at all still looks, and a tunnel that never came up does not
+  count.
+- `meshctl site --new-key`, or **New key…** on the Internet page, gives a
+  node a new key: for when the current one may have been copied. A member
+  leaves the link until the profile lists the new key in its place; the
+  web UI puts it into the members list, ready to send.
+- Any node shows how the link stands, member or not: `meshctl site`
+  lists every member with the tunnels it reports up, and the web UI's
+  Overview and Internet pages say the same.
+- What one site broadcasts, and multicast batman-adv floods, reaches
+  every node of the other sites, up to `site_link.multicast_kbit` per
+  tunnel: enough for ATAK and voice, not for video. Multicast to a few
+  listeners goes as unicast copies, which the budget does not count.
+- Nodes on a release before 0.3.0 cannot read a profile with a site link
+  and refuse it: upgrade every node first.
 
 ## Access from outside the mesh
 
@@ -400,9 +513,9 @@ DNS, if they do not resolve.
 
 | Page | What it shows |
 |---|---|
-| Overview | The node's state, its mesh links, nodes nearby, internet, warnings |
+| Overview | The node's state and clock, its mesh links, nodes nearby, internet, the site link, warnings |
 | Mesh | A live map of the mesh with link speeds, direct links, routes |
-| Internet | The node's uplink, the gateway in use, every gateway on the mesh |
+| Internet | The node's uplink, the gateway in use, every gateway on the mesh; the site link and its members |
 | Devices | Who is on the node's Wi-Fi and ports, the Wi-Fi QR code |
 | Radios | Every radio, what it can do, and which job it has |
 | Multicast | Whether multicast takes the efficient path, and why not |
@@ -411,6 +524,14 @@ DNS, if they do not resolve.
 
 Every change is checked first: when it would interrupt something (a link,
 the Wi-Fi, your own connection), the page says what before it is applied.
+A page with edits not saved or sent yet is marked in the menu, and the
+browser asks before it is closed.
+
+Times are shown in the zone of the device looking at the page, when the
+browser knows it; Settings → Appearance chooses another zone, or Zulu
+(UTC), which is also what shows when the device reports none. The
+Overview shows the node's clock that way, with Zulu beside it and where
+the node takes its time from; a clock that follows nothing is marked.
 The theme button cycles a dark, a light and a red night theme; Settings →
 Appearance chooses the dark and light ones (Trellis's own, or editor
 themes such as Nord, Gruvbox, Dracula, Catppuccin or Solarized). Everything

@@ -98,11 +98,13 @@ func sameYAML(a, b interface{ YAML(string) ([]byte, error) }) bool {
 }
 
 // SetNode replaces the node configuration with the JSON document raw.
-func (d *Daemon) SetNode(ctx context.Context, raw []byte, dryRun bool) (*api.ApplyResult, error) {
+func (d *Daemon) SetNode(ctx context.Context, raw []byte, base string, dryRun bool) (*api.ApplyResult, error) {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	cur, profile := d.conf()
-	setup := d.setupState()
+	if err := checkBase(base, d.Config().NodeDigest, "This node's configuration"); err != nil {
+		return nil, err
+	}
+	cur, profile, setup := d.confWritten()
 	n, err := config.ParseNodeJSON(raw)
 	if err != nil {
 		return nil, err
@@ -155,6 +157,10 @@ func (d *Daemon) profileFrom(in api.ProfileInput, cur *config.Profile, setup boo
 			if !errors.As(err, &es) {
 				err = api.Invalid("%v", err)
 			}
+		} else if !setup {
+			// A code for this mesh keeps what a code cannot carry.
+			p.KeepUncoded(cur)
+			err = p.Validate()
 		}
 	case in.YAML != "":
 		p, err = config.ParseProfile([]byte(in.YAML))
@@ -220,10 +226,15 @@ func newProfile(in api.NewProfile) (*config.Profile, error) {
 func (d *Daemon) SetProfile(ctx context.Context, in api.ProfileInput, dryRun bool) (*api.ApplyResult, error) {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	cur, curProfile := d.conf()
-	setup := d.setupState()
+	if err := checkBase(in.Base, d.Config().ProfileDigest, "The mesh profile"); err != nil {
+		return nil, err
+	}
+	cur, curProfile, setup := d.confWritten()
 	p, err := d.profileFrom(in, curProfile, setup.Needed)
 	if err != nil {
+		return nil, err
+	}
+	if err := profileFits(p); err != nil {
 		return nil, err
 	}
 	// A change on this node only is still based on the mesh-wide change it
@@ -235,6 +246,11 @@ func (d *Daemon) SetProfile(ctx context.Context, in api.ProfileInput, dryRun boo
 	res := &api.ApplyResult{Changed: setup.Needed || !sameYAML(*curProfile, *p), Effects: profileEffects(curProfile, p, setup.Needed, d.profileView(cur, curProfile, p))}
 	if setup.Needed {
 		res.AP = d.apJoinFor(cur, false)
+	}
+	// A mesh-wide change on its way replaces whatever is installed now.
+	if m := d.meshChangeState(); m != nil && m.State == "pending" && res.Changed {
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-pending", "A mesh-wide change from %s is on its way: at %s this node switches to it, and what is installed now is replaced.", m.From, m.ApplyAt.Format("15:04:05")))
+		sortEffects(res.Effects)
 	}
 	if dryRun || !res.Changed {
 		return res, nil
@@ -257,10 +273,12 @@ func (d *Daemon) SetProfile(ctx context.Context, in api.ProfileInput, dryRun boo
 func (d *Daemon) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*api.ApplyResult, error) {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	cur, curProfile := d.conf()
-	setup := d.setupState()
+	cur, curProfile, setup := d.confWritten()
 	p, err := d.profileFrom(in.ProfileInput, curProfile, setup.Needed)
 	if err != nil {
+		return nil, err
+	}
+	if err := profileFits(p); err != nil {
 		return nil, err
 	}
 	n := *cur
@@ -396,7 +414,7 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	}
 
 	// The firewall towards everything outside the mesh.
-	was, will := inputPolicy(cur), inputPolicy(n)
+	was, will := inputPolicy(cur, d.siteLinkPort(profile)), inputPolicy(n, d.siteLinkPort(profile))
 	openList := func(in *nft.Input) string {
 		ps := in.Ports()
 		if len(ps) == 0 {
@@ -613,11 +631,14 @@ type ProfileView struct {
 	// one it would run on ("" when it is off or not known). It follows a
 	// mesh link when it shares that link's radio.
 	APBand, APBandAfter string
+	// Callsign and SiteKey are this node's own: with the other nodes'
+	// (Nodes), which site link members are in this mesh already.
+	Callsign, SiteKey string
 }
 
 // profileView reads the live part of a profile change's effects.
 func (d *Daemon) profileView(n *config.Node, cur, p *config.Profile) ProfileView {
-	v := ProfileView{Wired: len(n.MeshPorts()) > 0, Nodes: d.meshNodes()}
+	v := ProfileView{Wired: len(n.MeshPorts()) > 0, Nodes: d.meshNodes(), Callsign: n.Callsign, SiteKey: d.sitePublicKey()}
 	if plan := d.previewPlan(n, p); plan != nil {
 		v.Carries = func(i int) bool { return plan.Link(i) != nil }
 		if l, ok := p.Link(plan.APLink); ok && plan.AP != nil {
@@ -927,6 +948,12 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			add("warning", "positions", "No node puts itself on the ATAK map or shares its position, and last known positions are forgotten (emissions control). Markers already on the phones go stale within 3 minutes. The phones' own positions are not affected: that is set in ATAK.")
 		}
 	}
+	if !setup {
+		for _, e := range siteLinkEffects(cur.SiteLink, p.SiteLink, v) {
+			meshChange = true
+			es = append(es, e)
+		}
+	}
 	if setup || cur.Regulatory != p.Regulatory {
 		meshChange = meshChange || !setup
 		if p.Regulatory.Mode == config.RegModeUnrestricted {
@@ -948,6 +975,133 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 	}
 	sortEffects(es)
 	return noNil(es)
+}
+
+// siteLinkEffects describes a change to the site link: members that join
+// or leave it, and its settings.
+func siteLinkEffects(cur, p config.SiteLinkPlan, v ProfileView) []status.Warning {
+	// Nothing about the site link changes: nothing to say, whatever else
+	// the profile changes.
+	if cur.ListenPort() == p.ListenPort() && cur.LinkMTU() == p.LinkMTU() && cur.ThroughputMbit() == p.ThroughputMbit() &&
+		cur.MulticastBudgetKbit() == p.MulticastBudgetKbit() && slices.Equal(cur.Members, p.Members) {
+		return nil
+	}
+	var es []status.Warning
+	name := func(m config.SiteMember) string {
+		n := m.Name
+		if n == "" {
+			n = m.PublicKey[:min(8, len(m.PublicKey))] + "…"
+		}
+		return n + " (site " + m.Site + ")"
+	}
+	var added, removed, moved []string
+	for _, m := range p.Members {
+		old, ok := cur.Member(m.PublicKey)
+		switch {
+		case !ok:
+			added = append(added, name(m))
+		case old.Site != m.Site || old.Endpoint != m.Endpoint:
+			moved = append(moved, name(m))
+		}
+	}
+	for _, m := range cur.Members {
+		if _, ok := p.Member(m.PublicKey); !ok {
+			removed = append(removed, name(m))
+		}
+	}
+	if len(added) > 0 {
+		es = append(es, effect("info", "site-link-members", "The site link gains %s: each member links over the internet to the members of the other sites.", listAnd(added)))
+	}
+	if len(removed) > 0 {
+		es = append(es, effect("warning", "site-link-members", "%s %s the site link: %s tunnels close, and parts of the mesh that met only through them go apart.",
+			listAnd(removed), map[bool]string{true: "leaves", false: "leave"}[len(removed) == 1], map[bool]string{true: "its", false: "their"}[len(removed) == 1]))
+	}
+	if len(moved) > 0 {
+		es = append(es, effect("info", "site-link-members", "The site or endpoint of %s changes.", listAnd(moved)))
+	}
+	// Settings mean something only where there are tunnels, before or
+	// after.
+	if len(cur.Members)+len(p.Members) == 0 {
+	} else if cur.ListenPort() != p.ListenPort() || cur.LinkMTU() != p.LinkMTU() {
+		es = append(es, effect("warning", "site-link-settings", "The site link's port or MTU changes: every tunnel restarts, and a member's uplink must let the new port in."))
+	} else if cur.ThroughputMbit() != p.ThroughputMbit() || cur.MulticastBudgetKbit() != p.MulticastBudgetKbit() {
+		es = append(es, effect("info", "site-link-settings", "The site link's throughput figure or broadcast budget changes."))
+	}
+	if len(p.Members) > 0 {
+		sites := map[string]bool{}
+		for _, m := range p.Members {
+			sites[m.Site] = true
+		}
+		if len(sites) < 2 {
+			es = append(es, effect("info", "site-link-one-site", "Every site link member is at one site: members link only to other sites, so nothing links yet."))
+		}
+	}
+	// Two sites none of whose members has an endpoint: neither side can
+	// dial. Said when the change makes it so.
+	if !slices.Equal(cur.Members, p.Members) {
+		for _, pair := range sitesWithoutEndpoint(p) {
+			es = append(es, effect("warning", "site-link-no-endpoint", "No member at site %s or at site %s has an endpoint, so neither can dial the other and the two do not link: give one member its public address and UDP port.", pair[0], pair[1]))
+		}
+	}
+	// Members at different sites that this mesh already holds, with no
+	// site link to have brought them together: they are at one place.
+	if curSites := siteNames(cur); len(curSites) < 2 {
+		here := map[string]string{}
+		if v.SiteKey != "" {
+			here[v.SiteKey] = v.Callsign
+		}
+		for _, n := range v.Nodes {
+			if n.SiteKey != "" {
+				here[n.SiteKey] = n.Callsign
+			}
+		}
+		var pairs []string
+		for i, a := range p.Members {
+			for _, b := range p.Members[i+1:] {
+				if a.Site != b.Site && here[a.PublicKey] != "" && here[b.PublicKey] != "" {
+					pairs = append(pairs, fmt.Sprintf("%s (site %s) and %s (site %s)", here[a.PublicKey], a.Site, here[b.PublicKey], b.Site))
+				}
+			}
+		}
+		if len(pairs) > 0 {
+			more := ""
+			if len(pairs) > 2 {
+				more = fmt.Sprintf(", and %d more pairs", len(pairs)-2)
+				pairs = pairs[:2]
+			}
+			es = append(es, effect("warning", "site-link-same-mesh", "%s%s already reach each other in this mesh, without a site link: they look to be at one place. Members of one site take the same site name and do not link to each other; a link between them over the internet is a detour at best.", listAnd(pairs), more))
+		}
+	}
+	return es
+}
+
+func siteNames(s config.SiteLinkPlan) []string {
+	var out []string
+	for _, m := range s.Members {
+		if !slices.Contains(out, m.Site) {
+			out = append(out, m.Site)
+		}
+	}
+	return out
+}
+
+// sitesWithoutEndpoint lists the pairs of sites none of whose members has
+// an endpoint.
+func sitesWithoutEndpoint(s config.SiteLinkPlan) [][2]string {
+	has := map[string]bool{}
+	for _, m := range s.Members {
+		has[m.Site] = has[m.Site] || m.Endpoint != ""
+	}
+	sites := siteNames(s)
+	var out [][2]string
+	for i, a := range sites {
+		for _, b := range sites[i+1:] {
+			if !has[a] && !has[b] {
+				out = append(out, [2]string{a, b})
+			}
+		}
+	}
+	return out
 }
 
 func deref(p *int) int {

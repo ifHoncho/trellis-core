@@ -20,6 +20,7 @@ import (
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,14 @@ type Record struct {
 	ProfileChange string `json:"pc,omitempty"`
 	// MeshChange: the node follows mesh-wide profile changes (offers).
 	MeshChange bool `json:"mc,omitempty"`
+	// SiteKey is the node's site link key (its WireGuard public key, 44
+	// characters of base64): the profile lists site link members by it,
+	// and with it the other nodes can name them.
+	SiteKey string `json:"sk,omitempty"`
+	// Site is the node's part in the site link while it is a member: its
+	// site, and how many of its tunnels are up. With it any node can say
+	// whether the sites are joined.
+	Site *SiteState `json:"sl,omitempty"`
 	// Regulatory is the profile's regulatory setting: "unrestricted", or
 	// "country:US". A mesh-wide change that alters it on another node says
 	// so before it is sent.
@@ -102,6 +111,19 @@ type Record struct {
 	// Rollout is the node's progress in the mesh-wide upgrade under way
 	// (internal/rollout), or nil.
 	Rollout *RolloutState `json:"ro,omitempty"`
+}
+
+// SiteState is a site link member's state: its site's name, the members
+// of other sites it tunnels to, and how many of those tunnels are up.
+// Lost counts the tunnels that are down now and were up within the last
+// day: the nodes behind them went out of reach with the tunnel. A tunnel
+// that never came up (two members that cannot dial each other, one that
+// is switched off for good) is not among them.
+type SiteState struct {
+	Site  string `json:"s"`
+	Up    int    `json:"u"`
+	Peers int    `json:"n"`
+	Lost  int    `json:"l,omitempty"`
 }
 
 // RolloutState is a node's progress in a mesh-wide upgrade.
@@ -346,6 +368,16 @@ func (r *Record) validate() error {
 	for _, e := range r.Links {
 		if _, _, _, ok := ParseLinkEntry(e); !ok || !printable(e, 24) {
 			return fmt.Errorf("link %q is not band/channel/width", e)
+		}
+	}
+	if r.SiteKey != "" {
+		if b, err := base64.StdEncoding.Strict().DecodeString(r.SiteKey); err != nil || len(b) != 32 {
+			return fmt.Errorf("site key is not a WireGuard public key")
+		}
+	}
+	if s := r.Site; s != nil {
+		if s.Site == "" || !printable(s.Site, 32) || s.Up < 0 || s.Peers < 0 || s.Up > s.Peers || s.Peers > 64 || s.Lost < 0 || s.Lost > s.Peers-s.Up {
+			return fmt.Errorf("bad site link state")
 		}
 	}
 	if r.ProfileChange != "" && !validChangeID(r.ProfileChange) {

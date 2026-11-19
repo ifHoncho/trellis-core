@@ -166,7 +166,7 @@ func TestSetNode(t *testing.T) {
 	}
 	put := func(n config.Node, dry bool) (*api.ApplyResult, error) {
 		raw, _ := json.Marshal(n)
-		return d.SetNode(ctx, raw, dry)
+		return d.SetNode(ctx, raw, "", dry)
 	}
 	// Sent back as it came: nothing changes, nothing is written.
 	before, _ := os.ReadFile(filepath.Join(dir, "node.yaml"))
@@ -226,7 +226,7 @@ func TestSetNode(t *testing.T) {
 	if _, err := put(n, false); !errors.As(err, &es) || es[0].Field != "callsign" {
 		t.Errorf("invalid callsign: %v", err)
 	}
-	if _, err := d.SetNode(ctx, []byte(`{"callsign":"x","nonsense":1}`), false); !errors.As(err, &es) {
+	if _, err := d.SetNode(ctx, []byte(`{"callsign":"x","nonsense":1}`), "", false); !errors.As(err, &es) {
 		t.Errorf("unknown field: %v", err)
 	}
 	if now, _ := os.ReadFile(filepath.Join(dir, "node.yaml")); string(now) != string(written) {
@@ -742,7 +742,7 @@ func TestConfigReadBackBeforeNextPass(t *testing.T) {
 	n := d.Config().Node
 	n.Callsign = "relay-7"
 	raw, _ := json.Marshal(n)
-	if res, err := d.SetNode(context.Background(), raw, false); err != nil || !res.Applied {
+	if res, err := d.SetNode(context.Background(), raw, "", false); err != nil || !res.Applied {
 		t.Fatalf("save: %+v %v", res, err)
 	}
 	if got, _ := d.conf(); got.Callsign != "node-1" {
@@ -782,5 +782,52 @@ func TestProfileEffectsLinkNotCarried(t *testing.T) {
 	}
 	if !hasEffect(es, "info", "link-added") {
 		t.Errorf("the new HaLow link is not mentioned: %+v", es)
+	}
+}
+
+// A profile code holds neither talk groups nor the site link. Installed
+// or sent on the mesh it is the code of, it keeps the node's; for another
+// mesh it brings none.
+func TestProfileCodeKeepsWhatItCannotCarry(t *testing.T) {
+	const more = `voice:
+  groups:
+    - {number: 1, name: Command}
+site_link:
+  members:
+    - {name: hq-1, site: hq, public_key: "q2Lw8mJ4c1vN0xTfR7yH3kPzS5aG9dE6uB4iO2nM1lY="}
+`
+	d, _ := testDaemon(t, map[string]string{"node.yaml": "schema: 0\ncallsign: node-1\n", "profile.yaml": testProfile + more})
+	ctx := context.Background()
+	if cur := d.Config().Profile; len(cur.Voice.Groups) != 1 || len(cur.SiteLink.Members) != 1 {
+		t.Fatalf("the test profile: %d groups, %d members", len(cur.Voice.Groups), len(cur.SiteLink.Members))
+	}
+	ex, err := d.ProfileExport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The mesh's own code changes nothing: not "the members leave".
+	res, err := d.SetProfile(ctx, api.ProfileInput{Code: ex.Code}, true)
+	if err != nil || res.Changed {
+		t.Fatalf("the mesh's own code, this node: %+v %v", res, err)
+	}
+	// Sent to every node it is read the same way (profileFrom).
+	_, cur := d.conf()
+	p, err := d.profileFrom(api.ProfileInput{Code: ex.Code}, cur, false)
+	if err != nil || len(p.Voice.Groups) != 1 || len(p.SiteLink.Members) != 1 {
+		t.Fatalf("the mesh's own code: %+v %v", p, err)
+	}
+	// Another mesh's code brings neither.
+	other, err := config.ParseProfile([]byte(testProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.MeshID = "another-mesh"
+	code, err := other.Code()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = d.profileFrom(api.ProfileInput{Code: code}, cur, false)
+	if err != nil || len(p.Voice.Groups) != 0 || len(p.SiteLink.Members) != 0 {
+		t.Fatalf("another mesh's code: %+v %v", p, err)
 	}
 }

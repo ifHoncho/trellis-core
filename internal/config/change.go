@@ -185,3 +185,26 @@ func lastN(s []string, n int) []string {
 	}
 	return s
 }
+
+// Digest is a short fingerprint of the profile, the secret left out: it
+// differs whenever what the profile says does. Status carries it, so that
+// whoever holds a copy of the configuration knows when to read it again.
+func (p Profile) Digest() string {
+	data, err := json.Marshal(p.Redacted())
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:6])
+}
+
+// Digest is a short fingerprint of the node configuration, secrets left
+// out: it differs whenever what the configuration says does.
+func (n Node) Digest() string {
+	data, err := json.Marshal(n.Redacted())
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:6])
+}

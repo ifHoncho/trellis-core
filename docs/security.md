@@ -141,6 +141,21 @@ shared. What limits a buggy or hostile member:
   stall (a node that does not move on its turn halts the rest after 15
   minutes) or cancel one, and send a node an older signed release that is
   still newer than what it runs.
+- **The site link** joins parts of the mesh over the internet with
+  WireGuard: a member is admitted by its own key, listed in the profile,
+  and each tunnel accepts only what its peer's key sends from that peer's
+  tunnel address. A table of the member's own keeps that true on every
+  interface: what is addressed to, or sent from, its tunnel address
+  anywhere but inside WireGuard is dropped (uplink network and client
+  network alike, firewall open or closed), and nothing is routed through
+  the WireGuard interface. Every node tells the mesh its public key (gossip); the
+  private key never leaves its identity file. What crosses is the mesh itself (batman-adv frames,
+  encrypted by WireGuard on the internet, where the radio links' SAE does
+  not reach). A member has to be reachable from the internet, or reach
+  out to one that is: its UDP port is open on its uplink, answered only
+  for a known key (WireGuard says nothing to anyone else). Anyone who can
+  change the profile (any member, A4) can add a member, or a key of their
+  own.
 - **What remains:** a captured node holds the mesh secret, and with it
   everything above: it can join, route, read the traffic it routes, and
   push mesh-wide changes (other links, other channels, unrestricted
@@ -222,3 +237,4 @@ is either fixed, or planned with its reason.
 | R8 | A release could be signed with the production key during a trial build, and would then be accepted everywhere. | **Fixed:** development builds are refused a release key unless forced, and trial releases refuse a trusted key. |
 | R9 | Client devices are not isolated from each other. | By design (R2); a per-port option to isolate a client could come later. |
 | R10 | Voice: trellis-voiced parses RTP and RTCP from any device on the mesh's client network and hands the audio to libopus (C), and a client can talk on any group. | It runs without capabilities in a sandbox (devices: ALSA, hidraw, input, USB serial ports and GPIO chips), fuzzed (`rtp`, `voice`); a CNAME is bounded and filtered to printable ASCII. It has no access to meshd's API: it is not in the `trellis` group, and reads its configuration (no secret in it) from a file meshd keeps for it. Its `input` group lets it read every input device of the node, a keyboard included. Talk groups are not authenticated: anyone on the client network can join or talk, as with the ATAK groups, and can also keep a group busy (a few packets a second refuse every PTT on it), end a talk with a forged RTCP BYE, or take every group over by claiming an all-call. The browser console (any signed-in admin) monitors and talks through the node: its WebSocket accepts only this UI's own origin with a session, ends with that session, and its frames are fuzzed (`webd:FuzzWSRead`). |
+| R11 | The site link puts the whole mesh's traffic on the internet between sites, and its members' UDP port on their uplinks. | WireGuard (Noise IK, a key per node) encrypts and authenticates it; an unknown key gets no answer. The port is opened only on members. A member drops tunnel traffic that is not inside WireGuard, on every interface (`inet trellis_site`), so neither its uplink network nor a client device can put frames into a tunnel. A captured member's key is removed from the profile like any member; a site's broadcasts reach every other site's radios, up to a budget per tunnel (`site_link.multicast_kbit`). |

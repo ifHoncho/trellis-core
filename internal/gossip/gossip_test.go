@@ -144,21 +144,25 @@ func TestOpenRejectsInvalidFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*Record){
-		"newline in callsign":  func(r *Record) { r.Callsign = "node-1\n10.0.0.66 example.com" },
-		"space in callsign":    func(r *Record) { r.Callsign = "node 1" },
-		"upper-case callsign":  func(r *Record) { r.Callsign = "Node-1" },
-		"address not an IP":    func(r *Record) { r.Addr = "10.73.1.1\nserver=1.1.1.1" },
-		"IPv6 address":         func(r *Record) { r.Addr = "fe80::1" },
-		"node id over 254":     func(r *Record) { r.ID = 300 },
-		"negative node id":     func(r *Record) { r.ID = -1 },
-		"bad mac":              func(r *Record) { r.MAC = "not-a-mac" },
-		"bad originator":       func(r *Record) { r.Orig = []string{"zz"} },
-		"escape in version":    func(r *Record) { r.Version = "1.0\x1b[2J" },
-		"overlong id source":   func(r *Record) { r.IDSource = "derived-and-then-some-more" },
-		"latitude over 90":     func(r *Record) { r.Pos = &Position{Lat: 91, Fix: 3} },
-		"longitude under -180": func(r *Record) { r.Pos = &Position{Lon: -180.5, Fix: 3} },
-		"no fix":               func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 1} },
-		"negative accuracy":    func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 2, Acc: -3} },
+		"newline in callsign":             func(r *Record) { r.Callsign = "node-1\n10.0.0.66 example.com" },
+		"space in callsign":               func(r *Record) { r.Callsign = "node 1" },
+		"upper-case callsign":             func(r *Record) { r.Callsign = "Node-1" },
+		"address not an IP":               func(r *Record) { r.Addr = "10.73.1.1\nserver=1.1.1.1" },
+		"IPv6 address":                    func(r *Record) { r.Addr = "fe80::1" },
+		"node id over 254":                func(r *Record) { r.ID = 300 },
+		"negative node id":                func(r *Record) { r.ID = -1 },
+		"bad mac":                         func(r *Record) { r.MAC = "not-a-mac" },
+		"bad originator":                  func(r *Record) { r.Orig = []string{"zz"} },
+		"escape in version":               func(r *Record) { r.Version = "1.0\x1b[2J" },
+		"overlong id source":              func(r *Record) { r.IDSource = "derived-and-then-some-more" },
+		"latitude over 90":                func(r *Record) { r.Pos = &Position{Lat: 91, Fix: 3} },
+		"longitude under -180":            func(r *Record) { r.Pos = &Position{Lon: -180.5, Fix: 3} },
+		"no fix":                          func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 1} },
+		"negative accuracy":               func(r *Record) { r.Pos = &Position{Lat: 1, Lon: 1, Fix: 2, Acc: -3} },
+		"site key not a key":              func(r *Record) { r.SiteKey = "not-a-key\x1b[2J" },
+		"site key too short":              func(r *Record) { r.SiteKey = "q2Lw8mJ4c1vN0xTfR7yH3kPzS5aG9dE6" },
+		"more tunnels up than there are":  func(r *Record) { r.Site = &SiteState{Site: "hq", Up: 3, Peers: 2} },
+		"more tunnels lost than are down": func(r *Record) { r.Site = &SiteState{Site: "hq", Up: 1, Lost: 2, Peers: 2} },
 	} {
 		r := rec("ea:67:61:6f:bc:8b", 7, 1)
 		mutate(r)
@@ -174,8 +178,10 @@ func TestOpenRejectsInvalidFields(t *testing.T) {
 	// assigned) and a dev build's version string.
 	r := rec("ea:67:61:6f:bc:8b", 7, 1)
 	r.Addr, r.Version, r.IDSource = "", "4a48da6-dirty+1109.181143", "derived"
+	r.SiteKey = "q2Lw8mJ4c1vN0xTfR7yH3kPzS5aG9dE6uB4iO2nM1lY="
+	r.Site = &SiteState{Site: "hq", Up: 1, Lost: 1, Peers: 3}
 	pkt, _ := Seal(k, r)
-	if _, err := Open(k, pkt); err != nil {
+	if got, err := Open(k, pkt); err != nil || got.SiteKey != r.SiteKey || got.Site == nil || got.Site.Lost != 1 {
 		t.Errorf("valid record refused: %v", err)
 	}
 }
@@ -392,5 +398,29 @@ func TestOpenCanonicalMACs(t *testing.T) {
 	l, _ := SealMessage(k, LinksMagic, &Links{V: 1, MAC: "02:00:00:00:00:0B", Nonce: 3, Links: []Link{{Local: "02:00:00:00:00:0C", Remote: "02:00:00:00:00:0D"}}})
 	if got, err := OpenLinks(k, l); err != nil || got.MAC != "02:00:00:00:00:0b" || got.Links[0].Local != "02:00:00:00:00:0c" || got.Links[0].Remote != "02:00:00:00:00:0d" {
 		t.Errorf("links: %+v %v", got, err)
+	}
+}
+
+// A node is found by an address its record does not list when Extra
+// works it out (site link tunnels).
+func TestByOriginatorExtra(t *testing.T) {
+	tb := NewTable("02:00:00:00:00:99")
+	r := rec("ea:67:61:6f:bc:8b", 7, 1)
+	r.SiteKey = "q2Lw8mJ4c1vN0xTfR7yH3kPzS5aG9dE6uB4iO2nM1lY="
+	tb.Update(r, "10.73.1.1")
+	if _, ok := tb.ByOriginator("02:aa:bb:cc:dd:ee"); ok {
+		t.Fatal("found without Extra")
+	}
+	tb.Extra = func(r Record) []string {
+		if r.SiteKey == "" {
+			return nil
+		}
+		return []string{"02:AA:bb:cc:dd:ee"}
+	}
+	if p, ok := tb.ByOriginator("02:aa:bb:cc:dd:ee"); !ok || p.Record.Callsign != "node-1" {
+		t.Errorf("not found by a worked-out address: %+v %v", p, ok)
+	}
+	if p, ok := tb.ByOriginator("a0:b0:c0:00:01:f1"); !ok || p.Record.Callsign != "node-1" {
+		t.Errorf("listed address: %+v %v", p, ok)
 	}
 }

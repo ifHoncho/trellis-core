@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -228,5 +229,118 @@ func TestSetMeshProfile(t *testing.T) {
 	in.DelaySeconds = 5
 	if _, err := d.SetMeshProfile(ctx, in, true); err == nil {
 		t.Error("a switch 5 s away was accepted")
+	}
+}
+
+// A profile with a site link is refused by releases before 0.3.0: the
+// review names them.
+func TestSetMeshProfileSiteLinkOld(t *testing.T) {
+	d, _, _ := meshChangeDaemon(t)
+	d.time = newTimeReconciler(d)
+	d.peers.Update(&gossip.Record{V: 1, MAC: "02:00:00:00:00:02", ID: 2, Callsign: "node-2", Addr: "10.73.2.1", Boot: 1, Seq: 1, MeshChange: true, Version: "0.2.1"}, "10.73.2.1")
+	d.peers.Update(&gossip.Record{V: 1, MAC: "02:00:00:00:00:03", ID: 3, Callsign: "node-3", Addr: "10.73.3.1", Boot: 1, Seq: 1, MeshChange: true, Version: "0.3.0"}, "10.73.3.1")
+	key := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	in := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 0, func(p *config.Profile) {
+		p.SiteLink.Members = []config.SiteMember{{Site: "hq", PublicKey: key}}
+	})}}
+	res, err := d.SetMeshProfile(context.Background(), in, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := effectText(res.Effects, "mesh-change-voice-old"); !strings.Contains(msg, "node-2 runs a release from before 0.3.0") || !strings.Contains(msg, "a site link") || strings.Contains(msg, "node-3") {
+		t.Errorf("old releases: %q", msg)
+	}
+	plain := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 0, nil)}}
+	if res, _ := d.SetMeshProfile(context.Background(), plain, true); hasEffect(res.Effects, "warning", "mesh-change-voice-old") {
+		t.Error("warned without voice or a site link")
+	}
+}
+
+// A profile too large for one offer reaches no other node: refused at the
+// review, with the field to shorten, rather than "sent" and lost.
+func TestProfileFits(t *testing.T) {
+	d, _, _ := meshChangeDaemon(t)
+	d.time = newTimeReconciler(d)
+	ctx := context.Background()
+	members := func(n int) func(*config.Profile) {
+		return func(p *config.Profile) {
+			// Keys whose tunnel addresses and interface names differ: two
+			// random keys now and then share one, which validation
+			// refuses (and this test failed on, a few runs in a hundred).
+			used := map[string]bool{}
+			for i := 0; i < n; i++ {
+				_, pub := siteTestKey(t)
+				for used[config.SiteAddr(pub).String()] || used[config.SiteIfname(pub)] {
+					_, pub = siteTestKey(t)
+				}
+				used[config.SiteAddr(pub).String()], used[config.SiteIfname(pub)] = true, true
+				p.SiteLink.Members = append(p.SiteLink.Members, config.SiteMember{
+					Name: fmt.Sprintf("relay-station-%02d", i), Site: fmt.Sprintf("site-%02d", i%32), PublicKey: pub,
+					Endpoint: fmt.Sprintf("relay-station-%02d.example.org:51873", i)})
+			}
+		}
+	}
+	// A list of ordinary size passes, and is sealed for real.
+	res, err := d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 0, members(12))}}, true)
+	if err != nil || !res.Changed {
+		t.Fatalf("12 members: %+v %v", res, err)
+	}
+	// The limit validation allows does not fit: said at the dry run, on
+	// the members.
+	big := profileAt(t, 40, 0, members(config.SiteLinkMaxMembers))
+	for name, try := range map[string]func() error{
+		"every node": func() error {
+			_, err := d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: big}}, true)
+			return err
+		},
+		"this node": func() error {
+			_, err := d.SetProfile(ctx, api.ProfileInput{YAML: big}, true)
+			return err
+		},
+	} {
+		err := try()
+		var es config.Errors
+		if !errors.As(err, &es) || len(es) != 1 || es[0].Field != "site_link.members" || !strings.Contains(err.Error(), "too large to pass from node to node") {
+			t.Errorf("%s: 64 members: %v", name, err)
+		}
+	}
+	// What passes the check seals with the longest change record.
+	p, err := config.ParseProfile([]byte(profileAt(t, 40, 0, members(30))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := profileFits(p); err != nil {
+		t.Fatalf("30 members: %v", err)
+	}
+}
+
+// A change that has just switched is in the file, and accepted, a pass
+// before it is in force. A change sent in that moment follows it: built on
+// the profile still in force, it would not count the change just made
+// among its earlier ones, and be taken for one made apart (lab P4 found
+// it: a cancel sent right after a switch became a conflict).
+func TestLatestProfileAfterSwitch(t *testing.T) {
+	d, _, key := meshChangeDaemon(t)
+	from := &net.UDPAddr{IP: net.ParseIP("10.73.2.1"), Port: gossip.Port}
+	id := config.NewChangeID()
+	at := time.Now().Add(100 * time.Millisecond)
+	switched := profileAt(t, 40, 3, func(p *config.Profile) {
+		p.Change = &config.ChangeInfo{ID: id, At: at.UTC().Truncate(time.Second), By: "picker"}
+	})
+	if err := d.handleProfileOffer(key, offer(t, key, gossip.Offer{Rev: 3, ApplyAtMS: at.UnixMilli(), Profile: switched}), from); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the switch", func() bool { c := d.meshChangeState(); return c != nil && c.State == "applied" })
+	if _, inForce := d.conf(); inForce.Revision == 3 {
+		t.Skip("the change is in force already: nothing between the file and the pass to test")
+	}
+	latest := d.latestProfile()
+	if latest.Revision != 3 || latest.ChangeID() != id {
+		t.Fatalf("the newest profile after a switch: revision %d, change %q; want 3, %q", latest.Revision, latest.ChangeID(), id)
+	}
+	next := *latest
+	next.StartChange(d.latestProfile(), time.Now().Add(time.Minute), "relay-1")
+	if !next.Knows(id) {
+		t.Error("a change made right after the switch does not count that change among its earlier ones")
 	}
 }

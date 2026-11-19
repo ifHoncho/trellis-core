@@ -130,7 +130,10 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 
 	// Node ID and identity conflicts (architecture §7.3), settled before
 	// this node's record goes out.
-	orig := hardIfMACs(batIndex)
+	// The record lists the radios' and wired ports' addresses. Site link
+	// tunnels are left out: any node works them out from the profile
+	// (siteTunnelMACs), and a member with many would not fit a record.
+	orig := meshIfMACs(batIndex)
 	if n := d.peers.Expire(); n > 0 {
 		d.log.Info("nodes left the gossip view", "count", n)
 		res.Changed = true
@@ -150,6 +153,8 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, ProfileChange: d.profile.ChangeID(), MeshChange: true,
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
 		Load:       d.gossipLoads(len(d.profile.AllLinks())),
+		SiteKey:    d.sitePublicKey(),
+		Site:       d.siteLinkGossip(),
 	}
 	r.Pos, r.NoPos = d.gossipPosition(time.Now())
 	r.Arch, r.Rollouts, _ = d.rolloutSelfCheck(ctx)
@@ -232,7 +237,7 @@ func (g *gossipReconciler) resolveConflicts(orig []string, warn func(level, code
 	case err != nil:
 		warn("error", "node-id-exhausted", "%v", err)
 	case dec.Next != nil:
-		if err := d.setIdentity(dec.Next); err != nil {
+		if err := d.setIdentityFromLoop(dec.Next); err != nil {
 			warn("error", "node-id-conflict", "cannot take a new identity: %v", err)
 			break
 		}
@@ -449,9 +454,38 @@ func (g *gossipReconciler) Stats() gossipStats {
 	return g.stats
 }
 
+// meshIfMACs is hardIfMACs without the site link's tunnels.
+func meshIfMACs(batIndex int) []string { return hardIfMACsFiltered(batIndex, false) }
+
+// siteTunnelMACs are the addresses of the site link tunnels the node of
+// record r holds, worked out from the profile in force; none when it is
+// not a member.
+func (d *Daemon) siteTunnelMACs(r gossip.Record) []string {
+	if r.SiteKey == "" {
+		return nil
+	}
+	_, profile := d.conf()
+	if profile == nil || len(profile.SiteLink.Members) == 0 {
+		return nil
+	}
+	return profile.SiteLink.TunnelMACs(r.SiteKey)
+}
+
+// originatorsOf is every batman-adv address of the node of record r: the
+// ones its record lists and its site link tunnels.
+func (d *Daemon) originatorsOf(r gossip.Record) []string {
+	extra := d.siteTunnelMACs(r)
+	if len(extra) == 0 {
+		return r.Orig
+	}
+	return append(append([]string(nil), r.Orig...), extra...)
+}
+
 // hardIfMACs lists the MACs of bat0's hard interfaces: the originator
 // addresses other nodes see in batman-adv.
-func hardIfMACs(batIndex int) []string {
+func hardIfMACs(batIndex int) []string { return hardIfMACsFiltered(batIndex, true) }
+
+func hardIfMACsFiltered(batIndex int, tunnels bool) []string {
 	if batIndex == 0 {
 		return nil
 	}
@@ -461,6 +495,9 @@ func hardIfMACs(batIndex int) []string {
 	}
 	var out []string
 	for _, l := range links {
+		if !tunnels && strings.HasPrefix(l.Attrs().Name, siteIfPrefix) {
+			continue
+		}
 		if l.Attrs().MasterIndex == batIndex && l.Attrs().HardwareAddr != nil {
 			out = append(out, l.Attrs().HardwareAddr.String())
 		}
@@ -479,7 +516,7 @@ func (d *Daemon) meshNodes() []status.MeshNode {
 	for _, p := range d.peers.Peers() {
 		r := p.Record
 		n := status.MeshNode{
-			Callsign: r.Callsign, NodeID: r.ID, Address: r.Addr, MAC: r.MAC, Originators: r.Orig, Version: r.Version,
+			Callsign: r.Callsign, NodeID: r.ID, Address: r.Addr, MAC: r.MAC, Originators: d.originatorsOf(r), Version: r.Version,
 			HeardAgoMS: now.Sub(p.LastHeard).Milliseconds(), IDConflict: self != nil && r.ID == self.NodeID,
 		}
 		if r.GW != nil {
@@ -494,6 +531,10 @@ func (d *Daemon) meshNodes() []status.MeshNode {
 			n.Position = &p
 		}
 		n.PositionOff = r.NoPos
+		n.SiteKey = r.SiteKey
+		if s := r.Site; s != nil {
+			n.SiteLink = &status.NodeSiteLink{Site: s.Site, Up: s.Up, Peers: s.Peers}
+		}
 		out = append(out, n)
 	}
 	return out

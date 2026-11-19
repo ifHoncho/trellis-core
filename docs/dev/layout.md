@@ -20,6 +20,7 @@ Everything else is under `internal/`, except:
 | `nodestate` | Persistent identity (bat0 MAC, node ID) and radio memory under `/var/lib/trellis` | — |
 | `gnl` | Generic netlink connection that replaces its socket after any failed request and retries interrupted dumps | generic netlink |
 | `batadv` | batman-adv client: version gate, settings get/set, hard interfaces, originators, neighbours, gateways, multicast flags | generic netlink `batadv` |
+| `wg` | WireGuard interfaces: read and configure (key, port, mark, peers changed in place), keys | generic netlink `wireguard` |
 | `nl80211` | Radio capabilities (bands, channels, power, iftypes, combinations), interface create/delete, regulatory domain, TX power, station info, events | generic netlink `nl80211` |
 | `rtnl` | Link helpers and batman-adv link creation with `IFLA_BATADV_ALGO_NAME` | rtnetlink |
 | `sysfs` | Bus, port, USB/PCI ids, serial, USB speed, rfkill for a wiphy | sysfs |
@@ -77,36 +78,42 @@ it changed anything.
    config, supervise it, read its state, record SAE failures; remove a
    peer's leftover entry when it moved to another link, and a peer the
    kernel does not hold as established.
-5. `batman`: module version gate, `bat0` (BATMAN_V, identity MAC), settings
+5. `sitelink`: on a member of the profile's site link, `site0` (WireGuard)
+   with a peer per member of another site, a gretap to each, the tunnel
+   addresses' table, the rules that keep WireGuard's packets off the
+   mesh, and the `inet trellis_site` table that keeps the tunnels'
+   packets inside WireGuard (architecture §13, Site link); on any other
+   node, none of it.
+6. `batman`: module version gate, `bat0` (BATMAN_V, identity MAC), settings
    from architecture §6, hard interfaces (every mesh link and wired `mesh`
    ports), and the broadcast warm-up after `bat0` is created.
-6. `ports`: wired ports and their roles (`auto` probes each one).
-7. `bridge`: `br-mesh` with `bat0`, the AP and wired client ports, node
+7. `ports`: wired ports and their roles (`auto` probes each one).
+8. `bridge`: `br-mesh` with `bat0`, the AP and wired client ports, node
    address `10.73.N.1/16`.
-8. `filters`: the nftables `bridge trellis` table (architecture §7.7),
+9. `filters`: the nftables `bridge trellis` table (architecture §7.7),
    applied atomically with `nft -f` and re-applied if anything removes it.
-9. `anycast`: `anycast0`, a macvlan on `br-mesh` with `10.73.0.1/32` and the
+10. `anycast`: `anycast0`, a macvlan on `br-mesh` with `10.73.0.1/32` and the
    mesh-wide MAC `02:74:72:65:6c:01`, plus the §7.4 sysctls and a permanent
    bridge FDB entry so the bridge hands those frames to it without flooding.
    Withheld while the filters are not in place: it would leak mesh-wide.
-10. `gateway`: WAN detection and probing, batman-adv `gw_mode`, gateway
+11. `gateway`: WAN detection and probing, batman-adv `gw_mode`, gateway
    selection (plus a 500 ms monitor goroutine that kicks the loop on a
    change), policy rules and tables, the `inet trellis` table (pinning marks,
    NAT), IPv4 forwarding, and the DNS upstream for dnsmasq.
-11. `time`: the mesh's time servers for chrony, from gossip.
-12. `survey`: each link's channel load, sampled every 10 s.
-13. `findmesh`: a node that hears half or fewer of the nodes it knew
+12. `time`: the mesh's time servers for chrony, from gossip.
+13. `survey`: each link's channel load, sampled every 10 s.
+14. `findmesh`: a node that hears half or fewer of the nodes it knew
    scans for the rest on other channels and visits where it hears them
    (architecture §12.6); also the alert after a conflict was settled.
-14. `gossip`: the gossip socket on `br-mesh`, this node's record (sent on
+15. `gossip`: the gossip socket on `br-mesh`, this node's record (sent on
    change), expiry, node ID conflict warnings, and asking for a newer mesh
    profile.
-15. `positions`: this node's position on the ATAK map, and the last known
+16. `positions`: this node's position on the ATAK map, and the last known
    positions of nodes that left.
-16. `ap`: hostapd (WPA2-PSK, SSID = callsign, generated passphrase kept in
+17. `ap`: hostapd (WPA2-PSK, SSID = callsign, generated passphrase kept in
    `identity.yaml`), channel chosen away from the mesh frequency, or the
    mesh link's when they share a radio.
-17. `dhcp`: dnsmasq serving `10.73.N.100–199` with router and DNS `10.73.0.1`,
+18. `dhcp`: dnsmasq serving `10.73.N.100–199` with router and DNS `10.73.0.1`,
    authoritative (foreign leases are NAKed), `.mesh` names for every node
    from gossip, outside names forwarded to the selected gateway.
 
@@ -118,7 +125,7 @@ restoring the kernel's wlan interface on radios Trellis took over.
 | Path | Contents |
 |---|---|
 | `/etc/trellis/node.yaml`, `/etc/trellis/profile.yaml` | configuration |
-| `/var/lib/trellis/identity.yaml` | node MAC, ID and the generated AP passphrase. `identity.yaml.bak` is its copy, used when the file is damaged or missing (an empty file with no backup gets a new identity); remove both to give a node a new identity |
+| `/var/lib/trellis/identity.yaml` | node MAC, ID, the generated AP passphrase and the site link's private key. `identity.yaml.bak` is its copy, used when the file is damaged or missing (an empty file with no backup gets a new identity); remove both to give a node a new identity |
 | `/var/lib/trellis/web-admin.yaml` | the web UI's admin password, as a salted hash (0600) |
 | `/var/lib/trellis/setup-profile.yaml` | the private mesh profile of a node in setup mode; removed once it is provisioned |
 | `/var/lib/trellis-web/` | webd's TLS certificate and key (owned by webd's own user) |

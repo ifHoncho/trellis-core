@@ -5,8 +5,9 @@ import { post } from '../api.js';
 import { state, redraw, toast } from '../state.js';
 import { panel, field, toggle, button, kv, table, notice, pill, dot } from '../ui.js';
 import { count } from '../fmt.js';
-import { ensureConfig, cfg, saveBar, saveMeshProfile, saveNode } from '../config.js';
+import { ensureConfig, cfg, saveBar, saveMeshProfile, saveNode, changeLock, editProfile, sentPending, noteUnsaved } from '../config.js';
 import { consoleState, start, stop, setMonitor, setMix, mixOf, setName, setTx, pttDown, pttUp } from '../console.js';
+import { clock } from '../time.js';
 
 const EARS = [['left', 'Left ear'], ['right', 'Right ear'], ['both', 'Both ears']];
 const err = (name) => cfg().fields[name];
@@ -242,18 +243,24 @@ function headsetPanel(vs, d) {
 // groupsPanel edits the profile's talk groups and sends them to every node.
 function groupsPanel(st) {
   const ui = (state.ui.voiceGroups ||= { draft: null, for: '', fields: {}, busy: false });
-  const cur = state.config.profile;
+  const cur = editProfile();
   const curGroups = JSON.stringify((cur.voice && cur.voice.groups) || []);
   if (!ui.draft || ui.for !== curGroups) { ui.draft = JSON.parse(curGroups); ui.for = curGroups; ui.fields = {}; }
   const gs = ui.draft;
   const changed = JSON.stringify(gs) !== ui.for;
+  // A mesh-wide change on its way: nothing more is sent until every node
+  // has switched (a second change would replace it).
+  const waits = !!changeLock(st);
+  // Only a change this editor sent makes its draft "sent".
+  const mine = sentPending('voice', st);
+  noteUnsaved('voice', changed && !mine);
   const others = (st.nodes || []).length;
   const send = async () => {
     ui.busy = true; ui.fields = {}; redraw();
     try {
       const p = JSON.parse(JSON.stringify(cur));
       p.voice = { ...(p.voice || {}), groups: gs };
-      await saveMeshProfile({ profile: p }, 60);
+      await saveMeshProfile({ profile: p }, 60, 'voice');
     } catch (e) {
       for (const f of e.fields || []) ui.fields[f.field] = f.message;
       toast(e.message.split('\n')[0], 'bad', 7000);
@@ -276,8 +283,9 @@ function groupsPanel(st) {
         button('Add a talk group', () => { const n = free(); gs.push({ number: n, name: '' }); redraw(); }, 'small', { disabled: gs.length >= 16 }),
         h('span.hint', 'Up to 16. A group is a multicast address and port: an ATAK Voice plugin joins one with the same address and port, protocol RTP.')),
       h('div.row.end',
-        changed ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
-        button(ui.busy ? 'Checking…' : others ? 'Review and send to every node' : 'Review and save', send, 'primary', { disabled: !changed || ui.busy }))));
+        changed && !mine ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy }) : null,
+        button(ui.busy ? 'Checking…' : waits ? 'Waiting for the switch…' : others ? 'Review and send to every node' : 'Review and save', send, 'primary',
+          { disabled: !changed || ui.busy || waits, title: waits ? 'A mesh-wide change is on its way: a second one now would replace it and drop what it changes' : null }))));
 }
 
 // consolePanel is this browser as an operator: it monitors talk groups
@@ -345,7 +353,7 @@ function consolePanel(vstate) {
           title: 'Every talk group at once, for urgent messages: it goes out even where someone is talking, and Trellis nodes switch to it.', ...press(true) },
           h('span.vptt-word', allWord), h('span.vptt-sub', all && c.ptt === 'talking' ? `${c.groups.length} groups · ${txSecs} s of 60` : `every group (${c.groups.length}), overrides`)))),
     c.log.length ? h('div.vlog', h('div.label', 'You talked'), c.log.slice(0, 6).map((x) =>
-      h('div.mono', `${x.at.toLocaleTimeString()}  ${x.group === 0 ? 'ALL CALL' : (c.groups.find((g) => g.number === x.group) || {}).name || x.group}  ${x.s} s`))) : null);
+      h('div.mono', `${clock(x.at)}  ${x.group === 0 ? 'ALL CALL' : (c.groups.find((g) => g.number === x.group) || {}).name || x.group}  ${x.s} s`))) : null);
 }
 
 export function voice() {

@@ -90,6 +90,9 @@ type Profile struct {
 	Positions Positions `yaml:"positions,omitempty" json:"positions"`
 	// Voice: the mesh's push-to-talk talk groups.
 	Voice VoicePlan `yaml:"voice,omitempty" json:"voice"`
+	// SiteLink joins parts of this mesh in different places over the
+	// internet (sitelink.go).
+	SiteLink SiteLinkPlan `yaml:"site_link,omitempty" json:"site_link"`
 	// Revision counts mesh-wide changes: a profile sent to every node
 	// (meshd meshchange.go) carries a higher one, and a node takes only a
 	// profile whose revision is higher than its own. 0 for a profile that
@@ -943,6 +946,7 @@ func (p *Profile) Validate() error {
 		es.add("batman.pinned_version", "must look like 2026.3 (got %q)", p.Batman.PinnedVersion)
 	}
 	p.Voice.validate(&es)
+	p.SiteLink.validate(&es)
 	if p.Change != nil {
 		p.Change.validate(&es)
 	}

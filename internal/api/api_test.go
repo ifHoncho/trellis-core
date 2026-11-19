@@ -59,7 +59,7 @@ func (f *fakeProvider) Reload() error { return errors.New("bad config: callsign:
 func (f *fakeProvider) APJoin() (*status.APJoin, error) {
 	return &status.APJoin{Enabled: true, SSID: "node-1", Passphrase: "secret12", WiFiQR: "WIFI:T:WPA;S:node-1;P:secret12;;"}, nil
 }
-func (f *fakeProvider) SetNode(ctx context.Context, raw []byte, dryRun bool) (*ApplyResult, error) {
+func (f *fakeProvider) SetNode(ctx context.Context, raw []byte, base string, dryRun bool) (*ApplyResult, error) {
 	f.node, f.dry = raw, dryRun
 	n, err := config.ParseNodeJSON(raw)
 	if err != nil {
@@ -90,6 +90,10 @@ func (f *fakeProvider) Setup(ctx context.Context, in SetupInput, dryRun bool) (*
 func (f *fakeProvider) Topology(ctx context.Context) (*status.Topology, error) {
 	return &status.Topology{Nodes: []status.TopoNode{{ID: "02:00:00:00:00:01", Self: true}}, Links: []status.TopoLink{}}, nil
 }
+func (f *fakeProvider) SiteLinkNewKey(force bool) (*SiteKey, error) {
+	return &SiteKey{PublicKey: "new", Was: "old"}, nil
+}
+
 func (f *fakeProvider) IdentifyRadio(fp string, seconds int) error {
 	if fp == "" {
 		return Errorf(http.StatusNotFound, "no radio with fingerprint %q is present", fp)

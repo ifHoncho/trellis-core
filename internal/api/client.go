@@ -159,6 +159,15 @@ func (c *Client) Reload(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/reload", nil, nil)
 }
 
+// SiteLinkNewKey gives the node a new site link key.
+func (c *Client) SiteLinkNewKey(ctx context.Context, force bool) (*SiteKey, error) {
+	var out SiteKey
+	if err := c.do(ctx, http.MethodPost, "/site-link/key", SiteKeyInput{Force: force}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // APJoin fetches the client-AP credentials.
 func (c *Client) APJoin(ctx context.Context) (*status.APJoin, error) {
 	var out status.APJoin

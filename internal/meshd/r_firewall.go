@@ -9,6 +9,7 @@ import (
 	"meridian/trellis/internal/nft"
 	"meridian/trellis/internal/proc"
 	"meridian/trellis/internal/reconcile"
+	"meridian/trellis/internal/wg"
 )
 
 // firewallOpenNotice is the status line of a node open from outside.
@@ -44,7 +45,7 @@ func (f *firewallReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		res.Warnings = append(res.Warnings, reconcile.Warning{Level: level, Code: code, Message: fmt.Sprintf(format, args...)})
 	}
 	set := func(fw firewallFacts) { d.facts.Update(func(fa *Facts) { fa.Firewall = fw }) }
-	in := inputPolicy(d.cfg)
+	in := inputPolicy(d.cfg, d.siteLinkPort(d.profile))
 	if f.nftPath == "" {
 		p, err := proc.LookPath("nft")
 		if err != nil {
@@ -136,13 +137,19 @@ type firewallFacts struct {
 // inputPolicy is the firewall the node configuration asks for (nil: open).
 // The mesh side (loopback, the bridge, the anycast gateway) is never
 // filtered; from elsewhere: SSH unless turned off, the web UI where it is
-// served beyond the mesh (web.wan_access), and the ports listed.
-func inputPolicy(cfg *config.Node) *nft.Input {
+// served beyond the mesh (web.wan_access), and the ports listed. sitePort,
+// when not 0, is the site link's: the node is a member, its UDP port is
+// open and site0 is inside (a peer is a member of the mesh, and WireGuard
+// lets through only what its key's address sends).
+func inputPolicy(cfg *config.Node, sitePort int) *nft.Input {
 	fw := cfg.Firewall
 	if !fw.Closed() {
 		return nil
 	}
 	in := &nft.Input{Inside: []string{"lo", BridgeIfname, AnycastIfname}}
+	if sitePort != 0 {
+		in.Inside = append(in.Inside, SiteIfname)
+	}
 	seen := map[string]bool{}
 	add := func(proto string, port int) {
 		k := fmt.Sprintf("%s/%d", proto, port)
@@ -168,5 +175,29 @@ func inputPolicy(cfg *config.Node) *nft.Input {
 			add(proto, port)
 		}
 	}
+	if sitePort != 0 {
+		add("udp", sitePort)
+	}
 	return in
+}
+
+// siteLinkPort is the site link's UDP port when this node is a member of
+// the profile's site link, or 0.
+func (d *Daemon) siteLinkPort(p *config.Profile) int {
+	id := d.identity()
+	if id == nil || p == nil || len(p.SiteLink.Members) == 0 {
+		return 0
+	}
+	k, err := wg.ParseKey(id.SiteKey)
+	if err != nil {
+		return 0
+	}
+	pub, err := k.PublicKey()
+	if err != nil {
+		return 0
+	}
+	if _, ok := p.SiteLink.Member(pub.String()); !ok {
+		return 0
+	}
+	return p.SiteLink.ListenPort()
 }

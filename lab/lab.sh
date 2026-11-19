@@ -1239,7 +1239,10 @@ else
   # namespace that is not the node's and holds nothing but a loopback.
   caps=$(grep -E '^Cap(Inh|Prm|Eff|Bnd|Amb):' "/proc/$wpid/status" | awk '{print $2}' | sort -u | tr '\n' ' ')
   wns=$(readlink "/proc/$wpid/ns/net"); nns=$(readlink "/proc/$(cat "$RUN/node1/pid")/ns/net")
-  wifs=$(tail -n +3 "/proc/$wpid/net/dev" | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')
+  # The kernel's fallback tunnel devices (gre0, gretap0, erspan0, sit0,
+  # tunl0, ip6tnl0, ip6gre0, ip6_vti0, ip_vti0) appear, down, in every new
+  # namespace once their module is loaded (a site link loads ip_gre).
+  wifs=$(tail -n +3 "/proc/$wpid/net/dev" | cut -d: -f1 | tr -d ' ' | grep -vxE 'gre0|gretap0|erspan0|sit0|tunl0|ip6tnl0|ip6gre0|ip6_vti0|ip_vti0' | tr '\n' ' ')
   wcmd=$(tr '\0' ' ' < "/proc/$wpid/cmdline")
   # What a process without capabilities can do to the node's network, even
   # from inside the node's own namespace: nothing.
@@ -1507,6 +1510,81 @@ if [ "$NODES" -ge 3 ]; then
   else
     fail "P2 catch-up after missing a change" "push: $out; node1=rev$(rev 1) node2=rev$(rev 2); node 3 before: $before3, after: rev$(rev 3)/$(orig 3) (see $RUN/node3.log)"
   fi
+
+  # P3-P5 start from every node on revision 2.
+  all_at() { # all_at <revision> <orig_interval_ms> <seconds>: every node's file
+    local i ok
+    for _ in $(seq 1 "$(($3 * 2))"); do
+      ok=1
+      for i in $(seq 1 "$NODES"); do [ "$(rev "$i")" = "$1" ] && [ "$(orig "$i")" = "$2" ] || ok=0; done
+      [ "$ok" = 1 ] && return 0; sleep 0.5
+    done
+    return 1
+  }
+  now_at() { for i in $(seq 1 "$NODES"); do printf 'node%s=rev%s/%s ' "$i" "$(rev "$i")" "$(orig "$i")"; done; }
+  pending_on() { # pending_on <node> <revision>: the node holds that change, not yet switched
+    for _ in $(seq 1 20); do
+      [ "$(jsonq "$1" "(s.get('mesh_change') or {}).get('state','')+' '+str((s.get('mesh_change') or {}).get('revision',''))")" = "pending $2" ] && return 0; sleep 0.5
+    done
+    return 1
+  }
+  all_at 2 500 60 >/dev/null
+
+  # P3: a change on its way is replaced only on purpose. Node 1 sends
+  # revision 3 (700); node 2's push is refused while it waits, its review
+  # says how, and with --replace its own (800) goes instead.
+  out=$(push 1 700 60)
+  pending_on 2 3; had=$?
+  sed "s/orig_interval_ms: [0-9]*/orig_interval_ms: 800/" "$RUN/node2/profile.yaml" > "$RUN/push.yaml"
+  refused=$(ctl 2 profile push --in 15 --yes "$RUN/push.yaml" 2>&1); rc=$?
+  review=$(ctl 2 profile push --in 15 "$RUN/push.yaml" 2>&1)
+  still=1; pending_on 2 3 || still=0
+  sent=$(ctl 2 profile push --in 15 --yes --replace "$RUN/push.yaml" 2>&1 | tail -1)
+  if [ "$had" = 0 ] && [ "$rc" != 0 ] && echo "$refused" | grep -q 'is on its way' && echo "$review" | grep -q 'add --yes --replace' && [ "$still" = 1 ] && all_at 4 800 40; then
+    pass "P3 a push while node 1's change waited was refused (it kept waiting); the review said to add --replace; with it node 2's went instead, and every node runs revision 4 (800), never 700"
+  else
+    fail "P3 replacing a change on its way" "first: $out; had it: $had; refused (rc $rc): $refused; review: $(echo "$review" | tail -1); still pending: $still; replace: $sent; now: $(now_at)"
+  fi
+
+  # P4: cancelling one. Node 1 sends revision 5 (900); node 3 sends the
+  # profile it runs, with --replace: every node keeps 800, as revision 6.
+  out=$(push 1 900 60)
+  pending_on 3 5; had=$?
+  cp "$RUN/node3/profile.yaml" "$RUN/push.yaml"
+  sent=$(ctl 3 profile push --in 15 --yes --replace "$RUN/push.yaml" 2>&1)
+  if [ "$had" = 0 ] && echo "$sent" | grep -q 'This cancels the change from' && all_at 6 800 40; then
+    pass "P4 node 3 cancelled node 1's change (900) by sending the profile in force with --replace: every node runs revision 6, still 800"
+  else
+    fail "P4 cancelling a change on its way" "first: $out; had it: $had; cancel: $(echo "$sent" | tr '\n' ' '); now: $(now_at)"
+  fi
+
+  # P5: meshctl profile edit. The editor is a script; the change is sent
+  # with the version it was made from. A second edit, during which
+  # another change comes into force, is refused and its edits kept.
+  printf '#!/bin/sh\nsed -i "s/orig_interval_ms: [0-9]*/orig_interval_ms: 650/" "$1"\n' > "$RUN/ed1.sh"
+  cat > "$RUN/ed2.sh" <<ED
+#!/bin/sh
+sed -i "s/orig_interval_ms: [0-9]*/orig_interval_ms: 660/" "\$1"
+sed "s/orig_interval_ms: [0-9]*/orig_interval_ms: 640/" "$RUN/node2/profile.yaml" > "$RUN/push2.yaml"
+"$BIN" meshctl --socket "$RUN/node2/run/meshd.sock" profile push --in 15 --yes "$RUN/push2.yaml" > "$RUN/ed2.log" 2>&1
+for _ in \$(seq 1 80); do [ "\$(sed -n 's/^revision: //p' "$RUN/node1/profile.yaml")" = 8 ] && break; sleep 0.5; done
+sleep 3
+ED
+  chmod +x "$RUN/ed1.sh" "$RUN/ed2.sh"
+  e1=$(EDITOR="$RUN/ed1.sh" ctl 1 profile edit --in 15 --yes 2>&1); rc1=$?
+  ok1=0; all_at 7 650 40 && ok1=1
+  for _ in $(seq 1 20); do
+    run=$(for i in $(seq 1 "$NODES"); do jsonq "$i" "s['profile']['orig_interval_ms']"; done | sort -u | tr '\n' ' ')
+    [ "$run" = "650 " ] && break; sleep 0.5
+  done
+  e2=$(EDITOR="$RUN/ed2.sh" ctl 1 profile edit --in 15 --yes 2>&1); rc2=$?
+  kept=$(echo "$e2" | sed -n 's/.*Your edits are kept in //p' | head -1)
+  if [ "$rc1" = 0 ] && [ "$ok1" = 1 ] && [ "$rc2" != 0 ] && echo "$e2" | grep -q 'changed on the node since' && [ -n "$kept" ] && grep -q 'orig_interval_ms: 660' "$kept" && all_at 8 640 20; then
+    pass "P5 meshctl profile edit: an edit (650) sent as revision 7; one made while node 2's change (640) came into force was refused, its edits kept in a file, and every node runs revision 8 (640)"
+  else
+    fail "P5 meshctl profile edit" "first (rc $rc1): $(echo "$e1" | tail -1), all at 7/650: $ok1; second (rc $rc2): $(echo "$e2" | tr '\n' ' '); kept: [$kept]; now: $(now_at)"
+  fi
+  [ -n "$kept" ] && rm -f "$kept"
 else
   skip "P mesh-wide profile changes" "needs 3 nodes or more"
 fi

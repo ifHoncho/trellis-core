@@ -33,7 +33,7 @@ type Provider interface {
 	APJoin() (*status.APJoin, error)
 
 	// SetNode replaces the node configuration with the JSON document raw.
-	SetNode(ctx context.Context, raw []byte, dryRun bool) (*ApplyResult, error)
+	SetNode(ctx context.Context, raw []byte, base string, dryRun bool) (*ApplyResult, error)
 	ProfileExport() (*ProfileExport, error)
 	SetProfile(ctx context.Context, in ProfileInput, dryRun bool) (*ApplyResult, error)
 	SetMeshProfile(ctx context.Context, in MeshProfileInput, dryRun bool) (*ApplyResult, error)
@@ -45,6 +45,10 @@ type Provider interface {
 
 	Topology(ctx context.Context) (*status.Topology, error)
 	IdentifyRadio(fingerprint string, seconds int) error
+	// SiteLinkNewKey gives the node a new site link key. A member of the
+	// site link leaves it until the profile lists the new key: refused
+	// unless force.
+	SiteLinkNewKey(force bool) (*SiteKey, error)
 	Doctor(ctx context.Context) (string, error)
 
 	// UpgradeState is the node's software and its upgrades. Upgrade checks
@@ -222,7 +226,9 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, Invalid("cannot read the request: %v", err))
 			return
 		}
-		reply(w, func(r *http.Request) (any, error) { return p.SetNode(r.Context(), raw, dryRun(r)) }, r)
+		reply(w, func(r *http.Request) (any, error) {
+			return p.SetNode(r.Context(), raw, r.URL.Query().Get("base"), dryRun(r))
+		}, r)
 	})
 	mux.HandleFunc("PUT /"+Version+"/profile", func(w http.ResponseWriter, r *http.Request) {
 		var in ProfileInput
@@ -253,6 +259,13 @@ func (s *Server) Handler() http.Handler {
 		reply(w, func(r *http.Request) (any, error) {
 			return map[string]any{"ok": true}, p.IdentifyRadio(in.Fingerprint, in.Seconds)
 		}, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/site-link/key", func(w http.ResponseWriter, r *http.Request) {
+		var in SiteKeyInput
+		if !readJSON(w, r, &in) {
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) { return p.SiteLinkNewKey(in.Force) }, r)
 	})
 	mux.HandleFunc("POST /"+Version+"/reconcile", func(w http.ResponseWriter, r *http.Request) {
 		p.Kick("api")

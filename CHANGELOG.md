@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **Site link (preview):** parts of one mesh in different places join
+  into one mesh over the internet. Nodes listed in the profile's
+  `site_link.members` (by the WireGuard key `meshctl site` prints) link
+  to the members of the other sites, over WireGuard with batman-adv on
+  top, so devices, names, gateways, ATAK and voice work across sites. A
+  member behind NAT dials out; two members per site keep the link when
+  one goes. The tunnels leave by a member's own uplink only, and a
+  member with its firewall closed opens its port by itself. A member
+  drops tunnel traffic that is not inside WireGuard, on every interface.
+  Broadcast and
+  multicast between sites are held to a budget per tunnel
+  (`site_link.multicast_kbit`, 1 Mbit/s by default). `meshctl
+  site` and the web UI's Internet page show each peer's handshake and
+  tunnel, and say why a tunnel is not up; the members are edited on the
+  Internet page, nodes already in the mesh added by name. The topology
+  map shows site links, as over the internet and without a speed (the
+  tunnels' figure is not measured). Traffic between two parts of one
+  site never takes a round trip through another site: the tunnels carry
+  a hop penalty of their own. Not yet tested between real sites.
+- **Web UI:** a profile editor follows a mesh-wide change when it comes
+  into force, instead of showing the old profile until the page is
+  reloaded. The Overview shows the node's clock, in the zone of the
+  device looking at it, a zone chosen in Settings → Appearance, or Zulu.
+  The site link's state shows on any node (Overview, Internet), and its
+  key can be replaced from the Internet page. Pages with edits not saved
+  are marked, the browser tab is named after the node and page, and
+  dialogs keep the keyboard.
+- **One change never undoes another unseen:** a change made in the web UI
+  from settings or a profile that changed on the node meanwhile is
+  refused (`409`; the API takes the version a change was made from as
+  `base`), and no second mesh-wide change is sent while one is on its
+  way, from the web UI or `meshctl profile push`, unless it is meant to
+  replace it: **Replace it** and **Cancel it** on the banner, `--replace`
+  on the command line. `meshctl profile edit` changes the profile the
+  mesh runs in your editor, with the same check as the web UI. `meshctl
+  profile push` says when its file is older than the mesh's profile.
+- **Mesh-wide changes:** a change sent within moments of the one before
+  it coming into force is no longer taken for a change made apart (it
+  raised a conflict alert and an extra revision).
 - **Push-to-talk voice (preview):** talk groups over the mesh as Opus on
   multicast RTP, set mesh-wide in the profile (`voice.groups`); each node
   has two channels, one per ear, and listen-only groups. Half-duplex per

@@ -2,8 +2,9 @@
 // drawn in its own theme (the theme blocks in app.css apply to any element
 // with data-theme), so what you see is what you get.
 import { h } from '../dom.js';
-import { state } from '../state.js';
-import { panel, dot, icon } from '../ui.js';
+import { state, redraw } from '../state.js';
+import { panel, dot, icon, field } from '../ui.js';
+import { deviceZone, zoneChoice, setZoneChoice, zone, zones, isZulu, clock, day, nodeNow, ZULU } from '../time.js';
 import { themes, slotTheme, chooseTheme, setTheme, SLOT_ICONS } from '../themes.js';
 
 const SLOT_TEXT = {
@@ -30,6 +31,27 @@ function card(t) {
       h('span.tc-btn', 'Apply')));
 }
 
+// timePanel: the zone times are shown in. The device's own when the
+// browser knows it; a zone chosen here; Zulu otherwise.
+function timePanel() {
+  const dev = deviceZone();
+  const choice = zoneChoice();
+  const now = nodeNow() || new Date();
+  const list = zones();
+  // A choice this browser no longer lists still shows as chosen.
+  const others = list.includes(choice) || !choice || choice === ZULU ? list : [choice, ...list];
+  return panel('Time', { meta: 'kept in this browser' },
+    h('div.fields',
+      field('Time zone', h('select.select', { value: choice, onchange: (e) => { setZoneChoice(e.target.value); redraw(); } },
+        h('option', { value: '' }, dev ? `Automatic: this device’s (${dev})` : 'Automatic (this device reports no zone: Zulu)'),
+        h('option', { value: ZULU }, 'Zulu (UTC)'),
+        others.map((z) => h('option', { value: z }, z.replace(/_/g, ' ')))),
+        { hint: 'Every time on these pages is shown in it. The node itself keeps UTC.' }),
+      h('div.field', h('span.label', 'Shown now'),
+        h('div.mono', { style: { fontSize: '17px', padding: '6px 0' } }, clock(now, { zone: true })),
+        h('span.hint', day(now), isZulu() ? '' : ` · ${clock(now, { in: ZULU, seconds: false })}`, ` · zone ${zone()}`))));
+}
+
 export function appearanceSection() {
   const all = themes();
   const intro = panel('Quick switch', {},
@@ -43,5 +65,5 @@ export function appearanceSection() {
   const groups = ['dark', 'light', 'night'].map((slot) => panel(`${SLOT_TEXT[slot][0]} themes`, { meta: slot === 'night' ? 'fixed' : 'pick one' },
     h('p.dim', { style: { fontSize: '13.5px', margin: '0 0 12px' } }, SLOT_TEXT[slot][1]),
     h('div.theme-grid', all.filter((t) => t.slot === slot).map(card))));
-  return [intro, ...groups];
+  return [timePanel(), intro, ...groups];
 }

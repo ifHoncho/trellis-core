@@ -68,6 +68,10 @@ runs and is tested, not a layer of half-built parts.
   more hops, gateways pulled mid-test.
 - **Upgrading a whole mesh from one node:** each node in turn, each
   checking itself, the first one that goes back stopping the rest.
+- **Linking sites over the internet:** parts of one mesh in different
+  places joined into one over WireGuard, with a node behind NAT able to
+  hold the link and a second node per site to take over (built and
+  tested in the lab; real sites next).
 
 ## Next
 
@@ -92,5 +96,4 @@ runs and is tested, not a layer of half-built parts.
   node whose only link is HaLow, off while the mesh moved, needs the
   profile again by hand.
 - Push-to-talk voice.
-- Linking sites over the internet.
 - IPv6 for clients.

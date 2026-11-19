@@ -5,6 +5,7 @@ import { panel, stat, dot, pill, spark, notice, bars } from '../ui.js';
 import { mbps, since, bandName, roleKind, roleLink, meshLinks, linkName, linkWidth, linkAt, plural, signal, carried, clockShort, gnssShort } from '../fmt.js';
 import { topology } from '../topo.js';
 import { rolloutSummary } from './software.js';
+import { clock, day, zoneLabel, nodeNow, isZulu } from '../time.js';
 
 // headline is one sentence on the node's state, most serious first.
 export function headline(st) {
@@ -29,6 +30,51 @@ export function internetSummary(st) {
   return { tone: 'warn', value: 'None', note: 'No gateway on the mesh. Devices still reach each other.' };
 }
 
+// timeFact is the node's clock, in the zone of whoever is looking (the
+// device's, the one chosen in Settings → Appearance, else Zulu), with
+// Zulu beside it and where the node gets its time from. A clock that
+// follows nothing may be wrong, and says so.
+function timeFact(st) {
+  const now = nodeNow();
+  const kept = st.clock && st.clock.service === 'chrony' && st.clock.synced;
+  if (!now) return h('div', h('span', 'Time'), h('a', { href: '#/settings/system' }, clockShort(st.clock)));
+  return h('div.timefact', h('span', 'Time'),
+    h('div',
+      h('a.clock', { href: '#/settings/appearance', class: kept ? '' : 'warn',
+        title: (kept ? 'This node’s clock' : 'This node’s clock follows no time source: it may be wrong') + `, shown in ${isZulu() ? 'Zulu' : zoneLabel(now)}. Change the zone in Settings → Appearance.` },
+        clock(now, { zone: true })),
+      h('div.sub', day(now), isZulu() ? '' : ` · ${clock(now, { in: 'UTC', seconds: false })}`),
+      h('div.sub', h('a', { href: '#/settings/system' }, kept ? `from ${clockShort(st.clock)}` : clockShort(st.clock)))));
+}
+
+// siteFact is the site link in a line: this node's tunnels when it is a
+// member, and how many members of the mesh are linked.
+export function siteSummary(st) {
+  const sl = st.site_link;
+  const roster = (sl && sl.roster) || [];
+  if (!roster.length) return null;
+  const sites = new Set(roster.map((m) => m.site));
+  if (sites.size < 2) return { tone: 'warn', text: 'one site only', note: 'Members link only to other sites: nothing links yet.' };
+  const peers = sl.peers || [];
+  const up = peers.filter((p) => p.up).length;
+  // A member is linked when it reports a tunnel up; one this node does
+  // not hear is at a site that is not joined.
+  const linked = roster.filter((m) => m.reported && m.up > 0).length;
+  const unheard = roster.filter((m) => !m.heard).length;
+  if (sl.member && peers.length) {
+    return { tone: up === peers.length ? 'ok' : up ? 'warn' : 'bad', text: `${up} of ${peers.length} tunnel${peers.length === 1 ? '' : 's'} up`,
+      note: `This node holds the link for site ${sl.site}. ${linked} of ${roster.length} members linked${unheard ? `, ${unheard} not heard` : ''}.` };
+  }
+  return { tone: linked === roster.length ? 'ok' : linked ? 'warn' : 'bad', text: linked ? `${linked} of ${roster.length} members linked` : 'down',
+    note: unheard ? `${unheard} of ${roster.length} members not heard: their site is not joined.` : `Sites ${[...sites].join(', ')}.` };
+}
+
+function siteFact(st) {
+  const s = siteSummary(st);
+  if (!s) return null;
+  return h('div', h('span', 'Site link'), h('a', { href: '#/internet', class: s.tone === 'ok' ? '' : s.tone, title: s.note }, s.text));
+}
+
 export function overview() {
   const st = state.status;
   const hl = headline(st);
@@ -42,7 +88,7 @@ export function overview() {
   // A mesh-wide profile change on its way comes first: every node switches.
   const mch = st.mesh_change && st.mesh_change.state === 'pending' ? st.mesh_change : null;
   const change = mch ? [{ level: 'warning', source: 'mesh', code: 'profile change',
-    message: `Revision ${mch.revision} of the mesh profile from ${mch.sender ? 'this node' : mch.from}${mch.summary ? ` (${mch.summary})` : ''}: every node switches at ${new Date(mch.apply_at).toLocaleTimeString()}.` }] : [];
+    message: `Revision ${mch.revision} of the mesh profile from ${mch.sender ? 'this node' : mch.from}${mch.summary ? ` (${mch.summary})` : ''}: every node switches at ${clock(mch.apply_at)}.` }] : [];
   // So does a mesh-wide upgrade under way.
   const ro = st.rollout && !st.rollout.ended ? st.rollout : null;
   if (ro) { const sum = rolloutSummary(ro); change.push({ level: sum.tone, source: 'mesh', code: 'upgrade', message: sum.text }); }
@@ -64,7 +110,8 @@ export function overview() {
           links.map((l) => h('div', `${linkName(l, st)} · ${linkWidth(l, st)} MHz`,
             l.running_width_mhz && l.running_width_mhz !== linkWidth(l, st) ? h('span.warn', ` (running ${l.running_width_mhz})`) : null,
             links.length > 1 && !carried(l) ? h('span.faint', ' · not on this node') : null))),
-        h('div', h('span', 'Time'), h('a', { href: '#/settings/system' }, clockShort(st.clock))),
+        timeFact(st),
+        siteFact(st),
         st.gnss && st.gnss.receiver ? h('div', h('span', 'GNSS'), h('a', { href: '#/settings/system' }, gnssShort(st.gnss))) : null,
         h('div', h('span', 'Version'), st.version))),
 

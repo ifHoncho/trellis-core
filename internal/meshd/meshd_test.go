@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,18 +101,22 @@ func TestWarmupFrame(t *testing.T) {
 func TestInputPolicy(t *testing.T) {
 	n := &config.Node{}
 	n.ApplyDefaults()
-	if inputPolicy(n) != nil {
+	if inputPolicy(n, 0) != nil {
 		t.Fatal("a node without a firewall setting is closed")
 	}
 	no := false
 	n.Firewall = config.FirewallConfig{WAN: config.FirewallClosed, Allow: []string{"tcp/5201", "udp/51820", "tcp/22"}}
 	n.Web.WANAccess = true
-	in := inputPolicy(n)
+	in := inputPolicy(n, 0)
 	if in == nil || fmt.Sprint(in.TCP) != "[22 80 443 5201]" || fmt.Sprint(in.UDP) != "[51820]" {
 		t.Fatalf("policy %+v", in)
 	}
 	n.Firewall.SSH, n.Web.WANAccess, n.Firewall.Allow = &no, false, nil
-	if in := inputPolicy(n); len(in.TCP) != 0 || len(in.UDP) != 0 {
+	if in := inputPolicy(n, 0); len(in.TCP) != 0 || len(in.UDP) != 0 {
 		t.Fatalf("closed with nothing open: %+v", in)
+	}
+	// A site link member: its port, and site0 inside.
+	if in := inputPolicy(n, 51873); fmt.Sprint(in.UDP) != "[51873]" || !slices.Contains(in.Inside, SiteIfname) {
+		t.Fatalf("site link member: %+v", in)
 	}
 }

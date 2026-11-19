@@ -68,7 +68,7 @@ func (n *node) Reload() error            { return nil }
 func (n *node) APJoin() (*status.APJoin, error) {
 	return &status.APJoin{SSID: "n1", Passphrase: "wifi-secret"}, nil
 }
-func (n *node) SetNode(ctx context.Context, raw []byte, dry bool) (*api.ApplyResult, error) {
+func (n *node) SetNode(ctx context.Context, raw []byte, base string, dry bool) (*api.ApplyResult, error) {
 	n.mu.Lock()
 	n.changes++
 	n.mu.Unlock()
@@ -93,7 +93,8 @@ func (n *node) Setup(ctx context.Context, in api.SetupInput, dry bool) (*api.App
 func (n *node) Topology(ctx context.Context) (*status.Topology, error) {
 	return &status.Topology{}, nil
 }
-func (n *node) IdentifyRadio(string, int) error { return nil }
+func (n *node) IdentifyRadio(string, int) error           { return nil }
+func (n *node) SiteLinkNewKey(bool) (*api.SiteKey, error) { return nil, nil }
 func (n *node) Doctor(ctx context.Context) (string, error) {
 	return strings.Repeat("report line\n", 200), nil
 }
