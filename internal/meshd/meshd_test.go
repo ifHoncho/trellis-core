@@ -36,22 +36,49 @@ func TestLockInstanceExclusive(t *testing.T) {
 func TestChurnGuard(t *testing.T) {
 	r := &radioReconciler{d: &Daemon{log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
 	for i := 0; i < churnLimit; i++ {
-		if err := r.checkChurn("mesh0"); err != nil {
+		if err := r.checkChurn("mesh0", "radio-a"); err != nil {
 			t.Fatalf("creation %d refused: %v", i+1, err)
 		}
 	}
-	err := r.checkChurn("mesh0")
+	err := r.checkChurn("mesh0", "radio-a")
 	if err == nil || !strings.Contains(err.Error(), "NetworkManager") {
 		t.Fatalf("expected a churn error naming the likely culprits, got %v", err)
 	}
-	if err := r.checkChurn("ap0"); err != nil {
+	if err := r.checkChurn("ap0", "radio-a"); err != nil {
 		t.Fatalf("other interfaces are tracked separately: %v", err)
 	}
 	// Old creations age out of the window.
 	old := time.Now().Add(-churnWindow - time.Second)
-	r.created["mesh0"] = []time.Time{old, old, old}
-	if err := r.checkChurn("mesh0"); err != nil {
+	r.created["mesh0"] = churn{radio: "radio-a", times: []time.Time{old, old, old}}
+	if err := r.checkChurn("mesh0", "radio-a"); err != nil {
 		t.Fatalf("aged-out creations must not count: %v", err)
+	}
+}
+
+// A role that moves from radio to radio (radios unplugged and plugged in)
+// recreates its interface each time; that is meshd's doing, not churn
+// (lab/hwsim-roles.sh O4).
+func TestChurnGuardRoleMoves(t *testing.T) {
+	r := &radioReconciler{d: &Daemon{log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+	for i, fp := range []string{"radio-a", "radio-b", "radio-c", "radio-d", "radio-e"} {
+		if err := r.checkChurn("ap0", fp); err != nil {
+			t.Fatalf("move %d to %s refused: %v", i+1, fp, err)
+		}
+	}
+	// Back and forth between two radios is still a move each time.
+	for i := 0; i < 2*churnLimit; i++ {
+		if err := r.checkChurn("ap0", []string{"radio-a", "radio-b"}[i%2]); err != nil {
+			t.Fatalf("alternation %d refused: %v", i+1, err)
+		}
+	}
+	// On one radio, the guard still trips.
+	for i := 0; i < churnLimit; i++ {
+		if err := r.checkChurn("ap0", "radio-c"); err != nil {
+			t.Fatalf("creation %d on radio-c refused: %v", i+1, err)
+		}
+	}
+	if err := r.checkChurn("ap0", "radio-c"); err == nil {
+		t.Fatal("repeated recreation on one radio must still be refused")
 	}
 }
 

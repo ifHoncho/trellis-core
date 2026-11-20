@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -298,5 +299,97 @@ func TestRolloutBackAfterHalt(t *testing.T) {
 	c := step(d)
 	if c.Phase != rollout.Halted || c.Reason != "me did not move on its turn" || len(up.started) != 0 {
 		t.Fatalf("back after the halt: %+v, started %v", c, up.started)
+	}
+}
+
+// A node back in reach gets the rollout before it hears the others again
+// (lab R6.2: the origin's resend held while it was away arrives first).
+// Its records of them predate the rollout and say nothing of it: first in
+// the order, it must not start on them, but wait to hear the others, and
+// halt when they say the rollout halted.
+func TestRolloutBackStaleView(t *testing.T) {
+	d, _, key, up := rolloutDaemon(t)
+	r := testRollout(t, d)
+	r.Order = []string{macMe, macFirst, macOrigin} // this node first
+	// Heard before the node went away: no rollout in their records.
+	peerSays(d, macFirst, "first", 2, nil)
+	peerSays(d, macOrigin, "origin", 3, nil)
+	time.Sleep(5 * time.Millisecond)
+	sendRolloutMsg(t, d, key, r)
+	step(d) // "" → fetching
+	step(d) // starts the fetch: the package is kept already
+	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
+	for range 3 {
+		step(d)
+	}
+	if len(up.started) != 0 || phase(d) != rollout.Ready {
+		t.Fatalf("started on records from before the rollout: %v, phase %s", up.started, phase(d))
+	}
+	if w := d.rollouts.wait; !strings.Contains(w, "first") && !strings.Contains(w, "origin") {
+		t.Fatalf("wait = %q, want it to name a node not heard since", w)
+	}
+	// Heard again: the rollout halted while this node was away.
+	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "halted", Reason: "me did not move on its turn"})
+	c := step(d)
+	if c.Phase != rollout.Halted || len(up.started) != 0 {
+		t.Fatalf("after hearing the halt: %+v, started %v", c, up.started)
+	}
+}
+
+// Every node in the order heard since the rollout came: the first one
+// starts.
+func TestRolloutFreshViewStarts(t *testing.T) {
+	d, _, key, up := rolloutDaemon(t)
+	r := testRollout(t, d)
+	r.Order = []string{macMe, macFirst, macOrigin}
+	peerSays(d, macFirst, "first", 2, nil)
+	time.Sleep(5 * time.Millisecond)
+	sendRolloutMsg(t, d, key, r)
+	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "ready"})
+	peerSays(d, macOrigin, "origin", 3, &gossip.RolloutState{ID: r.ID, Phase: "ready"})
+	step(d)
+	step(d)
+	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
+	step(d)
+	if len(up.started) != 1 {
+		t.Fatalf("first in the order, all heard since: started %v, phase %s, wait %q", up.started, phase(d), d.rollouts.wait)
+	}
+}
+
+// After a restart the node's view of the others starts empty: a node it
+// has not heard again yet is not stalled, however long ago the rollout
+// came (lab R2.1: node 2 restarted while node 1 upgraded, and halted on
+// node 1 "never heard of the rollout" before node 1's next gossip). The
+// stall counts from the restart.
+func TestRolloutRestartNoFalseStall(t *testing.T) {
+	d, _, key, up := rolloutDaemon(t)
+	r := testRollout(t, d)
+	sendRolloutMsg(t, d, key, r)
+	step(d)
+	step(d)
+	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
+	// Got past the stall time ago, kept on disk as such.
+	d.rollouts.mu.Lock()
+	d.rollouts.cur.Received = time.Now().Add(-rollout.Stalled - time.Minute)
+	if err := d.saveRollout(d.rollouts.cur); err != nil {
+		t.Fatal(err)
+	}
+	d.rollouts.mu.Unlock()
+
+	d2, _, _, _ := rolloutDaemon(t)
+	d2.opts.StateDir = d.opts.StateDir
+	d2.loadRollout()
+	if c := step(d2); c.Phase != rollout.Ready {
+		t.Fatalf("just after the restart, the node before it not heard yet: %+v", c)
+	}
+	// Still silent the stall time after the restart: halted.
+	d2.rollouts.mu.Lock()
+	d2.rollouts.loadedAt = time.Now().Add(-rollout.Stalled - time.Second)
+	d2.rollouts.mu.Unlock()
+	if c := step(d2); c.Phase != rollout.Halted {
+		t.Fatalf("silent the stall time since the restart: %+v", c)
+	}
+	if len(up.started) != 0 {
+		t.Fatalf("started: %v", up.started)
 	}
 }

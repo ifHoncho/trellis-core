@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Voice page:** Enable button in the "Voice off." notice; opens the
+  change review.
+- **Mesh page:** degraded radios shown as "Degraded"; details on hover,
+  click or tap.
+- Fixed: radios unplugged and plugged in within 2 minutes could leave the
+  AP down with a reconcile error ("ap0 had to be recreated 3 times").
+- Fixed: a node out of reach while a mesh upgrade halted could upgrade
+  on its return if it was first in the order; a node restarted during a
+  mesh upgrade could halt it before hearing the other nodes.
 - **Hardware monitor:** Settings → System → Hardware: CPU temperature,
   CPU and memory use, storage, supply voltage, radio temperatures, PCIe
   links. `host` in the status, `host:` in `meshctl status`. Alerts:

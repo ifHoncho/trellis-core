@@ -117,8 +117,15 @@ if [ "${wrong_joined_peers:-0}" = 0 ] && [ "${wrong_origs:-0}" = 0 ]; then
 else
   fail "H4 wrong passphrase" "peers=$wrong_joined_peers originators=$wrong_origs"
 fi
-sae=$(jsonq 1 "len(s['mesh_link']['sae_failures'])")
-if [ "${sae:-0}" -ge 1 ]; then pass "H5 SAE failures from the impostor are recorded ($sae)"; else fail "H5 SAE failures" "none recorded on node 1 (wpa_supplicant may not emit the event for the authenticator side)"; fi
+# wpa_supplicant reports a failed SAE exchange on the side whose check
+# fails, which is not always the same node (in a VM run node 2 had it, nodes
+# 1 and 3 not): so the mesh must record it on at least one node.
+sae=0; on=""
+for i in $(seq 1 "$NODES"); do
+  n=$(jsonq "$i" "len(s['mesh_link'].get('sae_failures') or [])")
+  [ "${n:-0}" -ge 1 ] && { sae=$((sae+n)); on="$on $i"; }
+done
+if [ "$sae" -ge 1 ]; then pass "H5 SAE failures from the impostor are recorded ($sae, on node$on)"; else fail "H5 SAE failures" "none recorded on any of the $NODES nodes"; fi
 
 stop_pid "$(cat "$RUN/node1/pid")"; rm -f "$RUN/node1/pid"
 left=$(NS node1 ip -o link show | grep -cE 'mesh0|bat0|br-mesh')

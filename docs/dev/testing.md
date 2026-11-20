@@ -235,9 +235,10 @@ node to switch would write the shared file for all of them).
 | P4 | Node 1 sends another; node 3 pushes the profile it runs with `--replace`: the change is cancelled, and every node keeps its profile as a new revision |
 | P5 | `meshctl profile edit` with a script as `$EDITOR`: the edit is sent with the version it was made from. A second edit, during which another node's change comes into force, is refused, and its edits are kept in a file |
 
-Not in the lab: nodes left on a channel the mesh has left looking for it
-(`findmesh.go`). The lab's links are cables, which have no channels to
-scan. Unit tests cover who looks (`TestSearchWanted`), reading a mesh's
+Nodes left on a channel the mesh has left looking for it (`findmesh.go`)
+are not in this lab: its links are cables, which have no channels to
+scan. `lab/hwsim-findmesh.sh` covers them over virtual radios, in a VM.
+Unit tests cover who looks (`TestSearchWanted`), reading a mesh's
 width from its beacons (`internal/nl80211`), how a visit ends, the roster
 across a restart, settling a profile changed apart and its spreading
 (`meshconflict_test.go`), switching by an offer's delay whatever the
@@ -451,10 +452,17 @@ Every lab meshd runs with `--no-host-config`, so it never writes the host's
 NetworkManager or systemd-networkd configuration.
 
 Needs `mac80211_hwsim` (on Fedora it is in `kernel-modules-internal`, which
-must match the running kernel; on Debian it is in the main kernel package) and `wpa_supplicant`. Moves one virtual radio
+must match the running kernel; on Debian it is in the main kernel package,
+not in the `cloud` kernel), `wpa_supplicant`, `hostapd`, `dnsmasq`,
+`batctl` (`hwsim-dual.sh`) and `wireless-regdb`. A VM provisioned by
+cloud-init installs `wireless-regdb` after the kernel has looked for
+`regulatory.db` and given up: reboot it once, or the radios stay on the
+world domain (5 GHz no-IR) and the mesh never forms. Moves one virtual radio
 into each namespace and lets `meshd` do everything else: role assignment,
 `mesh0`, wpa_supplicant with SAE, batman-adv. Checks that a node with the
-wrong passphrase never joins, that peers are visible through nl80211, and
+wrong passphrase never joins and that its failed authentications are
+recorded (on at least one node: wpa_supplicant reports a failed exchange on
+the side whose check fails), that peers are visible through nl80211, and
 that teardown restores the kernel's `wlan` interface.
 
 ### Radio roles
@@ -503,6 +511,24 @@ Two nodes, each given two hwsim radios. The profile has `radio` on 2.4 GHz
 Planner cases that need specific hardware (a dual-band-concurrent card
 plus HaLow, two radios sharing the AP) are Go unit tests in
 `internal/radio`.
+
+### Finding the mesh again
+
+```sh
+sudo lab/hwsim-findmesh.sh   # inside a virtual machine
+```
+
+Five nodes on 5 GHz at 20 MHz. Nodes are switched off (meshd stopped,
+which writes their roster) while node 1 moves the mesh's channel with a
+mesh-wide change; started again, they are on the old channel.
+
+| Test | Pass |
+|---|---|
+| F1 | The 5 nodes mesh on channel 36 and have each other in their gossip view (a change goes only to the nodes its sender knows) |
+| F2 | Node 5 off; node 1 moves the mesh to channel 44: nodes 1–4 switch to the same revision |
+| F3 | While node 5 is away, nodes 1–4 (each hearing 3 of the 4 others) never raise `mesh-alone` or `mesh-visit` |
+| F4 | Node 5, back on channel 36 alone, finds the mesh on 44 and joins it on its revision (about 110 s: the first look comes after 60 s) |
+| F5 | Nodes 4 and 5 off; the mesh moves to channel 149; both, back on 44 hearing only each other, find it and join; every node ends on one revision |
 
 ## Packages in containers
 

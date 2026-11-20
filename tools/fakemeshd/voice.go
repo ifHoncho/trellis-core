@@ -27,7 +27,8 @@ func (f *fake) Voice(context.Context) (*api.VoiceState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n, p := f.node.Voice, f.profile.Voice
-	st := &api.VoiceState{Enabled: n.Enable}
+	// The fake stands for an arm64 or amd64 node: its package has voice.
+	st := &api.VoiceState{Enabled: n.Enable, Installed: true}
 	if !n.Enable {
 		return st, nil
 	}

@@ -1552,7 +1552,7 @@ if [ "$NODES" -ge 3 ]; then
   pending_on 3 5; had=$?
   cp "$RUN/node3/profile.yaml" "$RUN/push.yaml"
   sent=$(ctl 3 profile push --in 15 --yes --replace "$RUN/push.yaml" 2>&1)
-  if [ "$had" = 0 ] && echo "$sent" | grep -q 'This cancels the change from' && all_at 6 800 40; then
+  if [ "$had" = 0 ] && echo "$sent" | grep -q 'Cancels the change from' && all_at 6 800 40; then
     pass "P4 node 3 cancelled node 1's change (900) by sending the profile in force with --replace: every node runs revision 6, still 800"
   else
     fail "P4 cancelling a change on its way" "first: $out; had it: $had; cancel: $(echo "$sent" | tr '\n' ' '); now: $(now_at)"

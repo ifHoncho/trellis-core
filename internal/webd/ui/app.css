@@ -691,6 +691,7 @@ svg { display: block; }
 .notice.info { border-left-color: var(--info); } .notice.info .dot { color: var(--info); }
 .notice.ok { border-left-color: var(--ok); } .notice.ok .dot { color: var(--ok); }
 .notice .code { font: 600 10.5px/1.6 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); display: block; }
+.notice .btn { margin: -5px 0 -5px 12px; vertical-align: middle; }
 .notices { display: flex; flex-direction: column; gap: 8px; }
 .banner { padding: 9px 30px; font-size: 13.5px; background: color-mix(in srgb, var(--warn) 14%, var(--bg)); border-bottom: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); color: var(--ink); display: flex; gap: 10px; align-items: center; }
 .banner.bad { background: color-mix(in srgb, var(--bad) 16%, var(--bg)); border-bottom-color: color-mix(in srgb, var(--bad) 45%, transparent); }
@@ -850,6 +851,10 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: 13.5px; lis
 details > summary::before { content: "+"; font-family: var(--mono); color: var(--accent); width: 10px; }
 details[open] > summary::before { content: "–"; }
 details > summary::-webkit-details-marker { display: none; }
+.degraded { display: inline; }
+.degraded > summary { display: inline; color: var(--warn); font-size: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.degraded > summary::before, .degraded[open] > summary::before { content: none; }
+.degraded-why { display: block; margin-top: 3px; color: var(--warn); }
 
 /* Sign-in and setup ----------------------------------------------------------- */
 

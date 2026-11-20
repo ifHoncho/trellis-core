@@ -311,7 +311,12 @@ t0=$SECONDS
 deadline=$((SECONDS + 240))
 until [ $SECONDS -ge $deadline ] || ended 4; do sleep 2; done
 took=$((SECONDS - t0))
-p=$(phases 4)
+# Over on the origin can come a moment before the last of the rest halts:
+# each counts the stall from when it got the rollout, by its own clock.
+for _ in $(seq 1 15); do
+  p=$(phases 4)
+  [ "$p" = "lab-1:- lab-2:halted lab-3:halted lab-4:halted" ] && break; sleep 1
+done
 follow=$(timeout 20 "$BIN" meshctl --socket "$RUN/node4/run/meshd.sock" upgrade --mesh --follow 2>&1); frc=$?
 if [ "$in1" -ge 1 ] && ended 4 && [ "$p" = "lab-1:- lab-2:halted lab-3:halted lab-4:halted" ] && [ "$frc" -ne 0 ] && echo "$follow" | grep -q 'halted: lab-1 did not move'; then
   pass "R6.1 a node silent on its turn halts the rest, and the rollout ends (${took} s; follow returns: $(echo "$follow" | tail -1))"

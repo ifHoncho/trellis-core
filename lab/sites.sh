@@ -208,7 +208,7 @@ write_profile "site_link:
 deadline=$((SECONDS + 30))
 while [ $SECONDS -lt $deadline ] && [ "$(jsonq 1 "sum(1 for n in s['nodes'] if n.get('site_key'))")" != 2 ]; do sleep 1; done
 out=$(ctl 1 profile push "$RUN/profile.yaml" 2>&1)
-if echo "$out" | grep -q "already reach each other in this mesh" && echo "$out" | grep -q "neither can dial the other" && echo "$out" | grep -q "Nothing sent"; then
+if echo "$out" | grep -q "already connected within the mesh without a site link" && echo "$out" | grep -q "sites cannot connect" && echo "$out" | grep -q "Nothing sent"; then
   pass "S1.1b two nodes of one site listed as two sites, without endpoints: the review says they are at one place and cannot dial each other"
 else
   fail "S1.1b review of a mistaken list" "$out"

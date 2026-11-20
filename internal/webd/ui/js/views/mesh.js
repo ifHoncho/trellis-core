@@ -30,6 +30,15 @@ function degradedRadios(list) {
     `${names.length > 1 ? 'Radios' : 'Radio'} ${names.join(', ')}: Degraded${why ? ` (${why})` : ''}`);
 }
 
+// degraded is a node's "Degraded" marker; its lines in the title and,
+// opened, under the node. The open state is the user's (dom.js keeps it
+// across redraws).
+function degraded(lines) {
+  return h('details.degraded',
+    h('summary', { title: lines.join('\n') }, 'Degraded'),
+    h('div.degraded-why', lines.map((s) => h('div', s))));
+}
+
 export function mesh() {
   const st = state.status;
   const topo = state.topology;
@@ -50,8 +59,9 @@ export function mesh() {
     // A node that holds the site link says so, with its site.
     return h('div', h('div.primary', n ? n.callsign : shortMac(mac)),
       h('div.secondary', n ? `#${n.node_id} · ${n.address}` : mac, n && n.site_link ? ` · site link, site ${n.site_link.site}` : '',
-        // Its degraded radios, as it reports them.
-        n && n.degraded ? degradedRadios(n.degraded).map((s) => h('span.warn', ` · ${s}`)) : null));
+        // Its degraded radios, as it reports them: "Degraded", the details
+        // on hover and on click or tap.
+        n && n.degraded ? [' · ', degraded(degradedRadios(n.degraded))] : null));
   };
   // The links this node has a radio for: it may be the second without the
   // first. Each is named by its band and channel, as on every page.

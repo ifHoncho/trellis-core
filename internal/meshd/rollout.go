@@ -111,6 +111,22 @@ type rolloutState struct {
 
 	upOnce sync.Once
 	up     rolloutUpgrader
+
+	// loadedAt: when this meshd took the rollout up again from disk. Its
+	// view of the others starts empty then, so stalls count from here.
+	loadedAt time.Time
+}
+
+// viewFrom is when this node could first have heard the others' progress
+// in c: when it got the rollout, or, after a restart, when it took it up
+// again (s.mu held). Stalls and the end count from it: a node that has
+// not heard the others yet must not take them for silent.
+func (s *rolloutState) viewFrom(c *rolloutRecord) time.Time {
+	t := c.received()
+	if s.loadedAt.After(t) {
+		t = s.loadedAt
+	}
+	return t
 }
 
 // rolloutCheckEvery is how often the node re-reads whether it takes
@@ -205,7 +221,7 @@ func (d *Daemon) loadRollout() {
 	}
 	s := &d.rollouts
 	s.mu.Lock()
-	s.cur, s.others = &c, map[string]rollout.State{}
+	s.cur, s.others, s.loadedAt = &c, map[string]rollout.State{}, time.Now()
 	if c.Sender {
 		s.fastTill = time.Now().Add(rolloutResendFast)
 	}
@@ -291,7 +307,7 @@ func (r *rolloutReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	d.rolloutStep(ctx, c, mac, now)
 	// Over: every node in the order finished, or it stopped and the nodes
 	// still out have been silent for the stall time.
-	if c.Ended.IsZero() && rollout.Over(&c.Rollout, mac, c.Phase, c.received(), s.others, now) {
+	if c.Ended.IsZero() && rollout.Over(&c.Rollout, mac, c.Phase, s.viewFrom(c), s.others, now) {
 		c.Ended = now
 		_ = d.saveRollout(c)
 		d.log.Info("mesh-wide upgrade over", "id", c.Rollout.ID, "version", c.Rollout.Version)
@@ -397,7 +413,7 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 			d.setPhase(c, rollout.Fetching, "")
 		}
 	case rollout.Fetching, rollout.Ready:
-		dec := rollout.Turn(&c.Rollout, me, c.received(), s.others, d.rolloutName, now)
+		dec := rollout.Turn(&c.Rollout, me, s.viewFrom(c), s.others, d.rolloutName, now)
 		if dec.Action == rollout.Halt {
 			d.setPhase(c, rollout.Halted, dec.Why)
 			return
@@ -413,6 +429,15 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 		}
 		if dec.Action == rollout.Wait {
 			s.wait = dec.Why
+			return
+		}
+		// Start only on what the others say now. A node back in reach can
+		// get the rollout (a resend held while it was away) before it hears
+		// the others again; its records of them then predate the rollout
+		// and cannot show that it halted, and, first in the order, it would
+		// upgrade by itself (lab R6.2).
+		if who := d.rolloutUnheard(c, me); who != "" {
+			s.wait = "Awaiting current state from " + who
 			return
 		}
 		s.wait = ""
@@ -449,6 +474,21 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 			d.setPhase(c, rollout.Failed, strings.TrimSpace(r.Result+": "+r.Reason))
 		}
 	}
+}
+
+// rolloutUnheard names a node in the rollout's order whose gossip record
+// this node last heard before it got the rollout, or "". Such a record
+// either comes again within a refresh, with the node's progress, or
+// expires (gossip.Expiry) and no longer counts. (s.mu held.)
+func (d *Daemon) rolloutUnheard(c *rolloutRecord, me string) string {
+	got := c.received()
+	for _, p := range d.peers.Peers() {
+		m := strings.ToLower(p.Record.MAC)
+		if m != me && slices.Contains(c.Rollout.Order, m) && p.LastHeard.Before(got) {
+			return d.rolloutName(m)
+		}
+	}
+	return ""
 }
 
 // fetchRollout gets this node's package, from the origin or a node of the

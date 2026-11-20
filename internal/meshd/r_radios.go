@@ -33,9 +33,11 @@ const removalGrace = 3 * time.Second
 // present.
 const lastSeenEvery = 6 * time.Hour
 
-// Churn guard: if an interface meshd created has to be recreated this many
-// times within the window, something else is reconfiguring it; meshd stops
-// fighting and reports it.
+// Churn guard: if an interface meshd created has to be recreated on the
+// same radio this many times within the window, something else is
+// reconfiguring it; meshd stops fighting and reports it. Created on another
+// radio, it is meshd moving a role (a radio removed or added): the count
+// starts again.
 const (
 	churnLimit  = 3
 	churnWindow = 2 * time.Minute
@@ -51,12 +53,12 @@ type radioReconciler struct {
 	regApplied     string
 	regAppliedAt   time.Time
 	regFirstAsk    time.Time
-	regSwitchAt    time.Time              // last re-request for a mode change (through 00)
-	regSwitchTo    string                 // the mode it was for
-	regSwitchTries int                    // attempts for that mode not yet taken (back-off)
-	planKey        string                 // what the last plan was asked for (planKey)
-	created        map[string][]time.Time // interface name -> recent creation times
-	foreign        map[string]int         // foreign interfaces removed from the mesh radio
+	regSwitchAt    time.Time        // last re-request for a mode change (through 00)
+	regSwitchTo    string           // the mode it was for
+	regSwitchTries int              // attempts for that mode not yet taken (back-off)
+	planKey        string           // what the last plan was asked for (planKey)
+	created        map[string]churn // interface name -> recent creations
+	foreign        map[string]int   // foreign interfaces removed from the mesh radio
 }
 
 func newRadioReconciler(d *Daemon) *radioReconciler {
@@ -615,7 +617,7 @@ func (r *radioReconciler) ensureInterface(rd *radio.Radio, name string, iftype u
 			d.log.Info("removed kernel-created interface", "name", in.Name, "phy", rd.Phy)
 			changed = true
 		case cannotDelete(err) && !adopted:
-			if err := r.checkChurn(name); err != nil {
+			if err := r.checkChurn(name, rd.Fingerprint); err != nil {
 				return changed, err
 			}
 			if cerr := r.convertInterface(in, name, iftype, mac); cerr != nil {
@@ -637,7 +639,7 @@ func (r *radioReconciler) ensureInterface(rd *radio.Radio, name string, iftype u
 	if adopted {
 		return true, nil
 	}
-	if err := r.checkChurn(name); err != nil {
+	if err := r.checkChurn(name, rd.Fingerprint); err != nil {
 		return changed, err
 	}
 	newIf, err := d.nl.NewInterface(rd.PhyIndex, name, iftype, mac)
@@ -841,21 +843,33 @@ func (r *radioReconciler) Teardown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// checkChurn records a (re)creation of name and refuses when it has happened
-// too often recently: something else keeps changing or deleting it.
-func (r *radioReconciler) checkChurn(name string) error {
+// churn is an interface's recent creations, and the radio they were on.
+type churn struct {
+	radio string // fingerprint
+	times []time.Time
+}
+
+// checkChurn records a (re)creation of name on the radio with fingerprint
+// fp and refuses when it has happened too often recently on that radio:
+// something else keeps changing or deleting it. A creation on another radio
+// starts the count again.
+func (r *radioReconciler) checkChurn(name, fp string) error {
 	if r.created == nil {
-		r.created = map[string][]time.Time{}
+		r.created = map[string]churn{}
 	}
 	now := time.Now()
-	recent := r.created[name][:0]
-	for _, t := range r.created[name] {
+	c := r.created[name]
+	if c.radio != fp {
+		c = churn{radio: fp}
+	}
+	recent := c.times[:0]
+	for _, t := range c.times {
 		if now.Sub(t) < churnWindow {
 			recent = append(recent, t)
 		}
 	}
 	if len(recent) >= churnLimit {
-		r.created[name] = recent
+		r.created[name] = churn{radio: fp, times: recent}
 		return fmt.Errorf("%s had to be recreated %d times in %s: something else on this node keeps changing it, "+
 			"most likely NetworkManager, systemd-networkd/netplan, iwd or a system wpa_supplicant. Check: nmcli device; "+
 			"networkctl; ps aux | grep -E 'wpa_supplicant|iwd'. meshd stops recreating it until %s",
@@ -865,7 +879,7 @@ func (r *radioReconciler) checkChurn(name string) error {
 		r.d.log.Warn("recreating an interface meshd created earlier; something removed or changed it",
 			"name", name, "previous_created_ago", now.Sub(recent[n-1]).Round(time.Second), "recreations_in_window", n)
 	}
-	r.created[name] = append(recent, now)
+	r.created[name] = churn{radio: fp, times: append(recent, now)}
 	return nil
 }
 
