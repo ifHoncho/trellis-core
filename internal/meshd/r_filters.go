@@ -52,7 +52,7 @@ func (f *filtersReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 		p, err := proc.LookPath("nft")
 		if err != nil {
 			set(status.Filters{Error: "nft is not installed"})
-			warn("error", "filters-no-nft", "nft is not installed, so the bat0 filters cannot be applied and the client network stays off: apt install nftables")
+			warn("error", "filters-no-nft", "nft not installed: bat0 filters not applied, client network off. Install: apt install nftables")
 			res.RequeueAfter = 30 * time.Second
 			return res, nil
 		}
@@ -83,7 +83,7 @@ func (f *filtersReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 			if strings.Contains(msg, "Operation not supported") || strings.Contains(msg, "No such file") {
 				msg += " (does this kernel have CONFIG_NF_TABLES_BRIDGE? see meshctl doctor)"
 			}
-			warn("error", "filters-failed", "cannot apply the bat0 filters, so the anycast gateway is withheld: %s", msg)
+			warn("error", "filters-failed", "bat0 filters failed, anycast gateway withheld: %s", msg)
 			res.RequeueAfter = 30 * time.Second
 			return res, nil
 		}

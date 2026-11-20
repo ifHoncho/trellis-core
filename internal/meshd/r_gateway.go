@@ -235,11 +235,11 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	}
 	switch {
 	case portal && sharing:
-		warn("warning", "wan-portal", "the WAN on %s is behind a login page (%s): not sharing it with the mesh until someone signs in. While no other gateway is usable, this node's own clients reach the login page; gateway.web_check: off shares it anyway", wan, web.Detail)
+		warn("warning", "wan-portal", "Uplink %s behind captive portal (%s): not shared until sign-in. Local clients reach the portal while no other gateway is available. Override: gateway.web_check: off.", wan, web.Detail)
 	case wan != "" && ps.Known && !ps.Healthy:
-		warn("warning", "wan-unhealthy", "the WAN on %s is not passing traffic (no reply from %s): not sharing it", wan, strings.Join(cfg.ProbeTargets, ", "))
+		warn("warning", "wan-unhealthy", "Uplink %s down (no reply from %s): not shared", wan, strings.Join(cfg.ProbeTargets, ", "))
 	case webOn && ps.Healthy && web.Verdict == probe.WebNone:
-		warn("info", "wan-web-none", "the WAN on %s answers pings but none of the web check addresses answered (%s): sharing it all the same", wan, web.Detail)
+		warn("info", "wan-web-none", "Uplink %s: ping OK, web check failed (%s). Shared anyway", wan, web.Detail)
 	}
 
 	// batman-adv gateway mode: announce while healthy, else be a client.
@@ -328,7 +328,7 @@ func (g *gatewayReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	if sel != nil {
 		st.Selected = &status.SelectedGateway{Self: sel.Self, Callsign: sel.Callsign, NodeID: sel.ID, Address: sel.Addr, ThroughputMbps: sel.Tput, Since: selSince}
 	} else {
-		warn("warning", "no-gateway", "no internet gateway on the mesh: clients reach the mesh only, and outside names do not resolve")
+		warn("warning", "no-gateway", "No gateway in the mesh: mesh-only access, external DNS unavailable")
 	}
 	st.Candidates, st.DNS, st.Switches = cands, dns, switches
 	d.facts.Update(func(f *Facts) { f.Gateway, f.GossipGW, f.DNSUpstream = st, gw, dns })

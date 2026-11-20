@@ -6,6 +6,7 @@ import { state, setRedraw, redraw, record, alerts, toast, closeDialog, noteAlert
 import { icon, brandMark, dot, button } from './ui.js';
 import { duration } from './fmt.js';
 import { overview } from './views/overview.js';
+import { recordHost } from './views/hardware.js';
 import { mesh } from './views/mesh.js';
 import { internet } from './views/internet.js';
 import { devices } from './views/devices.js';
@@ -16,7 +17,7 @@ import { alertsView } from './views/alerts.js';
 import { settings } from './views/settings.js';
 import { gate } from './views/gate.js';
 import { refreshConfig, followProfile, unsavedOn, pendingChange, replacing, startReplacing, stopReplacing, cancelPending } from './config.js';
-import { clock } from './time.js';
+import { clock, untilNextSecond } from './time.js';
 
 const ROUTES = [
   { id: 'overview', label: 'Overview', icon: 'overview', view: overview, tab: true },
@@ -30,7 +31,7 @@ const ROUTES = [
   { id: 'settings', label: 'Settings', icon: 'settings', view: settings },
 ];
 const themeIcon = () => SLOT_ICONS[slotOf(state.theme)];
-const switchTitle = () => `Change theme: ${SLOTS.map((s) => themeName(slotTheme(s))).join(', ')}. Choose them in Settings → Appearance.`;
+const switchTitle = () => `Theme: ${SLOTS.map((s) => themeName(slotTheme(s))).join(' / ')} (Settings → Appearance)`;
 
 function readRoute() {
   const id = (location.hash.replace(/^#\/?/, '').split('/')[0]) || 'overview';
@@ -74,6 +75,7 @@ function onStatus(st) {
   record('rtt', st.gateway.wan_healthy ? st.gateway.rtt_ms || 0 : 0);
   record('mcast', st.batman.multicast.counters.tx + st.batman.multicast.counters.rx);
   record('clients', (st.ap.clients || []).length);
+  recordHost(st, record);
   if (state.session && st.setup.needed !== state.session.setup) refreshSession();
   redraw();
 }
@@ -145,7 +147,7 @@ function liveLine() {
   const age = state.statusAt ? (Date.now() - state.statusAt) / 1000 : null;
   let cls = state.live, text = 'live';
   if (state.live === 'on' && age != null && age > 7) { cls = 'stale'; text = `last report ${duration(age)} ago`; }
-  if (state.live === 'off') text = state.problem ? 'node not reporting' : age != null ? `reconnecting · ${duration(age)} old` : 'connecting…';
+  if (state.live === 'off') text = state.problem ? 'Node not reporting' : age != null ? `Reconnecting · data ${duration(age)} old` : 'connecting…';
   return h('div.live', { class: cls, role: 'status' }, h('i.pulse'), text);
 }
 
@@ -155,7 +157,7 @@ function navLink(r, cls = '') {
   return h('a', { href: '#/' + r.id, 'aria-current': state.route === r.id ? 'page' : null, class: cls },
     icon(r.icon), h('span', r.label), n.length ? h('span.count', { class: bad ? 'bad' : '' }, n.length) : null,
     // Edits on that page that are not saved or sent yet.
-    unsavedOn(r.id) ? h('span.unsaved', { title: 'Changes on this page are not saved yet', role: 'img', 'aria-label': 'changes not saved' }) : null);
+    unsavedOn(r.id) ? h('span.unsaved', { title: 'Unsaved changes', role: 'img', 'aria-label': 'unsaved changes' }) : null);
 }
 
 // setTitle names the browser tab after the node and the page, with the
@@ -219,7 +221,7 @@ function more() {
 // warning on hover or a tap. It comes back when the node leaves
 // unrestricted mode and later enters it again.
 const REG_KEY = 'trellis-unrestricted-dismissed';
-const REG_TEXT = 'Radios use every channel and width they have, at their own full power, beyond licence-exempt limits; that needs frequency authorization. ';
+const REG_TEXT = 'All channels and widths at full hardware power, without licence-exempt limits. Requires frequency authorization. ';
 function regDismissed(st) {
   try { return localStorage.getItem(REG_KEY) === st.profile.name; } catch (e) { return false; }
 }
@@ -240,14 +242,14 @@ function regMini() {
   const open = !!state.ui.regPop;
   return h('div.reg-mini', { class: open ? 'open' : '' },
     h('button.reg-tri', {
-      type: 'button', 'aria-expanded': String(open), 'aria-label': 'Unrestricted regulatory mode: show the warning',
+      type: 'button', 'aria-expanded': String(open), 'aria-label': 'Unrestricted regulatory mode: show banner',
       onclick: () => { state.ui.regPop = !open; redraw(); },
     }, h('span.tri', h('span', 'U'))),
     h('div.reg-pop', { role: 'note' },
       h('b', 'Unrestricted regulatory mode. '), REG_TEXT,
       h('div.reg-pop-foot',
         h('a', { href: '#/settings/profile' }, 'Switch to country mode'),
-        button('Show the banner', () => setRegDismissed(st, false), 'small ghost'))));
+        button('Show banner', () => setRegDismissed(st, false), 'small ghost'))));
 }
 
 function banners() {
@@ -260,30 +262,30 @@ function banners() {
   if (mc) {
     const secs = Math.max(0, Math.round((Date.parse(mc.apply_at) - Date.now()) / 1000));
     const cancelled = state.ui.sent && state.ui.sent.what === 'cancel' && state.ui.sent.revision === mc.revision && mc.sender;
-    out.push(h('div.banner', dot('warn'), h('span', h('b', cancelled ? 'A change was cancelled. ' : 'Mesh-wide change on its way. '),
+    out.push(h('div.banner', dot('warn'), h('span', h('b', cancelled ? 'Mesh change cancelled. ' : 'Mesh change pending. '),
       cancelled
-        ? `Every node keeps the profile it runs, as revision ${mc.revision}, at ${clock(mc.apply_at)} (in ${duration(secs)}). `
-        : `Revision ${mc.revision} of the profile from ${mc.sender ? 'this node' : mc.from}: every node switches at ${clock(mc.apply_at)} (in ${duration(secs)}). `,
+        ? `All nodes keep the current profile as rev ${mc.revision} at ${clock(mc.apply_at)} (in ${duration(secs)}). `
+        : `Profile rev ${mc.revision} from ${mc.sender ? 'this node' : mc.from}: switchover at ${clock(mc.apply_at)} (in ${duration(secs)}). `,
       replacing(st)
-        ? h('span', 'Replacing it: the editors show its profile. Correct it and send, and yours goes in its place. ')
-        : h('a', { href: '#/settings/profile' }, 'Where it stands')),
+        ? h('span', 'Replacing: the editors show the pending profile. Edit and send to supersede it. ')
+        : h('a', { href: '#/settings/profile' }, 'Status')),
     // A wrong change can be put right before it lands: replaced by a
     // corrected one, or cancelled.
     cancelled ? null : replacing(st)
-      ? h('span.banner-actions', h('button.btn.small.ghost', { type: 'button', onclick: stopReplacing, title: 'Leave the change on its way as it is' }, 'Keep it'))
+      ? h('span.banner-actions', h('button.btn.small.ghost', { type: 'button', onclick: stopReplacing, title: 'Keep the pending change' }, 'Keep'))
       : h('span.banner-actions',
-        h('button.btn.small.ghost', { type: 'button', onclick: startReplacing, title: 'Open the editors on this change’s profile, to send a corrected one in its place' }, 'Replace it…'),
-        h('button.btn.small.ghost', { type: 'button', onclick: cancelPending, title: 'Every node keeps the profile it runs now' }, 'Cancel it…'))));
+        h('button.btn.small.ghost', { type: 'button', onclick: startReplacing, title: 'Edit the pending profile and send a replacement' }, 'Replace…'),
+        h('button.btn.small.ghost', { type: 'button', onclick: cancelPending, title: 'All nodes keep the current profile' }, 'Cancel…'))));
   }
   if (st && st.regulatory.active_mode === 'unrestricted') {
     if (!regDismissed(st)) {
       out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted regulatory mode. '), REG_TEXT,
         h('a', { href: '#/settings/profile' }, 'Switch to country mode')),
-      h('button.btn.small.ghost.dismiss', { type: 'button', onclick: () => setRegDismissed(st, true), title: 'Shrink it to a marked triangle in the corner, in this browser' }, 'Dismiss')));
+      h('button.btn.small.ghost.dismiss', { type: 'button', onclick: () => setRegDismissed(st, true), title: 'Minimize to corner marker (this browser)' }, 'Dismiss')));
     }
   } else if (st && st.regulatory.requested_mode === 'unrestricted') {
-    out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted mode is not in force. '),
-      `The radios keep ${st.regulatory.country}’s limits: ${st.regulatory.note || 'see Alerts'}. `,
+    out.push(h('div.banner', dot('warn'), h('span', h('b', 'Unrestricted mode not active. '),
+      `Radios limited to ${st.regulatory.country} rules: ${st.regulatory.note || 'see Alerts'}. `,
       h('a', { href: '#/settings/profile' }, 'Mesh profile'))));
   }
   return out;
@@ -304,7 +306,7 @@ function toasts() {
 }
 
 function waiting() {
-  return h('div.page', h('div.empty', state.problem ? 'The node is not reporting its status.' : 'Waiting for the node to report…'));
+  return h('div.page', h('div.empty', state.problem ? 'Node not reporting status.' : 'Waiting for node status…'));
 }
 
 function app() {
@@ -369,6 +371,14 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('beforeunload', (e) => {
   if (unsavedOn('settings') || unsavedOn('internet') || unsavedOn('voice')) { e.preventDefault(); e.returnValue = ''; }
 });
-// Ages ("last report 9 s ago") move on even when nothing arrives.
-setInterval(() => { if (state.session && state.session.authenticated) redraw(); }, 1000);
+// Once a second, just after the node's clock starts a new one: the
+// clock on Overview and Appearance moves on with it, whatever else
+// redraws in between, and ages ("last report 9 s ago") move on even when
+// nothing arrives. Aimed again each time, so a status that moves the
+// node's clock moves the timer with it.
+function tick() {
+  if (state.session && state.session.authenticated) redraw();
+  setTimeout(tick, untilNextSecond() + 8);
+}
+setTimeout(tick, untilNextSecond() + 8);
 refreshSession();

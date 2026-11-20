@@ -71,7 +71,7 @@ func wsUpgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
 	}
 	o, err := url.Parse(r.Header.Get("Origin"))
 	if err != nil || o.Host != r.Host {
-		return nil, errors.New("this request comes from another site")
+		return nil, errors.New("Cross-origin request refused")
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {

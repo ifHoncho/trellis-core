@@ -92,11 +92,11 @@ func TestMeshChangePendingRefusesEditors(t *testing.T) {
 	p := cfg.Profile
 	p.Radio.Channel = 157
 	_, err := d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: &p, Base: cfg.ProfileDigest}}, true)
-	if !isConflict(err) || !strings.Contains(err.Error(), "from node-2 is on its way") {
+	if !isConflict(err) || !strings.Contains(err.Error(), "from node-2 pending") {
 		t.Fatalf("an editor's change while one is pending: %v", err)
 	}
 	res, err := d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: &p}}, true)
-	if err != nil || !strings.Contains(effectText(res.Effects, "mesh-change-replaced"), "is dropped") {
+	if err != nil || !strings.Contains(effectText(res.Effects, "mesh-change-replaced"), "are dropped") {
 		t.Fatalf("a push with no base: %+v %v", res, err)
 	}
 	// On this node only: allowed, and told that the pending change
@@ -143,12 +143,12 @@ func TestMeshChangeReplaceAndCancel(t *testing.T) {
 	// be sent (without a change on its way it is nothing to change).
 	same := cfg.Profile
 	res, err = d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: &same, Base: cfg.ProfileDigest}, Replace: true}, true)
-	if err != nil || res.Changed || !strings.Contains(effectText(res.Effects, "mesh-change-cancelled"), "every node keeps the profile it runs now") {
+	if err != nil || res.Changed || !strings.Contains(effectText(res.Effects, "mesh-change-cancelled"), "All nodes keep the current profile") {
 		t.Fatalf("a cancel's review: %+v %v", res, err)
 	}
 	// Sent, it goes on to the offer (this test's daemon has no gossip to
 	// send it with; lab P4 sends one): not "nothing to change".
-	if _, err = d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: &same}, Replace: true}, false); err == nil || !strings.Contains(err.Error(), "gossip has not started") {
+	if _, err = d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{Profile: &same}, Replace: true}, false); err == nil || !strings.Contains(err.Error(), "Gossip not started") {
 		t.Fatalf("the cancel, sent: %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestMeshPushOlderProfile(t *testing.T) {
 	ctx := context.Background()
 	d.profile.Revision = 5
 	res, err := d.SetMeshProfile(ctx, api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 3, nil)}}, true)
-	if err != nil || !strings.Contains(effectText(res.Effects, "profile-older"), "revision 3, and the mesh runs revision 5") {
+	if err != nil || !strings.Contains(effectText(res.Effects, "profile-older"), "rev 3; mesh runs rev 5") {
 		t.Fatalf("older file: %+v %v", res, err)
 	}
 	// The mesh's own revision, and a hand-written file with none: not said.

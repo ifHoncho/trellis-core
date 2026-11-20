@@ -186,7 +186,7 @@ export function topology(topo, opts = {}) {
   const big = narrow.matches ? 1.5 : opts.small ? 1.35 : 1;
   const ui = (state.ui.topo ||= { hover: null, sel: null });
   if (!topo || !topo.nodes || !topo.nodes.length) {
-    return h('div.topo', { class: opts.small ? 'small' : '' }, h('div.topo-empty', 'Waiting for the node to report its mesh…'));
+    return h('div.topo', { class: opts.small ? 'small' : '' }, h('div.topo-empty', 'Waiting for topology…'));
   }
   layout(topo, H);
   const byId = new Map(topo.nodes.map((n) => [n.id, n]));
@@ -309,7 +309,7 @@ export function topology(topo, opts = {}) {
       leaves,
       (n.clients || 0) > shown ? h('text.sub', { x: r + 24, y: above ? r + 2 : -r + 2 }, `+${n.clients - shown}`) : null,
       h('text.name', { y: above ? -(r + (opts.small ? 13 : 20 * big)) : r + (opts.small ? 24 : 18 * big) }, n.callsign || shortMac(n.id)),
-      opts.small ? null : h('text.sub', { y: above ? -(r + 8 * big) : r + 31 * big }, !n.callsign ? 'not named yet' : !n.reported ? 'no link report' : n.node_id ? `#${n.node_id}` : ''));
+      opts.small ? null : h('text.sub', { y: above ? -(r + 8 * big) : r + 31 * big }, !n.callsign ? 'unnamed' : !n.reported ? 'no link report' : n.node_id ? `#${n.node_id}` : ''));
   });
 
   let tip = null;
@@ -327,11 +327,11 @@ export function topology(topo, opts = {}) {
         const out = l.a === fn.id ? l.ab_mbps : l.ba_mbps, back = l.a === fn.id ? l.ba_mbps : l.ab_mbps;
         const other = byId.get(l.a === fn.id ? l.b : l.a);
         const name = h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a));
-        if (isSite(l)) return h('div', name, h('span.faint', edgeName(l)), h('span.faint.tip-span', 'over the internet, not measured'));
+        if (isSite(l)) return h('div', name, h('span.faint', edgeName(l)), h('span.faint.tip-span', 'via internet, not measured'));
         return h('div', name, h('span.faint', edgeName(l)),
           h('span.num', out > 0 ? `→ ${mbps(out)}` : '→ –'), h('span.num', back > 0 ? `← ${mbps(back)}` : '← –'));
       })) : null,
-      fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'shares its uplink' : 'uplink down') : null,
+      fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'gateway' : 'uplink down') : null,
       fn.reported && gw && gw.id !== fn.id ? h('div.dim', `internet via ${gw.callsign}`) : null,
       fn.reported && !gw && !fn.gateway ? h('div.dim', 'no internet') : null,
       fn.version ? h('div.faint', fn.version) : null);
@@ -382,6 +382,6 @@ export function legend(topo) {
   return h('div.topo-legend',
     h('span', h('i'), 'strong link'), h('span', h('i.q1'), 'fair'), h('span', h('i.q0'), 'weak'),
     h('span', h('i.half'), 'one end reporting'),
-    sites ? h('span', { title: 'A tunnel over the internet. Its speed is not measured: the figure batman-adv is given is the profile\'s, not shown.' }, h('i.site'), 'site link (not measured)') : null,
-    h('span', '◆ this node'), h('span', '↑ shares uplink'), h('span', '• device'), h('span', 'Mbit/s: the slower direction'));
+    sites ? h('span', { title: 'Tunnel via internet. Throughput not measured (batman-adv uses the profile figure; not shown).' }, h('i.site'), 'site link (not measured)') : null,
+    h('span', '◆ this node'), h('span', '↑ gateway'), h('span', '• device'), h('span', 'Mbit/s: slower direction'));
 }

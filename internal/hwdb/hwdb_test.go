@@ -137,3 +137,40 @@ func TestMeshMTU(t *testing.T) {
 		t.Error("max_mesh_mtu 900 accepted")
 	}
 }
+
+func TestWidthCost(t *testing.T) {
+	db, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt := db.Lookup("pci", "14c3:7906", "mt7915e")
+	if mt == nil {
+		t.Fatal("no MT7916 entry")
+	}
+	if _, ok := mt.WidthCost("5g", 20); ok {
+		t.Error("20 MHz has a cost")
+	}
+	c, ok := mt.WidthCost("5g", 80)
+	if !ok || !c.PowerKnown || c.PowerDBm != 13.5 || c.BasePowerDBm != 20 || c.PowerDB != 6.5 {
+		t.Fatalf("80 MHz: %+v", c)
+	}
+	if c.NoiseDB < 6.0 || c.NoiseDB > 6.1 || c.TotalDB < 12.5 || c.TotalDB > 12.6 {
+		t.Errorf("80 MHz: noise %.2f total %.2f", c.NoiseDB, c.TotalDB)
+	}
+	// 2.4 GHz has no 80 MHz figure, and an adapter without a table none at
+	// all: the noise alone.
+	for _, e := range []*Entry{mt, nil, db.Lookup("usb", "0e8d:7610", "mt76x0u")} {
+		band := "2g"
+		c, ok := e.WidthCost(band, 80)
+		if !ok || c.PowerKnown || c.PowerDB != 0 || c.TotalDB != c.NoiseDB {
+			t.Errorf("%v: %+v", e, c)
+		}
+	}
+	// HaLow is measured against 1 MHz.
+	if c, ok := (*Entry)(nil).WidthCost("s1g", 4); !ok || c.BaseMHz != 1 || c.NoiseDB < 6 || c.NoiseDB > 6.1 {
+		t.Errorf("s1g 4 MHz: %+v", c)
+	}
+	if _, err := Parse([]byte("entries:\n  - id: x\n    power_by_width_dbm: {7g: {20: 1}}\n")); err == nil {
+		t.Error("an unknown band in power_by_width_dbm was taken")
+	}
+}

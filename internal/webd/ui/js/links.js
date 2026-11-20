@@ -7,7 +7,7 @@ import { h } from './dom.js';
 import { get } from './api.js';
 import { state, redraw } from './state.js';
 import { field } from './ui.js';
-import { bandName } from './fmt.js';
+import { bandName, widthCost, widthCostText } from './fmt.js';
 
 // Suggestions only: channels most radios have, and where the automatic
 // choices go first. Any other channel may be typed.
@@ -49,14 +49,14 @@ function compact(list) {
 
 // channelHint is the line under a channel field.
 export function channelHint(band, width, country) {
-  if (band !== 's1g') return `Any channel the radios have. Common: ${COMMON[band].join(', ')}`;
+  if (band !== 's1g') return `Any supported channel. Common: ${COMMON[band].join(', ')}`;
   const cc = (country || '').toUpperCase();
   const list = s1gChannels(cc, width);
   if (list === null) return '';
   if (list.length) return `${cc} channels at ${width} MHz: ${compact(list)}`;
   const t = channels().s1g[cc];
-  if (!t) return `HaLow has no channel plan for ${cc || 'this country'}.`;
-  return `${cc} has no ${width} MHz HaLow channels; it has ${Object.keys(t).join(', ')} MHz.`;
+  if (!t) return `No HaLow channel plan for ${cc || 'this country'}.`;
+  return `No ${width} MHz HaLow channels for ${cc}. Available: ${Object.keys(t).join(', ')} MHz.`;
 }
 
 // defaultChannel proposes a channel: the usual one when it is free and
@@ -72,7 +72,7 @@ function defaultChannel(band, width, country, taken = []) {
 // its width: "5 GHz · ch 149 · 80 MHz".
 export function linkLine(l) {
   const w = l.width_mhz ?? l.width;
-  const run = l.running_width_mhz && l.running_width_mhz !== w ? ` (running ${l.running_width_mhz})` : '';
+  const run = l.running_width_mhz && l.running_width_mhz !== w ? ` (running ${l.running_width_mhz} MHz)` : '';
   return `${bandName(l.band)} · ch ${l.channel} · ${w} MHz${run}`;
 }
 
@@ -83,6 +83,17 @@ export const linkOrder = (i) => `${ORDINALS[i] || 'Next'} link`;
 
 const select = (value, options, onchange) => h('select.select', { value: String(value), onchange: (e) => { onchange(e.target.value); redraw(); } },
   options.map(([v, label]) => h('option', { value: String(v) }, label)));
+
+// widthHint says what the chosen width costs in range: in decibels, on this
+// node's radio for the band when it has one (other nodes' radios may give
+// up more or less).
+function widthHint(l, key) {
+  const radios = ((state.status && state.status.radios) || []).filter((r) => (r.bands || []).includes(l.band) && r.mesh_point);
+  const r = radios.find((x) => (x.power_by_width || {})[l.band]) || radios[0];
+  const cost = widthCost(r && r.power_by_width, l.band, l.width);
+  if (cost) return widthCostText(cost) + ' Radios that cannot run this width fall back to a narrower one (alert raised).';
+  return key === 'radio' ? 'Wider: higher throughput at short range, less range. Radios that cannot run it fall back to a narrower width (alert raised).' : '';
+}
 
 // linkFields are the band, channel and width of one mesh link l (edited in
 // place). key is its name in the profile ("radio", "links[0]"), which is how
@@ -107,7 +118,7 @@ export function linkFields(l, key, fields, { title = '', country = 'US', others 
       oninput: (e) => { l.channel = Number(e.target.value); redraw(); } }),
     { error: fields[key + '.channel'], hint: channelHint(l.band, l.width, country) }),
     field('Width', select(l.width, widths(l.band).map((w) => [w, w + ' MHz']), setWidth),
-      { error: fields[key + '.width'], hint: key === 'radio' ? 'Wider is faster at short range and worse at long range. A radio that cannot run it narrows the link, and the node says so.' : '' }));
+      { error: fields[key + '.width'], hint: widthHint(l, key) }));
 }
 
 // nextLink proposes another link for a list of links: the first band none

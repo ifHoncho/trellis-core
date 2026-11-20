@@ -170,7 +170,7 @@ func (s *siteLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 	facts.Address = self.String()
 	peers := plan.Peers(facts.PublicKey)
 	if len(peers) == 0 {
-		warn("info", "site-link-alone", "this node holds the site link for site %q, but the profile lists no member of another site", me.Site)
+		warn("info", "site-link-alone", "Site link member for site %q, but no members at other sites", me.Site)
 	}
 	fail := func(err error) (reconcile.Result, error) {
 		facts.Error = err.Error()
@@ -186,7 +186,7 @@ func (s *siteLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if errors.Is(err, wg.ErrNotLoaded) && time.Since(s.modprobeAt) > 30*time.Second {
 			s.modprobeAt = time.Now()
 			if out, merr := exec.CommandContext(ctx, "modprobe", "wireguard").CombinedOutput(); merr != nil {
-				warn("error", "site-link-no-wireguard", "the site link needs WireGuard, and modprobe wireguard failed: %v: %s", merr, strings.TrimSpace(string(out)))
+				warn("error", "site-link-no-wireguard", "Site link requires WireGuard; modprobe wireguard failed: %v: %s", merr, strings.TrimSpace(string(out)))
 			}
 			c, err = wg.Dial()
 		}
@@ -296,7 +296,7 @@ func (s *siteLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		}
 		for _, pf := range facts.Peers {
 			if why := sitePeerNote(facts, pf, last[pf.PublicKey], time.Now()); why != "" {
-				warn("warning", "site-link-down", "site link peer %s (site %s): %s", sitePeerName(pf), pf.Site, why)
+				warn("warning", "site-link-down", "Site link to %s (site %s) down: %s.", sitePeerName(pf), pf.Site, why)
 			}
 		}
 	}
@@ -414,15 +414,15 @@ func sitePeerNote(f siteLinkFacts, p sitePeerFacts, last time.Time, now time.Tim
 	}
 	switch {
 	case p.Endpoint == "" && f.Endpoint == "":
-		return "neither this node nor it has an endpoint in the profile, so neither can dial the other: one of the two needs its public address and port there"
+		return "no endpoint on either node, neither can connect. Set a public address and port for one of them in the profile"
 	case p.EndpointErr != "" && f.Endpoint == "":
-		return fmt.Sprintf("its endpoint %s cannot be used (%s), and this node has none for it to dial", p.Endpoint, p.EndpointErr)
+		return fmt.Sprintf("remote endpoint %s unusable (%s), and this node has no endpoint", p.Endpoint, p.EndpointErr)
 	case p.EndpointErr != "":
-		return fmt.Sprintf("its endpoint %s cannot be used (%s): waiting for it to dial %s", p.Endpoint, p.EndpointErr, here)
+		return fmt.Sprintf("remote endpoint %s unusable (%s); waiting for remote to connect to %s", p.Endpoint, p.EndpointErr, here)
 	case p.NoRoute && f.Endpoint == "":
-		return fmt.Sprintf("this node has no uplink that leads to %s: a member needs internet of its own", p.Endpoint)
+		return fmt.Sprintf("no uplink route to %s; each member needs its own internet", p.Endpoint)
 	case p.NoRoute:
-		return fmt.Sprintf("this node has no uplink that leads to %s: waiting for it to dial %s", p.Endpoint, here)
+		return fmt.Sprintf("no uplink route to %s; waiting for remote to connect to %s", p.Endpoint, here)
 	}
 	var b strings.Builder
 	if last.IsZero() {
@@ -430,18 +430,18 @@ func sitePeerNote(f siteLinkFacts, p sitePeerFacts, last time.Time, now time.Tim
 		if now.Sub(f.Since) < siteAnswerWait {
 			return ""
 		}
-		b.WriteString("no answer yet")
+		b.WriteString("no handshake yet")
 	} else {
-		fmt.Fprintf(&b, "it stopped answering %s ago", now.Sub(last).Round(time.Second))
+		fmt.Fprintf(&b, "no handshake for %s", spoken(now.Sub(last)))
 	}
-	b.WriteString(": check that the node there is up, has internet and has this profile, and that UDP reaches ")
+	b.WriteString(". Check remote node power, internet and profile, and UDP to ")
 	switch {
 	case p.Endpoint == "":
-		fmt.Fprintf(&b, "%s from there (it has no endpoint, so it dials; this node's router must forward UDP port %d to it)", here, f.Port)
+		fmt.Fprintf(&b, "%s; remote has no endpoint, forward UDP port %d to this node", here, f.Port)
 	case f.Endpoint == "":
-		fmt.Fprintf(&b, "it at %s (its router must forward that port to it)", p.Endpoint)
+		fmt.Fprintf(&b, "%s; forward the port on the remote router", p.Endpoint)
 	default:
-		fmt.Fprintf(&b, "it at %s, or %s from there (one of the two routers must forward the port)", p.Endpoint, here)
+		fmt.Fprintf(&b, "%s or %s; forward the port on one router", p.Endpoint, here)
 	}
 	return b.String()
 }

@@ -146,20 +146,20 @@ function effectsBody(res, intro, said = []) {
   // An effect the introduction already states in words is not listed again.
   const effects = res.effects.filter((e) => !said.includes(e.code));
   if (effects.length) out.push(h('div.notices', effects.map((e) => notice(e))));
-  else out.push(h('p.dim', 'Nothing running is interrupted.'));
+  else out.push(h('p.dim', 'No service interruption.'));
   // The Wi-Fi details, only when the change touches the Wi-Fi: it comes up,
   // moves or restarts, gets new credentials (or a new name with the node),
   // or the node joins a mesh.
   const wifiCodes = ['ap-credentials', 'ap-band', 'ap-moves', 'ap-restart', 'ap-up', 'renamed', 'joins-mesh'];
   if (res.ap && res.ap.enabled && res.effects.some((e) => wifiCodes.includes(e.code))) {
     out.push(h('div', { style: { marginTop: '4px' } },
-      h('div.label', { style: { marginBottom: '8px' } }, 'Afterwards, this node’s Wi-Fi is'),
+      h('div.label', { style: { marginBottom: '8px' } }, 'Client AP after the change'),
       h('div.join',
         qr(res.ap.qr, 'Wi-Fi QR code'),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
           h('div', h('div.label', 'Network'), h('div.mono', { style: { fontSize: '17px' } }, res.ap.ssid)),
           h('div', h('div.label', 'Passphrase'), h('div.mono', { style: { fontSize: '17px', overflowWrap: 'anywhere' } }, res.ap.passphrase)),
-          h('p.dim', { style: { fontSize: '13.5px' } }, 'Note these now if you are on this node’s Wi-Fi: you will have to join again.')))));
+          h('p.dim', { style: { fontSize: '13.5px' } }, 'Record these if connected through this AP: reconnection required.')))));
   }
   return out;
 }
@@ -174,7 +174,7 @@ export async function confirmAndApply(send, opts = {}) {
   // The profile in force, sent to cancel a change on its way, changes
   // nothing and is still sent.
   if (!dry.changed && !dry.effects.some((e) => e.code === 'mesh-change-cancelled')) {
-    toast('Nothing to change: the node already runs this.');
+    toast('No change: already in effect.');
     return null;
   }
   const mustAsk = opts.always || dry.ap || dry.effects.some((e) => e.level !== 'info');
@@ -182,7 +182,7 @@ export async function confirmAndApply(send, opts = {}) {
     const go = await new Promise((resolve) => {
       const worst = dry.effects.some((e) => e.level === 'error');
       openDialog({
-        title: opts.title || 'Apply this change?',
+        title: opts.title || 'Apply change?',
         body: () => effectsBody(dry, opts.intro, opts.said),
         actions: [
           { label: opts.dismiss || 'Cancel', run: () => closeDialog() },
@@ -209,14 +209,14 @@ export async function saveNode() {
     const base = encodeURIComponent(state.config.node_digest || '');
     const res = await confirmAndApply((dry) => put(`/config/node?base=${base}` + (dry ? '&dry_run=1' : ''), draft));
     if (res && res.applied) {
-      toast('Saved. The node is applying it.');
+      toast('Saved. Applying.');
       await loadConfig();
     }
   } catch (e) {
     if (conflict(e)) { /* said */ } else {
       c.fields = fieldErrors(e);
       if (!Object.keys(c.fields).length) toast(e.message, 'bad', 7000);
-      else toast('Some settings were not accepted. They are marked.', 'bad');
+      else toast('Invalid settings. See marked fields.', 'bad');
     }
   }
   c.busy = false;
@@ -246,13 +246,13 @@ export async function saveProfile(input, opts = {}) {
   const others = ((state.status && state.status.nodes) || []).length;
   input = withBase(input);
   const res = await refused(() => confirmAndApply((dry) => put('/profile' + (dry ? '?dry_run=1' : ''), input),
-    { title: 'Change the profile on this node?', confirm: 'Change this node', always: true, said: ['this-node-only'],
+    { title: 'Change profile on this node?', confirm: 'Change this node', always: true, said: ['this-node-only'],
       intro: others
-        ? `This changes ${state.status.node.callsign} only. Nothing sends the profile to the other ${others === 1 ? 'node' : others + ' nodes'}: each keeps its own until you install this one there too.`
-        : 'This changes this node only. Nothing sends the profile to other nodes: each needs it installed.',
+        ? `Applies to ${state.status.node.callsign} only. Not sent to the other ${others === 1 ? 'node' : others + ' nodes'}; install it on each separately.`
+        : 'Applies to this node only. Not sent to other nodes.',
       ...opts }));
   if (res && res.applied) {
-    toast(others ? 'Profile installed on this node. The other nodes still have the old one.' : 'Profile installed on this node. It is applying it.', 'ok', 7000);
+    toast(others ? 'Profile installed on this node only. Other nodes unchanged.' : 'Profile installed. Applying.', 'ok', 7000);
     await loadConfig();
   }
   return res;
@@ -270,16 +270,16 @@ export async function saveMeshProfile(input, delay = 60, what = '') {
   if (instead) body.replace = true;
   const res = await refused(() => confirmAndApply((dry) => post('/profile/mesh' + (dry ? '?dry_run=1' : ''), body),
     instead
-      ? { title: 'Send this in the place of the change on its way?', confirm: 'Replace it', always: true,
-        intro: 'This node sends this profile to every node it knows, and the change on its way is dropped; they all switch to this one at the same moment.' }
-      : { title: 'Change the profile on every node?', confirm: 'Send to every node', always: true,
-        intro: 'This node sends the profile to every node it knows; they all switch to it at the same moment.' }));
+      ? { title: 'Replace the pending change?', confirm: 'Replace', always: true,
+        intro: 'Sent to all known nodes, superseding the pending change. All nodes switch over together.' }
+      : { title: 'Change profile on all nodes?', confirm: 'Send to all nodes', always: true,
+        intro: 'Sent to all known nodes. All nodes switch over together.' }));
   if (res && res.applied) {
     const at = res.apply_at ? clock(res.apply_at) : 'shortly';
     const n = (res.nodes || []).length;
     state.ui.replacing = false;
     state.ui.sent = { what, revision: res.revision };
-    toast(n ? `Sent to ${n} other node${n === 1 ? '' : 's'}. Every node switches at ${at}.` : `This node switches at ${at}.`, 'ok', 8000);
+    toast(n ? `Sent to ${n} other node${n === 1 ? '' : 's'}. Switchover at ${at}.` : `Switchover at ${at}.`, 'ok', 8000);
     // The profile in force is still the old one: the configuration is
     // read again when the node reports the new one (followProfile).
   }
@@ -325,7 +325,7 @@ export function editProfile() {
 async function freshConfig() {
   if (state.config) await rereadConfig(); else await loadConfig();
   if (state.config) return true;
-  toast(`The node's configuration cannot be read${cfg().error ? ': ' + cfg().error : ''}. Nothing was sent.`, 'bad', 7000);
+  toast(`Configuration unreadable${cfg().error ? ': ' + cfg().error : ''}. Nothing sent.`, 'bad', 7000);
   return false;
 }
 
@@ -333,7 +333,7 @@ export async function startReplacing() {
   // The change's profile comes with the configuration.
   if (!await freshConfig()) return;
   const mc = pendingChange();
-  if (!mc || !state.config.pending_profile) { toast('No change is on its way any more.'); return; }
+  if (!mc || !state.config.pending_profile) { toast('No pending change.'); return; }
   state.ui.replacing = mc.revision;
   redraw();
 }
@@ -350,12 +350,12 @@ export async function cancelPending() {
     if (!await freshConfig()) return;
     const body = { ...withBase({ profile: state.config.profile }), delay_s: 30, replace: true };
     const res = await refused(() => confirmAndApply((dry) => post('/profile/mesh' + (dry ? '?dry_run=1' : ''), body),
-      { title: 'Cancel the change on its way?', confirm: 'Cancel the change', dismiss: 'Keep the change', always: true,
-        intro: 'This node sends the profile the mesh runs now to every node it knows, in the place of the change on its way: at the switch nothing changes.' }));
+      { title: 'Cancel the pending change?', confirm: 'Cancel the change', dismiss: 'Keep the change', always: true,
+        intro: 'Sends the current profile to all known nodes in place of the pending change. No change at switchover.' }));
     if (res && res.applied) {
       state.ui.replacing = false;
       state.ui.sent = { what: 'cancel', revision: res.revision };
-      toast(`The change is cancelled: every node keeps its profile (as revision ${res.revision}) at ${res.apply_at ? clock(res.apply_at) : 'the switch'}.`, 'ok', 8000);
+      toast(`Change cancelled. All nodes keep the current profile (rev ${res.revision}) at ${res.apply_at ? clock(res.apply_at) : 'switchover'}.`, 'ok', 8000);
     }
   } catch (e) {
     toast(e.message.split('\n')[0], 'bad', 7000);
@@ -375,7 +375,7 @@ export function sentPending(what, st = state.status) {
 export async function identify(fingerprint) {
   try {
     await post('/radios/identify', { fingerprint, seconds: 10 });
-    toast('Its LED blinks for 10 seconds.');
+    toast('LED blinking for 10 s.');
   } catch (e) {
     toast(e.message, 'bad', 6000);
   }
@@ -389,9 +389,9 @@ export function saveBar() {
     h('div.panel-body', { style: { padding: '12px 16px' } },
       h('div.row.between', { style: { flexWrap: 'wrap', gap: '10px' } },
         c.stale
-          ? h('span.warn', { style: { maxWidth: '70ch' } }, 'These settings were changed on the node while you were editing (another browser, or meshctl). Saving yours would undo that: discard to see the node’s, then make your change again.')
-          : h('span.dim', 'You have changes that are not saved.'),
+          ? h('span.warn', { style: { maxWidth: '70ch' } }, 'Settings changed on the node during editing (another session or meshctl). Saving would overwrite them: discard, then edit again.')
+          : h('span.dim', 'Unsaved changes.'),
         h('div.row',
-          h('button.btn', { onclick: resetDraft, disabled: c.busy }, c.stale ? 'Discard and show the node’s' : 'Discard'),
+          h('button.btn', { onclick: resetDraft, disabled: c.busy }, c.stale ? 'Discard and reload' : 'Discard'),
           h('button.btn.primary', { onclick: saveNode, disabled: c.busy || c.stale }, c.busy ? 'Checking…' : 'Review and save')))));
 }

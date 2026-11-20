@@ -134,7 +134,7 @@ func (g *gatewayReconciler) applyHostDNS(ctx context.Context, want bool, server 
 		}
 		for _, args := range [][]string{{"dns", BridgeIfname, server}, {"domain", BridgeIfname, "~."}, {"default-route", BridgeIfname, "yes"}} {
 			if err := run("resolvectl", args...); err != nil && args[0] != "default-route" {
-				warn("warning", "host-dns", "this node has no uplink of its own and its DNS cannot be sent to the mesh: %v", err)
+				warn("warning", "host-dns", "No local uplink; host DNS cannot be pointed at the mesh: %v", err)
 				return false
 			}
 		}
@@ -165,18 +165,18 @@ func (g *gatewayReconciler) applyHostDNS(ctx context.Context, want bool, server 
 			return false
 		}
 		if err := writeFileAtomic(nmDNSConf, conf, 0o644); err != nil {
-			warn("warning", "host-dns", "this node has no uplink of its own and its DNS cannot be sent to the mesh: %v", err)
+			warn("warning", "host-dns", "No local uplink; host DNS cannot be pointed at the mesh: %v", err)
 			return false
 		}
 		if err := run("nmcli", "general", "reload"); err != nil {
-			warn("warning", "host-dns", "NetworkManager did not take the mesh DNS: %v", err)
+			warn("warning", "host-dns", "NetworkManager rejected mesh DNS: %v", err)
 		}
 		d.log.Info("no uplink of its own: the system's DNS goes to the mesh", "server", server, "through", "NetworkManager")
 		g.hostDNSOn = server
 		return true
 	}
 	if want {
-		warn("info", "host-dns", "this node has no uplink of its own and its resolver is neither systemd-resolved nor NetworkManager: its own DNS is left as it is (the mesh's DNS is %s)", server)
+		warn("info", "host-dns", "No local uplink; resolver is neither systemd-resolved nor NetworkManager. Host DNS unchanged (mesh DNS: %s)", server)
 	}
 	return false
 }

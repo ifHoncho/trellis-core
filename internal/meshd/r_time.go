@@ -94,12 +94,12 @@ func (t *timeReconciler) Reconcile(ctx context.Context) (res reconcile.Result, _
 	tr, err := t.chrony.Tracking(ctx)
 	if errors.Is(err, chrony.ErrNotInstalled) {
 		t.set(status.Clock{Service: "none", Note: "chrony is not installed: this node neither serves nor follows mesh time"}, "")
-		warn("info", "time-no-chrony", "chrony is not installed: this node neither serves nor follows mesh time (sudo apt install chrony)")
+		warn("info", "time-no-chrony", "chrony not installed: no mesh time sync. Install: sudo apt install chrony")
 		return res, nil
 	}
 	if err != nil {
 		t.set(status.Clock{Service: "chrony", Note: "chronyd does not answer: " + err.Error()}, "")
-		warn("warning", "time-chrony", "chronyd does not answer, so the clock is not kept and this node serves no time: %v", err)
+		warn("warning", "time-chrony", "chronyd not responding: clock not managed, time service off: %v", err)
 		return res, nil
 	}
 
@@ -115,7 +115,7 @@ func (t *timeReconciler) Reconcile(ctx context.Context) (res reconcile.Result, _
 		warn("warning", "time-sources", "cannot write the mesh's time servers for chrony: %v", err)
 	} else if changed {
 		if err := t.chrony.ReloadSources(ctx); err != nil {
-			warn("warning", "time-sources", "chrony did not take the mesh's time servers: %v", err)
+			warn("warning", "time-sources", "chrony rejected mesh time servers: %v", err)
 		} else {
 			t.d.log.Info("mesh time servers for chrony", "servers", strings.Join(addrs, " "))
 			res.Changed = true
@@ -142,8 +142,11 @@ func (t *timeReconciler) Reconcile(ctx context.Context) (res reconcile.Result, _
 		c.Note = "no GNSS fix, mesh time server or internet in reach: the mesh keeps to this node's clock for now"
 	}
 	t.set(c, role)
+	if c.Synced {
+		t.d.clockSet()
+	}
 	if p := t.d.profile.Prefix; p != "" && p != "10.73.0.0/16" {
-		warn("warning", "time-prefix", "chrony serves time to 10.73.0.0/16 (packaging/chrony/trellis.conf), but this mesh uses %s: nodes cannot reach each other's time", p)
+		warn("warning", "time-prefix", "chrony allows 10.73.0.0/16 (packaging/chrony/trellis.conf) but the mesh uses %s: inter-node time sync blocked", p)
 	}
 	return res, nil
 }

@@ -7,7 +7,7 @@
 import { h } from '../dom.js';
 import { get, post, upload } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
-import { panel, button, kv, notice, icon, table, pill } from '../ui.js';
+import { panel, button, kv, notice, icon, table, pill, asSentence } from '../ui.js';
 import { since } from '../fmt.js';
 
 const POLL_MS = 2000;
@@ -83,7 +83,7 @@ async function start() {
     await post('/upgrade?sha256=' + encodeURIComponent(s.check.sha256));
     s.waitingSince = Date.now();
     s.file = null; s.check = null;
-    toast('The upgrade has started. The node restarts on the way: this page loses it for a minute.', 'ok', 8000);
+    toast('Upgrade started. Web UI unavailable ~1 min.', 'ok', 8000);
   } catch (e) {
     s.error = e.message;
   }
@@ -107,7 +107,7 @@ function rollback(l) {
           s.lastBefore = s.st && s.st.last ? s.st.last.finished : null;
           await post('/upgrade/rollback');
           s.waitingSince = Date.now();
-          toast('Going back. The node restarts on the way.', 'ok', 6000);
+          toast('Rollback started. Web UI unavailable ~1 min.', 'ok', 6000);
         } catch (e) { toast(e.message, 'bad', 8000); }
         refresh();
       } },
@@ -121,13 +121,13 @@ function lastLine(l) {
   const when = since(l.finished) + ' ago';
   switch (l.result) {
     case 'upgraded': return h('span', h('span.ok', `${l.from} → ${l.to}`), h('span.faint', `  ·  ${when}`));
-    case 'unchanged': return h('span', h('span.faint', `${l.from} → ${l.to}: not installed (interrupted before)  ·  ${when}`));
+    case 'unchanged': return h('span', h('span.faint', `${l.from} → ${l.to}: not installed (interrupted)  ·  ${when}`));
     case 'rolled-back':
       return l.reason === 'asked for by the operator'
-        ? h('span', `back to ${l.from} from ${l.to}, as asked`, h('span.faint', `  ·  ${when}`))
-        : h('span', h('span.warn', `${l.from} → ${l.to}: went back to ${l.from}`), h('span.faint', `  ·  ${l.reason}  ·  ${when}`));
+        ? h('span', `${l.to} → ${l.from}: rolled back by operator`, h('span.faint', `  ·  ${when}`))
+        : h('span', h('span.warn', `${l.from} → ${l.to}: rolled back`), h('span.faint', ` · ${l.reason}  ·  ${when}`));
   }
-  return h('span.bad', `${l.from} → ${l.to}: failed, not undone: ${l.reason}`);
+  return h('span.bad', `${l.from} → ${l.to}: failed, rollback failed: ${l.reason}`);
 }
 
 export function softwarePanel(st) {
@@ -136,8 +136,8 @@ export function softwarePanel(st) {
   const u = s.st;
   const rows = [];
   if (u) {
-    rows.push(['Package', u.package ? u.package : h('span.faint', 'not installed from a package')]);
-    rows.push(['Release keys', u.trusted_keys ? `${u.trusted_keys} trusted` : h('span.faint', 'none trusted')]);
+    rows.push(['Package', u.package ? u.package : h('span.faint', 'None (installed from scripts)')]);
+    rows.push(['Release keys', u.trusted_keys ? String(u.trusted_keys) : h('span.faint', 'None')]);
     if (u.last) rows.push(['Last upgrade', lastLine(u.last)]);
   }
   const body = [kv(rows)];
@@ -155,16 +155,16 @@ export function softwarePanel(st) {
       s.lostSince ? notice({ level: 'info', message: 'The node is restarting and does not answer for the moment. This page keeps asking; you may have to sign in again.' }) : null,
       (u.log || []).length ? h('pre.block', { style: { maxHeight: '260px' } }, u.log.join('\n')) : null));
   } else if (!u.package) {
-    body.push(notice({ level: 'info', message: 'Trellis was installed on this node by the install scripts, not from a package, so there is no version to go back to. Install the package on the node once (sudo apt install ./trellis_VERSION_ARCH.deb); later upgrades can then be made here.' }));
+    body.push(notice({ level: 'info', message: 'Installed from scripts: web upgrade unavailable. Install the package once on the node: sudo apt install ./trellis_VERSION_ARCH.deb' }));
   } else if (!u.trusted_keys) {
-    body.push(notice({ level: 'info', message: 'This node trusts no release key yet, so it takes no package from here. On the node, put the release’s public key in /etc/trellis/release-keys/NAME.pub.' }));
+    body.push(notice({ level: 'info', message: 'No release key installed: packages refused. Install the public key at /etc/trellis/release-keys/NAME.pub' }));
   } else if (s.check) {
     const c = s.check;
     body.push(h('div.notice.info', { style: { marginTop: '12px' } },
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
         h('p', h('strong', `${c.from} → ${c.to}`), h('span.faint', `  ·  ${c.arch}  ·  signed by ${c.signed_by}`)),
         h('p.dim', { style: { fontSize: '14px' } },
-          `The node installs it, restarts on it and checks itself for up to three minutes: Trellis on ${c.to}, nothing failing that worked before, its mesh links back. If it is not healthy, it goes back to ${c.from} and its configuration by itself. This page loses the node for a minute while it restarts; you may have to sign in again.`),
+          `Install, restart, self-test up to 3 min (version, services, mesh links). Automatic rollback to ${c.from} on failure. Web UI unavailable ~1 min; sign-in may be required.`),
         h('div.row', button(s.busy ? 'Starting…' : `Upgrade to ${c.to}`, start, 'primary', { disabled: s.busy }),
           button('Cancel', () => { s.file = null; s.check = null; redraw(); }, '', { disabled: s.busy })))));
   } else {
@@ -172,11 +172,11 @@ export function softwarePanel(st) {
       h('label.btn', { class: s.busy ? 'disabled' : '' }, icon('download'), s.busy ? 'Checking the file…' : 'Choose a release file',
         h('input', { type: 'file', accept: '.deb,application/vnd.debian.binary-package', hidden: true, disabled: s.busy,
           onchange: (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) checkFile(f); } })),
-      h('span.faint', { style: { fontSize: '14px' } }, `The trellis package for this node (${u.arch || 'its architecture'}), signed by a release key it trusts. Nothing is installed before you confirm.`)));
+      h('span.faint', { style: { fontSize: '14px' } }, `Signed trellis package (.deb, ${u.arch || '–'}). Verified before install; confirmation required.`)));
     if (u.last && u.last.can_roll_back) tools.push(button(`Go back to ${u.last.from}`, () => rollback(u.last), 'small'));
   }
-  tools.push(button('', () => { s.error = null; refresh(); }, 'small', { icon: 'refresh', title: 'Ask again' }));
-  return panel('Software', { meta: u && u.package ? 'from a package' : '', tools }, body);
+  tools.push(button('', () => { s.error = null; refresh(); }, 'small', { icon: 'refresh', title: 'Refresh' }));
+  return panel('Software', { meta: u && u.package ? 'package' : '', tools }, body);
 }
 
 // Every node: a mesh-wide upgrade from this node. The operator gives it
@@ -256,11 +256,12 @@ export function rolloutSummary(r) {
   const halt = nodes.find((n) => n.phase === 'halted' && n.reason);
   const up = nodes.find((n) => n.phase === 'upgrading');
   const from = r.sender ? 'this node' : r.origin;
-  if (stop) return { tone: 'error', text: `Upgrade to ${r.version} from ${from} halted: ${stop.callsign} ${stop.phase === 'failed' ? 'failed' : 'went back'}${stop.reason ? ` (${stop.reason})` : ''}. ${done} of ${nodes.length} upgraded.` };
-  if (halt && !r.cancelled) return { tone: 'error', text: `Upgrade to ${r.version} from ${from} halted: ${halt.reason}. ${done} of ${nodes.length} upgraded.` };
-  if (r.cancelled) return { tone: 'warning', text: `Upgrade to ${r.version} from ${from} cancelled. ${done} of ${nodes.length} upgraded${up ? `; ${up.callsign} is finishing` : ''}.` };
-  if (r.ended) return { tone: 'ok', text: `Upgrade to ${r.version} from ${from} is over: ${done} of ${nodes.length} upgraded.` };
-  return { tone: 'warning', text: `Upgrading the mesh to ${r.version} from ${from}: ${done} of ${nodes.length} done${up ? `; ${up.callsign} upgrading now` : ''}.` };
+  const head = `Mesh upgrade to ${r.version} (from ${from})`;
+  if (stop) return { tone: 'error', text: `${head} halted: ${stop.callsign} ${stop.phase === 'failed' ? 'failed' : 'rolled back'}${stop.reason ? ` (${stop.reason})` : ''}. Upgraded ${done}/${nodes.length}.` };
+  if (halt && !r.cancelled) return { tone: 'error', text: `${head} halted: ${halt.reason}. Upgraded ${done}/${nodes.length}.` };
+  if (r.cancelled) return { tone: 'warning', text: `${head} cancelled. Upgraded ${done}/${nodes.length}${up ? `; ${up.callsign} finishing` : ''}.` };
+  if (r.ended) return { tone: 'ok', text: `${head} complete. Upgraded ${done}/${nodes.length}.` };
+  return { tone: 'warning', text: `${head} in progress: ${done}/${nodes.length} done${up ? `; ${up.callsign} upgrading` : ''}.` };
 }
 
 function progress(r) {
@@ -293,11 +294,11 @@ function planView(m) {
       { title: 'Runs', cell: (n) => h('span.mono', n.version || '–') },
       { title: 'Arch', cell: (n) => n.arch || '–' },
       { title: 'Hops', cls: 'num', cell: (n) => (n.hops >= 0 ? String(n.hops) : '?') },
-      { title: '', cell: (n) => (n.skip ? h('span.dim', 'left out: ' + n.skip) : pill('upgrades', 'plain')) },
+      { title: '', cell: (n) => (n.skip ? h('span.dim', 'Skipped: ' + n.skip) : pill('upgrade', 'plain')) },
     ], p.nodes),
     ...(p.warnings || []).map((w) => notice({ level: 'warning', message: w })),
     h('p.dim', { style: { fontSize: '14px' } },
-      'One node at a time, farthest from this one first and this node last: each installs the release, restarts on it and checks its own health, and goes back by itself if it is not healthy. The first node that goes back halts the rest. A node’s links drop for a minute while it restarts.'),
+      'Sequential, farthest node first, this node last. Each node self-tests and rolls back on failure; any rollback halts the upgrade. Links drop ~1 min per node.'),
     h('div.row',
       button(m.busy || `Upgrade ${out} ${out === 1 ? 'node' : 'nodes'} to ${p.version}`, startRollout, 'primary', { disabled: !!m.busy || !out }),
       button('Cancel', () => { m.pkgs = []; m.plan = null; m.error = null; redraw(); }, '', { disabled: !!m.busy })));
@@ -322,8 +323,8 @@ export function meshUpgradePanel(st) {
           h('input', { type: 'file', multiple: true, accept: '.deb,application/vnd.debian.binary-package', hidden: true, disabled: !!m.busy,
             onchange: (e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) addFiles(fs); } })),
         h('span.faint', { style: { fontSize: '14px' } },
-          `The trellis package for each architecture in the mesh (${others} other ${others === 1 ? 'node' : 'nodes'} known), signed by a release key this node trusts. Nothing starts before you see the plan and confirm.`)));
+          `Signed trellis packages, one per architecture in the mesh (${others} other ${others === 1 ? 'node' : 'nodes'} known). Plan shown before start.`)));
     }
   }
-  return panel('Every node', { meta: r ? `rollout ${r.id}` : 'upgrade the whole mesh', tools }, body);
+  return panel('Mesh upgrade', { meta: r ? `upgrade ${r.id}` : '', tools }, body);
 }

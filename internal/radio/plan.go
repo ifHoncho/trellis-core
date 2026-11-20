@@ -337,9 +337,9 @@ func plan(in Input) *Plan {
 	}
 	if len(in.Radios) == 0 {
 		if in.Roles.Mesh.Mode == config.RoleDisabled {
-			p.note("info", "no-radios", "no Wi-Fi radios found (mesh role disabled; wired ports only)")
+			p.note("info", "no-radios", "No Wi-Fi radios (mesh role disabled; wired only)")
 		} else {
-			p.note("error", "no-radios", "no Wi-Fi radios found")
+			p.note("error", "no-radios", "No Wi-Fi radios")
 		}
 		return p
 	}
@@ -350,7 +350,7 @@ func plan(in Input) *Plan {
 
 	// AP ----------------------------------------------------------------------
 	if !in.APEnabled {
-		p.note("info", "ap-disabled", "client AP disabled in node config")
+		p.note("info", "ap-disabled", "Client AP disabled (node config)")
 	} else {
 		var apCands []*Radio
 		for _, r := range in.Radios {
@@ -365,7 +365,7 @@ func plan(in Input) *Plan {
 
 		switch in.Roles.AP.Mode {
 		case config.RoleDisabled:
-			p.note("info", "ap-disabled", "AP role disabled in node config")
+			p.note("info", "ap-disabled", "AP role disabled (node config)")
 		case "radio", "port":
 			var pinned *Radio
 			if in.Roles.AP.Mode == "radio" {
@@ -388,16 +388,16 @@ func plan(in Input) *Plan {
 			}
 			switch {
 			case pinned == nil:
-				p.note("error", "ap-pin-missing", "AP is pinned to a radio that is not present; no AP")
+				p.note("error", "ap-pin-missing", "AP pinned to absent radio: no AP")
 			case used(pinned):
 				if in.canShareAP(pinned) {
 					p.AP = pinned
 				} else {
-					p.note("error", "ap-pin-conflict", "AP is pinned to the mesh radio %s, which cannot run both at once", pinned.Describe())
+					p.note("error", "ap-pin-conflict", "AP pinned to mesh radio %s, which cannot run mesh + AP", pinned.Describe())
 				}
 			default:
 				if ok, why := in.apEligibleAs(pinned, p.APBand, true); !ok {
-					p.note("error", "ap-pin-ineligible", "AP is pinned to %s, which cannot carry it: %s", pinned.Describe(), why)
+					p.note("error", "ap-pin-ineligible", "AP pinned to %s, not AP-capable: %s", pinned.Describe(), why)
 				} else {
 					p.AP = pinned
 				}
@@ -419,14 +419,14 @@ func plan(in Input) *Plan {
 					}
 					p.AP = lr
 					if i == 0 {
-						p.note("warning", "ap-shares-mesh-radio", "no free radio: the client AP shares the mesh radio, channel and airtime")
+						p.note("warning", "ap-shares-mesh-radio", "No free radio for client AP: sharing the mesh radio and channel.")
 					} else {
-						p.note("warning", "ap-shares-mesh-radio", "no free radio: the client AP shares the radio, channel and airtime of %s", p.linkName(i))
+						p.note("warning", "ap-shares-mesh-radio", "No free radio for client AP: sharing the radio and channel of %s.", p.linkName(i))
 					}
 					break
 				}
 				if p.AP == nil {
-					p.note("warning", "no-ap-radio", "no radio left for the client AP: connect the EUD by cable")
+					p.note("warning", "no-ap-radio", "No radio for client AP: wired clients only")
 				}
 			}
 		}
@@ -438,13 +438,13 @@ func plan(in Input) *Plan {
 			if p.APBand == config.Band2G {
 				other = config.Band5G
 			}
-			p.note("warning", "ap-band-fallback", "AP radio %s has no %s band; the AP will use %s, the same band as the mesh", p.AP.Describe(), p.APBand, other)
+			p.note("warning", "ap-band-fallback", "AP radio %s: no %s band; AP on %s (same band as mesh)", p.AP.Describe(), p.APBand, other)
 		}
 	}
 
 	for _, r := range in.Radios {
 		if r.InUse != "" && !used(r) && r != p.AP {
-			p.note("info", "radio-in-use", "%s left alone: %s", r.Describe(), r.InUse)
+			p.note("info", "radio-in-use", "%s not managed: %s", r.Describe(), r.InUse)
 		}
 	}
 
@@ -468,7 +468,7 @@ func plan(in Input) *Plan {
 		}
 	}
 	if unused > 0 && p.hasLink() && (p.AP != nil || !in.APEnabled) {
-		p.note("info", "radios-unused", "%d radio(s) unused: no role left for them", unused)
+		p.note("info", "radios-unused", "%d radio(s) unused.", unused)
 	}
 	return p
 }
@@ -501,7 +501,7 @@ func (p *Plan) planLinks(in Input, bands []string) {
 		switch sel.Mode {
 		case config.RoleDisabled:
 			if i == 0 {
-				p.note("info", "mesh-disabled", "mesh role disabled in node config")
+				p.note("info", "mesh-disabled", "Mesh role disabled (node config)")
 			} else {
 				p.note("info", key+"-disabled", "%s disabled in node config", p.linkBand(i, band))
 			}
@@ -601,7 +601,7 @@ func (p *Plan) planLinks(in Input, bands []string) {
 		code := "no-" + config.LinkRoleKey(i) + "-radio"
 		switch {
 		case p.hasLink():
-			p.note("info", code, "no radio for %s: this node meshes over %s", p.linkBand(i, bands[i]), p.carried(bands))
+			p.note("info", code, "No radio for %s: meshing on %s only.", p.linkBand(i, bands[i]), p.carried(bands))
 		case i == 0:
 			p.note("error", code, "no radio can carry the %s mesh: %s. Plug in an adapter that supports mesh point (docs/hardware.md lists tested ones)", bands[0], ineligibleSummary(in))
 		default:

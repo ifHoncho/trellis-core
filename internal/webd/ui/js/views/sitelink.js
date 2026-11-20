@@ -19,21 +19,21 @@ const peerName = (p) => p.name || p.callsign || short(p.public_key);
 
 function handshake(p) {
   // No word from the node yet on why: the tunnel was set up seconds ago.
-  if (!p.last_handshake) return p.note ? pill('no answer', 'bad') : pill('connecting', 'plain');
+  if (!p.last_handshake) return p.note ? pill('no handshake', 'bad') : pill('connecting', 'plain');
   const age = Date.now() - Date.parse(p.last_handshake);
   return h('span', pill(p.up ? 'up' : 'down', p.up ? 'ok' : 'bad'), h('span.faint', ` ${ago(age)} ago`));
 }
 
 function reachedAt(p) {
   const shown = p.current || p.endpoint;
-  const second = !p.endpoint ? 'dials in (no endpoint)'
+  const second = !p.endpoint ? 'inbound only (no endpoint)'
     : p.current && p.current !== p.endpoint && p.current !== `${p.resolved}:${p.endpoint.split(':').pop()}` ? `profile: ${p.endpoint}`
       : p.resolved ? `${p.endpoint}` : '';
-  return h('div', h('div.primary.mono', shown || h('span.faint', 'waiting for it')), second ? h('div.secondary', second) : null);
+  return h('div', h('div.primary.mono', shown || h('span.faint', 'waiting')), second ? h('div.secondary', second) : null);
 }
 
 async function copyKey(key) {
-  toast(await copyText(key) ? 'Key copied.' : 'Copy it by hand: the browser refused.', 'ok', 4000);
+  toast(await copyText(key) ? 'Key copied.' : 'Copy failed. Copy manually.', 'ok', 4000);
 }
 
 // newKey gives this node a new site link key, after saying what that
@@ -54,24 +54,24 @@ function newKey(st) {
       let swapped = false;
       if (ed && ed.draft) for (const m of ed.draft) if (m.public_key === k.was) { m.public_key = k.public_key; swapped = true; }
       closeDialog();
-      toast(swapped ? 'New key made. The members list below now has it: review and send it to put this node back on the link.' : 'New key made. The old one no longer works.', 'ok', 10000);
+      toast(swapped ? 'New key generated and added to the member list. Review and send to restore the link.' : 'New key generated. Old key revoked.', 'ok', 10000);
     } catch (e) {
       toast(e.message, 'bad', 8000);
     }
     ui.busy = false; redraw();
   };
   openDialog({
-    title: 'Give this node a new key?',
+    title: 'Generate new key?',
     body: () => [
-      h('p', 'The key is how the profile names this node on the site link. A new one replaces it for good: the old key stops working, and cannot be brought back.'),
+      h('p', 'The key identifies this node on the site link. Replacement is permanent: the old key is revoked.'),
       sl.member
-        ? notice({ level: 'warning', message: `This node holds the site link for site ${sl.site} under its current key. With a new key it leaves the link at once, and its tunnels close, until the profile lists the new key in its place at every site.` })
-        : notice({ level: 'info', message: 'This node is not a member, so nothing is interrupted. A list that names its old key (one not sent yet, or kept in a file) has to be given the new one.' }),
-      h('p.dim', { style: { fontSize: '14px' } }, 'Make a new key when the current one may have been copied. A node that is lost or captured is taken off the members list instead.'),
+        ? notice({ level: 'warning', message: `This node is the site link for site ${sl.site}. A new key drops its tunnels until the profile at every site lists the new key.` })
+        : notice({ level: 'info', message: 'Not a member: no interruption. Any member list with the old key (unsent or in a file) must be updated.' }),
+      h('p.dim', { style: { fontSize: '14px' } }, 'Use if the key may be compromised. For a lost or captured node, remove it from the member list instead.'),
     ],
     actions: [
       { label: 'Cancel', run: () => closeDialog() },
-      { label: 'Make a new key', kind: sl.member ? 'danger' : 'primary', run, disabled: () => ui.busy },
+      { label: 'Generate new key', kind: sl.member ? 'danger' : 'primary', run, disabled: () => ui.busy },
     ],
   });
 }
@@ -80,37 +80,37 @@ function newKey(st) {
 function statusPanel(st) {
   const sl = st.site_link;
   const peers = sl.peers || [];
-  const meta = sl.member ? `site ${sl.site} · ${sl.address} · UDP ${sl.port}` : sl.members ? 'this node is not a member' : 'not set up';
+  const meta = sl.member ? `site ${sl.site} · ${sl.address} · UDP ${sl.port}` : sl.members ? 'not a member' : 'not configured';
   const notes = peers.filter((p) => p.note);
   const sum = siteSummary(st);
   return panel('Site link', { meta, flush: sl.member && peers.length > 0 },
     h('div.sitekey', { style: sl.member && peers.length ? { padding: '14px 16px 4px' } : {} },
-      h('div.label', 'This node’s key'),
+      h('div.label', 'Node key'),
       h('div.row', h('code.mono.keytext', sl.public_key || '–'),
         sl.public_key ? button('Copy', () => copyKey(sl.public_key), 'small') : null,
-        sl.public_key ? button('New key…', () => newKey(st), 'small', { title: 'Replace this node’s key: when the current one may have been copied' }) : null),
+        sl.public_key ? button('New key…', () => newKey(st), 'small', { title: 'Replace node key (if compromised)' }) : null),
       sl.member ? h('div.secondary', { style: { marginTop: '8px' } }, sl.endpoint
-        ? ['The other sites reach this node at ', h('span.mono', sl.endpoint), '.']
-        : 'This node has no endpoint in the profile: it dials the other sites, they cannot dial it.') : null),
+        ? ['Endpoint ', h('span.mono', sl.endpoint), '.']
+        : 'No endpoint in the profile: outbound connections only.') : null),
     sl.error ? h('div', { style: { padding: '0 16px' } }, notice({ level: 'error', message: sl.error })) : null,
     sl.member
       ? [table({ stack: true, key: (p) => p.public_key }, [
           { title: 'Peer', cls: 'wide', wide: true, cell: (p) => h('div', h('div.primary', peerName(p)),
             h('div.secondary', `site ${p.site}`, p.callsign && p.callsign !== p.name ? ` · ${p.callsign}` : '')) },
-          { title: 'Reached at', cell: reachedAt },
+          { title: 'Endpoint', cell: reachedAt },
           { title: 'Handshake', cell: handshake },
           { title: 'Traffic', cls: 'num', cell: (p) => h('span', `↓ ${bytes(p.rx_bytes)}`, h('span.faint', ' · '), `↑ ${bytes(p.tx_bytes)}`) },
-          { title: 'Tunnel', cell: (p) => h('div', h('div.primary.mono', p.interface), h('div.secondary', p.batman ? `${p.neighbors} neighbour${p.neighbors === 1 ? '' : 's'} over it` : 'not in use')) },
-        ], peers, 'The profile lists no member of another site: this node has nothing to link to. Members of one site do not link to each other.'),
+          { title: 'Tunnel', cell: (p) => h('div', h('div.primary.mono', p.interface), h('div.secondary', p.batman ? `${p.neighbors} neighbour${p.neighbors === 1 ? '' : 's'}` : 'not in use')) },
+        ], peers, 'No members at other sites: nothing to link. Members of the same site do not link.'),
         // Why a tunnel is not up, and what to look at: the node's words.
         notes.length ? h('div.notices', { style: { padding: '12px 16px 14px' } },
           notes.map((p) => notice({ level: 'warning', message: `${peerName(p)} (site ${p.site}): ${p.note}.` })),
-          h('p.dim', { style: { fontSize: '13px', margin: '2px 0 0' } }, 'A peer stays here for as long as the profile lists it. To take one off, remove it under Members below and send the change.')) : null]
+          h('p.dim', { style: { fontSize: '13px', margin: '2px 0 0' } }, 'Peers listed per the profile. To remove one, delete it under Members and send.')) : null]
       : [
           // A node that is no member still says how the link stands.
           sum ? h('div', { style: { marginTop: '14px' } }, notice({ level: { ok: 'ok', warn: 'warning', bad: 'error' }[sum.tone], message: `Site link: ${sum.text}. ${sum.note}` })) : null,
           h('p.dim', { style: { margin: '12px 0 0', fontSize: '14px', maxWidth: '70ch' } },
-            'Parts of this mesh in other places, each with internet, join into one mesh over the internet. One or two nodes with an uplink at each site hold the link: list them below, with their keys.')]);
+            'Joins remote parts of the mesh over the internet. One or two nodes with an uplink per site carry the link; list them below with their keys.')]);
 }
 
 // clean is a member as the profile holds it: empty fields left out.
@@ -120,7 +120,7 @@ const listAnd = (xs) => (xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', '
 // notSent says what a draft changes in the list the nodes have. A member
 // with the same name and site under another key was given a new key.
 function notSent(was, now) {
-  const name = (m) => m.name || short(m.public_key) || 'a member with no key yet';
+  const name = (m) => m.name || short(m.public_key) || 'member, no key';
   const before = new Map(was.map((m) => [m.public_key, m]));
   const after = new Set(now.map((m) => m.public_key));
   const gone = was.filter((m) => !after.has(m.public_key));
@@ -131,7 +131,7 @@ function notSent(was, now) {
   const removes = gone.filter((m) => !same(m)).map(name);
   const edits = now.filter((m) => before.has(m.public_key) && JSON.stringify(clean(before.get(m.public_key))) !== JSON.stringify(clean(m))).map(name);
   return [adds.length ? `adds ${listAnd(adds)}` : '', removes.length ? `removes ${listAnd(removes)}` : '', edits.length ? `changes ${listAnd(edits)}` : '',
-    rekeyed.length ? `lists ${listAnd(rekeyed.map(name))} under ${rekeyed.length === 1 ? 'its' : 'their'} new key` : '']
+    rekeyed.length ? `re-keys ${listAnd(rekeyed.map(name))}` : '']
     .filter(Boolean).join('; ');
 }
 
@@ -193,56 +193,56 @@ function membersPanel(st) {
   // What is known of a member the nodes already have: who holds its key,
   // and how its tunnels stand, as that node reports them.
   const roster = new Map((st.site_link.roster || []).map((r) => [r.public_key, r]));
-  const tunnels = (r) => (!r.reported ? '' : r.peers === 0 ? ' · no other site to link to' : ` · ${r.up} of ${r.peers} tunnel${r.peers === 1 ? '' : 's'} up`);
+  const tunnels = (r) => (!r.reported ? '' : r.peers === 0 ? ' · no other site' : ` · ${r.up} of ${r.peers} tunnel${r.peers === 1 ? '' : 's'} up`);
   const keyHint = (m) => {
     if (!m.public_key) return '';
     const r = roster.get(m.public_key);
     if (m.public_key === mine) return 'this node' + (r ? tunnels(r) : '');
-    if (r && r.heard) return `${r.callsign}` + (tunnels(r) || ' · heard, its tunnels not reported');
-    if (r) return 'not heard from here: its site is not joined, or it is off';
-    return holder.has(m.public_key) ? `${holder.get(m.public_key)}, a node this one hears` : '';
+    if (r && r.heard) return `${r.callsign}` + (tunnels(r) || ' · heard, tunnels not reported');
+    if (r) return 'not heard: site not joined, or node off';
+    return holder.has(m.public_key) ? `${holder.get(m.public_key)} (heard)` : '';
   };
   const words = changed ? notSent(was, ms) : '';
   const secs = pending ? Math.max(0, Math.round((Date.parse(pending.apply_at) - Date.now()) / 1000)) : 0;
   const have = pending ? (pending.nodes || []).filter((n) => n.state === 'has it').length : 0;
 
-  return panel('Members', { meta: 'the same on every node' },
+  return panel('Members', { meta: 'same on all nodes' },
     h('div.form',
       pending ? notice({ level: 'warning', message: changed && sent
-        ? `Sent${pending.sender && (pending.nodes || []).length ? `: ${have} of ${pending.nodes.length} other nodes have it` : ''}. Every node switches to this list at ${clock(pending.apply_at)} (in ${secs} s); until then they keep the one they have.`
-        : `A change to the profile from ${pending.sender ? 'this node' : pending.from} is on its way: every node switches at ${clock(pending.apply_at)} (in ${secs} s). The members can be changed after that.${changed ? ' The edits below have not been sent.' : ''}` }) : null,
+        ? `Sent${pending.sender && (pending.nodes || []).length ? `: ${have}/${pending.nodes.length} nodes received` : ''}. Switchover at ${clock(pending.apply_at)} (in ${secs} s).`
+        : `Profile change from ${pending.sender ? 'this node' : pending.from} pending: switchover at ${clock(pending.apply_at)} (in ${secs} s). Members editable after switchover.${changed ? ' Edits below not sent.' : ''}` }) : null,
       h('datalist', { id: 'site-names' }, sites.map((s) => h('option', { value: s }))),
-      ms.length ? null : h('p.dim', { style: { margin: '0' } }, was.length ? 'No members: sending this takes the site link down on every node.' : 'No members yet: the site link is off.'),
+      ms.length ? null : h('p.dim', { style: { margin: '0' } }, was.length ? 'No members: sending disables the site link on all nodes.' : 'No members: site link off.'),
       ms.map((m, i) => h('div.fields.sitemember',
         field('Name', input(m, 'name', i, { placeholder: 'label', max: '32' }), { error: err(i, 'name') }),
         field('Site', input(m, 'site', i, { placeholder: 'hq', max: '32', list: 'site-names' }), { error: err(i, 'site') }),
         field('Public key', input(m, 'public_key', i, { placeholder: 'from meshctl site, or this page on that node', mono: true, max: '44' }),
           { error: err(i, 'public_key'), hint: keyHint(m) }),
         field('Endpoint', input(m, 'endpoint', i, { placeholder: 'host:51873', mono: true, max: '260' }),
-          { error: err(i, 'endpoint'), hint: m.endpoint ? '' : 'none: it dials out (behind NAT)' }),
+          { error: err(i, 'endpoint'), hint: m.endpoint ? '' : 'none: outbound only (behind NAT)' }),
         h('div.field', h('span.label', { 'aria-hidden': 'true' }, ' '),
-          h('div', button('Remove', () => { ms.splice(i, 1); ui.fields = {}; redraw(); }, 'small', { disabled: locked, title: `Take ${m.name || 'this member'} off the list` }))))),
+          h('div', button('Remove', () => { ms.splice(i, 1); ui.fields = {}; redraw(); }, 'small', { disabled: locked, title: `Remove ${m.name || 'member'}` }))))),
       h('div.row', { style: { flexWrap: 'wrap' } },
         !listed && mine ? button('Add this node', () => { ms.push({ name: st.node.callsign, site: sites[0] || '', public_key: mine, endpoint: '' }); redraw(); }, 'small', { disabled: locked }) : null,
-        addable.length ? h('select.select', { value: '', disabled: locked || ms.length >= 64, 'aria-label': 'Add a node this one hears', style: { width: 'auto' },
+        addable.length ? h('select.select', { value: '', disabled: locked || ms.length >= 64, 'aria-label': 'Add a heard node', style: { width: 'auto' },
           onchange: (e) => {
             const n = addable.find((x) => x.site_key === e.target.value);
             e.target.value = '';
             if (n) { ms.push({ name: n.callsign, site: mySite || (sites.length === 1 ? sites[0] : ''), public_key: n.site_key, endpoint: '' }); redraw(); }
           } },
-          h('option', { value: '' }, 'Add a node this one hears…'),
+          h('option', { value: '' }, 'Add a heard node…'),
           addable.map((n) => h('option', { value: n.site_key }, n.callsign))) : null,
-        button('Add by key', () => { ms.push({ name: '', site: '', public_key: '', endpoint: '' }); redraw(); }, 'small', { disabled: locked || ms.length >= 64, title: 'A node at another site, not reachable yet: paste the key its own page shows' }),
-        was.length && ms.length ? button('Remove all', () => { ms.length = 0; ui.fields = {}; redraw(); }, 'small', { disabled: locked, title: 'Empty the list: sent, it takes the site link down on every node' }) : null),
-      h('p.dim', { style: { margin: '0', fontSize: '13px', maxWidth: '75ch' } }, 'Each member links to the members of the other sites, not to those of its own. An endpoint is the member’s public address or name and the UDP port forwarded to it; at least one end of each link needs one.'),
-      ms.length && sites.length < 2 ? notice({ level: 'info', message: 'Members of one site do not link to each other: a link needs members at two sites at least.' }) : null,
+        button('Add by key', () => { ms.push({ name: '', site: '', public_key: '', endpoint: '' }); redraw(); }, 'small', { disabled: locked || ms.length >= 64, title: 'Remote node not yet reachable: paste its key' }),
+        was.length && ms.length ? button('Remove all', () => { ms.length = 0; ui.fields = {}; redraw(); }, 'small', { disabled: locked, title: 'Clear the list (once sent, disables the site link on all nodes)' }) : null),
+      h('p.dim', { style: { margin: '0', fontSize: '13px', maxWidth: '75ch' } }, 'Members link to members at other sites only. Endpoint: public address or name, and the forwarded UDP port. At least one end of each link needs an endpoint.'),
+      ms.length && sites.length < 2 ? notice({ level: 'info', message: 'Members of one site do not link: at least two sites required.' }) : null,
       h('div.row.between', { style: { flexWrap: 'wrap', gap: '12px' } },
-        h('span.dim', { style: { fontSize: '14px', maxWidth: '70ch' } }, changed && !sent ? `Not sent yet: this ${words}. The nodes keep the list they have until you send it.` : ''),
+        h('span.dim', { style: { fontSize: '14px', maxWidth: '70ch' } }, changed && !sent ? `Not sent: ${words}. Nodes keep the current list until sent.` : ''),
         h('div.row',
-          changed && !sent ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy, title: 'Drop these edits: back to the list the nodes have' }) : null,
-          button(ui.busy ? 'Checking…' : pending ? 'Waiting for the switch…' : others.length ? 'Review and send to every node' : 'Review and save', send, 'primary', { disabled: !changed || locked })))),
+          changed && !sent ? button('Discard', () => { ui.draft = null; redraw(); }, '', { disabled: ui.busy, title: 'Discard edits' }) : null,
+          button(ui.busy ? 'Checking…' : pending ? 'Waiting for switchover…' : others.length ? 'Review and send to all nodes' : 'Review and save', send, 'primary', { disabled: !changed || locked })))),
     h('p.dim', { style: { marginTop: '14px', fontSize: '13px', maxWidth: '75ch' } },
-      'Sent from here, the list reaches the nodes this one can reach: before the link is up, only this site. At each other site, install the same profile on one node: here Settings → Mesh profile → Share with another node → Download file, there Settings → Mesh profile → Install another profile with the file’s contents. The rest of that site takes it from that node. Taking members off works the same way, while the link is still up or at each site.'));
+      'The list reaches only nodes reachable from here; before the link is up, this site only. At each other site, install the profile on one node (here: Settings → Mesh profile → Share profile → Download file; there: Settings → Mesh profile → Install another profile). That site’s other nodes receive it from that node. Removals work the same way, over the link or per site.'));
 }
 
 export function siteLink(st) {

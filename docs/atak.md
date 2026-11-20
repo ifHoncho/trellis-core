@@ -2,12 +2,10 @@
 
 ATAK works on Trellis without a TAK Server: situational awareness (SA) and
 chat travel as multicast, and Trellis carries multicast only to the nodes
-whose phones are listening (architecture §9). This page explains what to
-set on the phones, and why.
+with subscribed phones (architecture §9). Phone settings and rationale.
 
-Menu names below follow recent ATAK-CIV releases and vary a little between
-versions. If a setting is not where this page says, search ATAK's settings
-for the quoted name.
+Menu names follow recent ATAK-CIV releases and vary by version; search
+ATAK settings for the quoted name if not found.
 
 ## 1. Joining the mesh
 
@@ -17,14 +15,13 @@ for the quoted name.
   the same gateway and DNS server, `10.73.0.1`, so nothing changes when the
   phone ends up on another node.
 - No TAK Server or VPN is needed for SA and chat between phones on the mesh.
-- **Turn off any VPN on the phone**, or have it exclude local networks. With a
-  VPN on, the phone's own reports still go out, so the others see it, but
-  the multicast from the mesh does not come back in through the tunnel: its
-  map and chat stay empty.
+- **Disable any VPN on the phone**, or exclude local networks. With a VPN
+  active, outbound reports reach the mesh but inbound multicast does not
+  traverse the tunnel: map and chat stay empty.
 
 ## 2. Multicast groups
 
-ATAK's defaults are what Trellis expects. Keep them:
+Use the ATAK defaults:
 
 | Traffic | Default group | Notes |
 |---|---|---|
@@ -118,7 +115,7 @@ the plain callsign back within a minute or two.
 
 Nothing needs setting on the phones. Positions stay inside the mesh: they
 are never routed to an uplink. To stop all nodes from appearing (emissions
-control), turn off **Nodes put themselves on the team's ATAK map** in
+control), turn off **Node positions to ATAK** in
 Settings → Mesh profile and send it to every node; one node is turned off
 in its own Settings → Node. Neither affects the phones' own reports, which
 are set in ATAK.

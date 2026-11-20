@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"meridian/trellis/internal/crashlog"
 )
 
 // DefaultDir is where the package puts the scripts and what they install.
@@ -48,6 +50,11 @@ type Options struct {
 	// DriverOptions are modprobe.d lines ("options mod key=value …") from
 	// the hardware database.
 	DriverOptions []string
+	// StateDir is meshd's state directory: while meshd is stopped for a
+	// module to load, its reset history counts a crash as a reset
+	// (crashlog.Reloading). Empty: not marked. BootID is this boot's
+	// (crashlog.BootID when empty).
+	StateDir, BootID string
 }
 
 // Result says how it went.
@@ -79,13 +86,17 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 		return nil, fmt.Errorf("the Trellis package's scripts are not in %s: install the trellis package first", o.Dir)
 	}
 	r := &run{ctx: ctx, o: o}
-	r.batman()
-	r.mt7915e()
-	r.driverOptions()
-	r.regulatory()
+	// A step cut short (Ctrl-C, the time limit) ends the run, and meshd
+	// is started again all the same.
+	for _, step := range []func(){r.batman, r.mt7915e, r.driverOptions, r.regulatory} {
+		if ctx.Err() != nil {
+			break
+		}
+		step()
+	}
 	if r.stoppedMesh {
 		r.say("\n== meshd\n")
-		if err := r.o.Host.Run(ctx, r.o.Out, nil, "systemctl", "start", "trellis-meshd"); err != nil {
+		if err := r.o.Host.Run(context.WithoutCancel(ctx), r.o.Out, nil, "systemctl", "start", "trellis-meshd"); err != nil {
 			r.problem("meshd did not start again: %v", err)
 		} else {
 			r.say("-- started again\n")
@@ -97,6 +108,9 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 		if !slices.Contains(strings.Fields(string(pkgs)), "trellis") {
 			_ = o.Host.WriteFile("/run/reboot-required.pkgs", append(pkgs, "trellis\n"...), 0o644)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return &r.res, fmt.Errorf("prepare stopped early: %w", err)
 	}
 	return &r.res, nil
 }
@@ -136,6 +150,19 @@ func (r *run) stopMeshd() {
 	if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "systemctl", "stop", "trellis-meshd"); err == nil {
 		r.stoppedMesh = true
 	}
+}
+
+// loading runs a step that loads a kernel module with meshd stopped: a
+// crash in it is a reset in meshd's history (crashlog.Reloading).
+func (r *run) loading(step func()) {
+	if r.stoppedMesh && r.o.StateDir != "" {
+		boot := r.o.BootID
+		if boot == "" {
+			boot = crashlog.BootID()
+		}
+		defer crashlog.Reloading(r.o.StateDir, boot)()
+	}
+	step()
 }
 
 func (r *run) read(path string) string {
@@ -185,15 +212,23 @@ func (r *run) batman() {
 	case avail == pin && dkms:
 		r.say("-- loading the installed %s DKMS build (was: %s)\n", pin, or(loaded, "not loaded"))
 		r.stopMeshd()
-		_ = r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "-r", "batman-adv")
-		if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "batman-adv"); err != nil {
-			r.problem("batman-adv %s did not load: %v", pin, err)
+		failed := false
+		r.loading(func() {
+			_ = r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "-r", "batman-adv")
+			if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "batman-adv"); err != nil {
+				r.problem("batman-adv %s did not load: %v", pin, err)
+				failed = true
+			}
+		})
+		if failed {
 			return
 		}
 	default:
 		r.say("-- not built for this kernel (loaded: %s); building it (a few minutes)\n", or(loaded, "none"))
 		r.stopMeshd() // so the script can load it
-		if err := r.script([]string{"BATADV_VERSION=" + pin}, "install-batman-adv-dkms.sh"); err != nil {
+		var err error
+		r.loading(func() { err = r.script([]string{"BATADV_VERSION=" + pin}, "install-batman-adv-dkms.sh") })
+		if err != nil {
 			r.problem("batman-adv %s did not build or load (%v); see above", pin, err)
 			return
 		}
@@ -203,22 +238,49 @@ func (r *run) batman() {
 	}
 }
 
-// mt7915IDs are the PCI device IDs of MediaTek's MT7915 and MT7916.
-var mt7915IDs = []string{"0x7915", "0x7906", "0x790a"}
+// mt7915IDs are the PCI device IDs of MediaTek's MT7915 and MT7916;
+// mt7916IDs the MT7916's.
+var (
+	mt7915IDs = []string{"0x7915", "0x7906", "0x790a"}
+	mt7916IDs = []string{"0x7906", "0x790a"}
+)
 
 func (r *run) mt7915e() {
 	r.say("\n== MT7915/MT7916 driver\n")
 	devs, _ := r.o.Host.Glob("/sys/bus/pci/devices/*")
 	var cards []string
+	mt7916 := false
 	for _, d := range devs {
-		if r.read(d+"/vendor") == "0x14c3" && slices.Contains(mt7915IDs, r.read(d+"/device")) {
+		if id := r.read(d + "/device"); r.read(d+"/vendor") == "0x14c3" && slices.Contains(mt7915IDs, id) {
 			cards = append(cards, filepath.Base(d))
+			mt7916 = mt7916 || slices.Contains(mt7916IDs, id)
 		}
 	}
+	have := r.output("modinfo", "-n", "mt7915e") != ""
+	// An mt7915e older than Linux 6.14 registers both bands of an
+	// MT7916's 5/6 GHz radio, and the radio then works on neither; the
+	// fix shows as the module option enable_6ghz.
+	old := have && mt7916 && !strings.Contains(r.output("modinfo", "-F", "parm", "mt7915e"), "enable_6ghz")
 	switch {
 	case len(cards) == 0:
 		r.say("-- no MT7915/MT7916 card\n")
-	case r.output("modinfo", "-n", "mt7915e") != "":
+	case old && r.mt7915eBuilt():
+		// This package's build is installed and still has no band
+		// selection: the kernel's source is not the code the fix was
+		// written for (band-select.sh refused it). Building again gives
+		// the same driver.
+		msg := "MT7916 5/6 GHz radio stays off the mesh: this kernel's mt7915e source does not take the band selection. Use Linux 6.14 or newer"
+		r.res.Advice = append(r.res.Advice, msg)
+		r.say("-- card %s; mt7915e (DKMS build) is available\n!! %s\n", strings.Join(cards, ", "), msg)
+	case old:
+		r.say("-- card %s; the mt7915e for this kernel cannot select the band of a 5/6 GHz radio (it predates Linux 6.14); building one that can (a few minutes)\n", strings.Join(cards, ", "))
+		r.stopMeshd() // so the script can unload the one in use
+		var err error
+		r.loading(func() { err = r.script(nil, "install-mt7915e-dkms.sh") })
+		if err != nil {
+			r.problem("mt7915e was not replaced (%v); see above. The card's 5/6 GHz radio stays off the mesh", err)
+		}
+	case have:
 		r.say("-- card %s; mt7915e is available\n", strings.Join(cards, ", "))
 	default:
 		r.say("-- card %s but no mt7915e for this kernel; building it (a few minutes)\n", strings.Join(cards, ", "))
@@ -226,6 +288,34 @@ func (r *run) mt7915e() {
 			r.problem("mt7915e did not install (%v); see above. meshd runs without the card", err)
 		}
 	}
+}
+
+// mt7915eBuilt reports whether this package's mt7915e DKMS build (the
+// version its install script names) is installed for the running kernel
+// and is the module modprobe loads.
+func (r *run) mt7915eBuilt() bool {
+	if !strings.Contains(r.output("modinfo", "-n", "mt7915e"), "/updates/") {
+		return false
+	}
+	v := ""
+	for _, l := range strings.Split(r.read(filepath.Join(r.o.Dir, "scripts", "install-mt7915e-dkms.sh")), "\n") {
+		if rest, ok := strings.CutPrefix(l, "PKG_VERSION="); ok {
+			v = strings.Fields(rest + " ")[0]
+			break
+		}
+	}
+	kernel := r.read("/proc/sys/kernel/osrelease")
+	if v == "" || kernel == "" {
+		return false
+	}
+	// "trellis-mt7915e/2, 6.12.47+rpt-rpi-v8, aarch64: installed" (older
+	// dkms: "trellis-mt7915e, 2, ...").
+	for _, l := range strings.Split(r.output("dkms", "status", "-m", "trellis-mt7915e", "-v", v, "-k", kernel), "\n") {
+		if strings.Contains(l, kernel) && strings.HasSuffix(strings.TrimSpace(l), ": installed") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *run) driverOptions() {
@@ -267,13 +357,15 @@ func (r *run) driverOptions() {
 			}
 			r.say("-- reloading %s (%s=%s, needs %s)\n", mod, k, have, want)
 			r.stopMeshd()
-			if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "-r", mod); err != nil {
-				r.problem("could not unload %s (%v): unplug and replug the adapter, or reboot", mod, err)
-				break
-			}
-			if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", mod); err != nil {
-				r.problem("could not load %s again (%v): reboot", mod, err)
-			}
+			r.loading(func() {
+				if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", "-r", mod); err != nil {
+					r.problem("could not unload %s (%v): unplug and replug the adapter, or reboot", mod, err)
+					return
+				}
+				if err := r.o.Host.Run(r.ctx, r.o.Out, nil, "modprobe", mod); err != nil {
+					r.problem("could not load %s again (%v): reboot", mod, err)
+				}
+			})
 			break
 		}
 	}

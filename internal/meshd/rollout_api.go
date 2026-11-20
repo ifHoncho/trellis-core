@@ -43,7 +43,7 @@ func (d *Daemon) Rollout(ctx context.Context, in api.RolloutRequest) (*api.Rollo
 	}
 	me := d.identity()
 	if me == nil || d.gossip == nil || d.gossip.currentKey() == nil {
-		return nil, api.Errorf(http.StatusConflict, "gossip has not started: try again in a moment")
+		return nil, api.Errorf(http.StatusConflict, "Gossip not started; retry shortly")
 	}
 	if len(in.Packages) == 0 {
 		return nil, api.Invalid("name the packages, one per architecture (POST /upgrade/mesh/package keeps them first)")

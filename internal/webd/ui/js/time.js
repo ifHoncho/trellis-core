@@ -101,3 +101,11 @@ export function nodeNow() {
   if (!t) return null;
   return new Date(t + (state.statusAt ? Date.now() - state.statusAt : 0));
 }
+
+// untilNextSecond is how long, in ms, until the node's clock starts its
+// next second (the browser's before the first report).
+export function untilNextSecond() {
+  const n = nodeNow();
+  const t = n ? n.getTime() : Date.now();
+  return 1000 - (((t % 1000) + 1000) % 1000);
+}

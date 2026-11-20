@@ -51,7 +51,7 @@ func (f *firewallReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if err != nil {
 			if in != nil {
 				set(firewallFacts{State: "failed", Error: "nft is not installed"})
-				warn("error", "firewall-failed", "the node is set to be closed from outside the mesh, but nft is not installed: it is open. apt install nftables")
+				warn("error", "firewall-failed", "Firewall set closed but nft not installed: node open. Install: apt install nftables")
 			} else {
 				set(firewallFacts{State: config.FirewallOpen})
 			}
@@ -97,7 +97,7 @@ func (f *firewallReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if err := nft.Apply(ctx, f.nftPath, script); err != nil {
 			f.applied = ""
 			set(firewallFacts{State: "failed", Error: err.Error()})
-			warn("error", "firewall-failed", "the node is set to be closed from outside the mesh, but the firewall cannot be applied: %v", err)
+			warn("error", "firewall-failed", "Firewall set closed but rules failed to apply: %v", err)
 			res.RequeueAfter = 10 * time.Second
 			return res, nil
 		}

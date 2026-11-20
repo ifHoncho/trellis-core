@@ -628,13 +628,13 @@ func TestProfileEffectsLinks(t *testing.T) {
 		t.Fatalf("band change: %+v", es)
 	}
 	if msg := effectText(es, "leaves-mesh"); !strings.Contains(msg, "Its 4 direct links (alpha-5, node-1, node-2 and zulu-3) drop") ||
-		!strings.Contains(msg, "off 2.4 GHz channel 6 (20 MHz) and puts it on 5 GHz channel 149 (20 MHz)") {
+		!strings.Contains(msg, "leaves 2.4 GHz channel 6 (20 MHz) for 5 GHz channel 149 (20 MHz)") {
 		t.Errorf("band change does not count the links it drops: %s", msg)
 	}
-	if msg := effectText(es, "nodes-cannot-follow"); !hasEffect(es, "warning", "nodes-cannot-follow") || !strings.Contains(msg, "alpha-5 and zulu-3 have no mesh radio for 5 GHz") {
+	if msg := effectText(es, "nodes-cannot-follow"); !hasEffect(es, "warning", "nodes-cannot-follow") || !strings.Contains(msg, "alpha-5 and zulu-3: no mesh radio for 5 GHz") {
 		t.Errorf("nodes without a 5 GHz radio are not named: %+v", es)
 	}
-	if msg := effectText(es, "this-node-only"); !strings.Contains(msg, "Only this node changes. The 4 other nodes of this mesh") {
+	if msg := effectText(es, "this-node-only"); !strings.Contains(msg, "Applies to this node only. Other nodes (alpha-5, node-1, node-2 and zulu-3)") {
 		t.Errorf("the scope is not stated: %+v", es)
 	}
 
@@ -682,7 +682,7 @@ func TestProfileEffectsLinks(t *testing.T) {
 	if hasEffect(es, "error", "leaves-mesh") || !hasEffect(es, "warning", "links-drop") {
 		t.Fatalf("second link removed: %+v", es)
 	}
-	if msg := effectText(es, "links-drop"); !strings.Contains(msg, "Its direct link to node-1 drops") || !strings.Contains(msg, "stays in the mesh over 2.4 GHz channel 6 (20 MHz), where it has 2 direct links (alpha-5 and zulu-3)") {
+	if msg := effectText(es, "links-drop"); !strings.Contains(msg, "Its direct link to node-1 drops") || !strings.Contains(msg, "Remains in the mesh over 2.4 GHz channel 6 (20 MHz): 2 direct links (alpha-5 and zulu-3)") {
 		t.Errorf("second link removed: %s", msg)
 	}
 	// The same when the link that stays has nobody on it: cut off.
@@ -701,7 +701,7 @@ func TestProfileEffectsLinks(t *testing.T) {
 	held := view
 	held.Has = func(i int) bool { return i == 0 }
 	es = profileEffects(two, with(func(p *config.Profile) { p.Radio = config.RadioPlan{Band: "5g", Channel: 149, Width: 20} }), false, held)
-	if msg := effectText(es, "leaves-mesh"); !strings.Contains(msg, "off 2.4 GHz channel 6 (20 MHz) and puts it on 5 GHz channel 149 (20 MHz)") {
+	if msg := effectText(es, "leaves-mesh"); !strings.Contains(msg, "leaves 2.4 GHz channel 6 (20 MHz) for 5 GHz channel 149 (20 MHz)") {
 		t.Errorf("a link without a radio is listed as left: %s", msg)
 	}
 

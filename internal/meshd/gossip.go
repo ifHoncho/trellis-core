@@ -153,6 +153,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, ProfileChange: d.profile.ChangeID(), MeshChange: true,
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
 		Load:       d.gossipLoads(len(d.profile.AllLinks())),
+		Degraded:   d.gossipDegraded(),
 		SiteKey:    d.sitePublicKey(),
 		Site:       d.siteLinkGossip(),
 	}
@@ -192,7 +193,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	// 80 MHz link); one on another channel does not form at all.
 	for _, p := range d.peers.Peers() {
 		if diffs := linkDifferences(r.Links, p.Record.Links); len(diffs) > 0 {
-			warn("warning", "profile-differs", "%s's mesh profile differs from this node's: %s. A link only runs well when every node has it the same; install the same profile on every node",
+			warn("warning", "profile-differs", "Profile mismatch with %s: %s. Install the same profile on all nodes",
 				p.Record.Callsign, strings.Join(diffs, "; "))
 		}
 	}
@@ -211,7 +212,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 
 	g.mu.Lock()
 	if g.stats.AuthFailed > 0 && g.stats.Received == 0 {
-		warn("warning", "gossip-auth", "%d gossip packets failed authentication and none passed: another node may have a different mesh profile", g.stats.AuthFailed)
+		warn("warning", "gossip-auth", "Gossip auth failed on %d packets, none passed: possible mesh profile mismatch", g.stats.AuthFailed)
 	}
 	g.mu.Unlock()
 	return res, nil
@@ -248,11 +249,11 @@ func (g *gossipReconciler) resolveConflicts(orig []string, warn func(level, code
 
 	// What remains is shown, not acted on.
 	if clone != nil && strings.EqualFold(clone.MAC, me.MAC) {
-		warn("warning", "identity-clone", "node %q (%s) uses this node's identity MAC %s (a copied identity file); it takes a new one", clone.Callsign, clone.Addr, me.MAC)
+		warn("warning", "identity-clone", "Node %q (%s) uses this node's identity MAC %s (cloned identity file); it will take a new one", clone.Callsign, clone.Addr, me.MAC)
 	}
 	for _, p := range recs {
 		if p.ID == me.NodeID {
-			warn("warning", "node-id-conflict", "node %q (%s) also uses node ID %d; this node keeps it and %q moves to another ID", p.Callsign, p.MAC, p.ID, p.Callsign)
+			warn("warning", "node-id-conflict", "Node ID conflict: %q (%s) also uses ID %d; this node keeps it, %q moves", p.Callsign, p.MAC, p.ID, p.Callsign)
 		}
 	}
 	if pin := d.cfg.NodeID; pin != 0 && pin != me.NodeID {
@@ -262,7 +263,7 @@ func (g *gossipReconciler) resolveConflicts(orig []string, warn func(level, code
 				holder = fmt.Sprintf("%q (%s)", p.Callsign, p.MAC)
 			}
 		}
-		warn("error", "node-id-taken", "node_id %d in node.yaml is kept by %s; this node uses %d instead. Give one of them another node_id", pin, holder, me.NodeID)
+		warn("error", "node-id-taken", "node_id %d (node.yaml) held by %s; using %d. Assign a different node_id to one of them", pin, holder, me.NodeID)
 	}
 }
 
@@ -526,6 +527,9 @@ func (d *Daemon) meshNodes() []status.MeshNode {
 			n.MeshRadios = append(n.MeshRadios, gossip.RadioBands(e))
 		}
 		n.ChannelBusy = r.Load
+		for _, g := range r.Degraded {
+			n.Degraded = append(n.Degraded, status.NodeDegraded{Bands: gossip.RadioBands(g.Radio), Reason: g.Why})
+		}
 		if r.Pos != nil {
 			p := positionStatus(*r.Pos)
 			n.Position = &p

@@ -341,7 +341,7 @@ func (v *voiceReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 	state, err := v.d.writeVoiceState(v.state)
 	if err != nil {
 		res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "voice-config-not-written",
-			Message: "the voice service's configuration could not be written: " + err.Error()})
+			Message: "Voice service configuration write failed: " + err.Error()})
 	}
 	v.state = state
 	for _, m := range config.VoiceMissingGroups(p, n) {
@@ -377,7 +377,7 @@ func (v *voiceReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 		if want {
 			// Tried again next pass, with the warning shown meanwhile.
 			res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "voice-not-started",
-				Message: "voice is enabled but trellis-voiced could not be started: " + err.Error()})
+				Message: "Voice enabled but trellis-voiced failed to start: " + err.Error()})
 			return res, nil
 		}
 		// Not installed, or not running: either way it is stopped.
@@ -409,26 +409,26 @@ func (d *Daemon) voiceWarnings(ctx context.Context) []reconcile.Warning {
 	// one that was not (systemd away, a failed restart) runs the old binary.
 	if vs.Version != "" && vs.Version != d.opts.Version {
 		out = append(out, reconcile.Warning{Level: "warning", Code: "voice-version",
-			Message: "the voice service is version " + vs.Version + ", Trellis is " + d.opts.Version + ": restart it (sudo systemctl restart trellis-voiced)"})
+			Message: "Voice service version " + vs.Version + ", Trellis " + d.opts.Version + ". Restart: sudo systemctl restart trellis-voiced"})
 	}
 	if vs.Audio != nil {
 		for _, ch := range vs.Audio.ButtonHold {
 			out = append(out, reconcile.Warning{Level: "warning", Code: "voice-ptt-cuts-mic",
-				Message: "voice channel " + strings.ToUpper(ch) + ": the PTT is the audio adapter's headset button, which silences the microphone while it is held, and the PTT action is hold to talk: nothing said is sent. Choose press to start, press to stop, or VOX (Voice page)"})
+				Message: "voice channel " + strings.ToUpper(ch) + ": PTT is the adapter headset button (mutes mic while held) with hold to talk: transmits silence. Use press to start, press to stop, or VOX (Voice page)"})
 		}
 	}
 	if vs.Audio != nil && vs.Audio.NoMic {
 		out = append(out, reconcile.Warning{Level: "warning", Code: "voice-no-mic",
-			Message: "voice: the audio device (" + vs.Audio.Device + ") shows no microphone, so this node can listen but not talk. Adapters other than the supported ones (an OpenVLM or a CM108 adapter) may not support every feature"})
+			Message: "Voice: audio device (" + vs.Audio.Device + "): no microphone, receive only. Unsupported adapters (not OpenVLM or CM108) may lack features"})
 	}
 	if vs.Audio != nil && vs.Audio.NoPTT {
 		out = append(out, reconcile.Warning{Level: "info", Code: "voice-no-ptt",
-			Message: "voice: the audio device (" + vs.Audio.Device + ") offers no PTT, so this node listens only. Adapters other than the supported ones (an OpenVLM or a CM108 adapter) may not support every feature"})
+			Message: "Voice: audio device (" + vs.Audio.Device + "): no PTT, receive only. Unsupported adapters (not OpenVLM or CM108) may lack features"})
 	}
 	for _, c := range vs.Channels {
 		if c.MicCut {
 			out = append(out, reconcile.Warning{Level: "warning", Code: "voice-mic-cut",
-				Message: "voice channel " + strings.ToUpper(c.Name) + ": a talk was stopped because the microphone was silent while the PTT was held. The PTT seems to cut the microphone (a phone-style adapter): choose press to start, press to stop, or VOX, or run Check my PTT (Voice page)"})
+				Message: "voice channel " + strings.ToUpper(c.Name) + ": transmission stopped, no mic audio while PTT held. PTT likely mutes the mic (phone-style adapter): use press to start, press to stop, or VOX, or run PTT test (Voice page)"})
 		}
 	}
 	return out

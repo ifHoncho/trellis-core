@@ -1,7 +1,6 @@
 # Reference
 
-The details behind the [guide](guide.md): every option, and how each part
-behaves. Start with the guide; come here when you need to know more.
+Options and behaviour in full. Start with the [guide](guide.md).
 
 - [trellis-deploy](#trellis-deploy)
 - [Passwords and sudo](#passwords-and-sudo)
@@ -30,42 +29,35 @@ pi@192.0.2.13  port=2222                 its SSH port, when not 22 (on its mesh 
 pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 ```
 
-- `callsign` and `id` apply to a device that is installed by the run: by
-  default the callsign comes from its hostname and the ID is chosen by the
-  node. Each must be unique in the file.
-- `mesh` is the node's address on the mesh (`meshctl status` on any node
-  lists them). When its own address does not answer (a node with no cable
-  to your network), it is reached there, through the first listed device
-  that does answer.
+- `callsign` and `id` apply to devices installed by the run. Defaults:
+  callsign from the hostname, ID chosen by the node. Unique per file.
+- `mesh`: the node's mesh address (listed by `meshctl status`). Used when
+  the LAN address does not respond (node not wired to the LAN), via the
+  first responding device.
 
 ### What a run does
 
-1. **Gets the release** (the newest published, `--release 0.2.0` for
-   another, or the files in `--from DIR`) and **checks it**: the
-   checksums, and every package's signature against the release keys
-   built into `trellis-deploy`. Nothing reaches a device unless all of it
-   checks out.
-2. **Looks at every device** and shows what it will do to each: a new
-   install, an upgrade, nothing ("up to date"), or why it skips one (it
-   does not answer, it is not Debian-family, the release has no package
-   for its architecture, it runs a newer version). It names the devices
-   whose `sudo` asks for a password, then asks once before doing anything
-   (`--yes` does not ask; `--dry-run` stops here).
-3. **New devices**, a few at a time (`--jobs`, default 4): the packages,
-   `meshctl prepare`, the mesh profile (`--profile`; a device that has one
-   keeps it), the callsign and node ID, the web UI's admin password (asked
-   once for all of them), then a reboot, waiting until each is back with
-   Trellis running (`--no-reboot` skips that).
-4. **Devices on an older release**, one at a time, with `meshctl
-   upgrade`: each checks itself and goes back to its old version on its
-   own if it is not healthy, and the first that goes back stops the rest
-   (`--keep-going` does not). Devices reached over the mesh go first, so
-   the way to the others stays up the longest. A device whose connection
-   drops while its mesh restarts is reconnected to and asked how it ended.
-5. **A summary**: each device's result, what `meshctl doctor` finds wrong
-   there, and the Wi-Fi name and passphrase of each new device. Each
-   device's whole output is in `trellis-deploy-logs/<time>/`; the
-   passwords and the mesh's secret never are.
+1. **Fetch and verify the release** (latest; `--release 0.2.0`, or
+   `--from DIR`): checksums, and each package signature against the
+   release keys built into `trellis-deploy`. Any failure stops the run.
+2. **Plan per device**: install, upgrade, no change ("up to date"), or
+   skip with the reason (no response, not Debian-family, no package for
+   the architecture, newer version installed). Lists devices whose `sudo`
+   needs a password, then one confirmation (`--yes`: none; `--dry-run`:
+   stop here).
+3. **New devices**, in parallel (`--jobs`, default 4): packages, `meshctl
+   prepare`, mesh profile (`--profile`; an existing profile is kept),
+   callsign and node ID, admin password (prompted once), reboot, wait for
+   Trellis (`--no-reboot` skips the reboot).
+4. **Upgrades**, one device at a time with `meshctl upgrade`: each
+   self-tests and rolls back on failure; the first rollback halts the run
+   (`--keep-going` overrides). Devices reached over the mesh go first.
+   Connections dropped during a mesh restart are re-established and the
+   result queried.
+5. **Summary**: result per device, `meshctl doctor` findings, client AP
+   SSID and passphrase of new devices. Full output per device in
+   `trellis-deploy-logs/<time>/`; passwords and the mesh secret are never
+   logged.
 
 ### Options
 
@@ -83,46 +75,41 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 | `--logs DIR` | Where the logs go |
 | `--trust`, `--node-key`, `--any-version`, `--no-health-check` | For development builds ([building.md](dev/building.md)) |
 
-A device's SSH host key is accepted the first time the tool meets it, and
-refused if it changes later (`StrictHostKeyChecking=accept-new`); pass
-`--ssh-option StrictHostKeyChecking=yes` to require devices already in
-your `known_hosts`. A device that already has a mesh profile keeps it, and
-the run warns if it differs from `--profile`'s.
+SSH host keys: accepted on first contact, refused if changed
+(`StrictHostKeyChecking=accept-new`). `--ssh-option
+StrictHostKeyChecking=yes` requires keys already in `known_hosts`. An
+existing mesh profile is kept; the run warns if it differs from
+`--profile`.
 
 ## Passwords and sudo
 
-`trellis-deploy` logs in with your SSH key, and runs its work as root with
-`sudo`. Where `sudo` asks for a password, the run asks you once, tries
-that password on every device that needs one, and asks again, by name,
-only for a device it does not open (Enter leaves that device out). The
-passwords are used for that run only.
+`trellis-deploy` logs in with your SSH key and runs as root via `sudo`.
+Where `sudo` needs a password, the run prompts once, tries it on every
+such device, and prompts again by name only where it fails (Enter skips
+the device). Passwords are held for the run only.
 
-`--setup --sudo-nopasswd` writes a rule on each device
-(`/etc/sudoers.d/trellis-deploy`) that lets the login user use `sudo`
-without a password, so runs stop asking. Think about it first: from then
-on, **anyone who can log in as that user is root on the device without
-another question**, so your SSH key (and the computer that holds it)
-becomes the only thing between an attacker and the device. Prefer, in
-order:
+`--setup --sudo-nopasswd` installs `/etc/sudoers.d/trellis-deploy` on
+each device: passwordless `sudo` for the login user. Security impact:
+**any login as that user is root without further authentication**; the
+SSH key and the machine holding it become the only barrier. In order of
+preference:
 
-1. answering the password prompt (the default): it costs a few seconds a
-   run;
-2. a passphrase on your SSH key, kept unlocked in `ssh-agent` for the
-   session, if you do use the rule;
-3. the rule only on devices you control physically, and removing it
-   (`sudo rm /etc/sudoers.d/trellis-deploy`) when you are done.
+1. the password prompt (default; a few seconds per run);
+2. with the rule: an SSH key passphrase, unlocked in `ssh-agent` for the
+   session;
+3. the rule only on physically controlled devices, removed afterwards
+   (`sudo rm /etc/sudoers.d/trellis-deploy`).
 
-A narrower rule would not be safer: installing packages is root, whatever
-command the rule names.
+A narrower rule is no safer: package installation is root regardless of
+the command named.
 
 ## Installing one device by hand
 
-You need a device and radios that meet [hardware.md](hardware.md), running
-Debian, Ubuntu or Raspberry Pi OS, and the two packages from a release:
-`trellis` for the device's architecture (`arm64` for most current boards
-on a 64-bit OS, `armhf` for 32-bit ones, `amd64` for PCs) and
-`trellis-batman-adv-dkms`. Or build them from this repository with `make
-deb` (into `dist/deb/`). On the device:
+Requirements: a device and radios per [hardware.md](hardware.md); Debian,
+Ubuntu or Raspberry Pi OS; two packages from a release: `trellis` for the
+architecture (`arm64` for most current boards on a 64-bit OS, `armhf` for
+32-bit, `amd64` for PCs) and `trellis-batman-adv-dkms`. To build them:
+`make deb` (output in `dist/deb/`). On the device:
 
 ```sh
 sudo apt install ./trellis_*_arm64.deb ./trellis-batman-adv-dkms_*_all.deb
@@ -130,32 +117,31 @@ sudo meshctl prepare
 sudo reboot
 ```
 
-`apt` brings in what Trellis needs (wpa_supplicant, hostapd, dnsmasq,
-nftables, chrony). `meshctl prepare` does what the device needs on top,
-skipping what is done already:
+`apt` installs the dependencies (wpa_supplicant, hostapd, dnsmasq,
+nftables, chrony). `meshctl prepare` then completes the device, skipping
+steps already done:
 
-- builds and loads the batman-adv release every node runs (DKMS rebuilds
-  it after every kernel update; that needs the kernel's headers, which it
-  fetches when it can);
-- builds the driver for MediaTek MT7915/MT7916 cards on kernels that lack
-  it, such as Raspberry Pi OS's;
-- sets the driver options some radios need for an encrypted mesh;
-- puts the kernel's regulatory rules in Trellis's hands.
+- builds and loads the pinned batman-adv release (DKMS rebuilds it after
+  each kernel update; requires kernel headers, fetched where available);
+- builds the MediaTek MT7915/MT7916 driver on kernels that lack it
+  (e.g. Raspberry Pi OS) or whose driver predates MT7916 5/6 GHz support
+  (before Linux 6.14);
+- sets driver options required by some radios for an encrypted mesh;
+- hands the kernel's regulatory rules to Trellis.
 
-It ends with `meshctl doctor`'s checks, and says when a reboot is needed.
-After the reboot, a device without a mesh profile waits in setup mode
-(next section).
+It finishes with `meshctl doctor` and reports whether a reboot is
+required. After the reboot, a device without a mesh profile starts in
+setup mode (next section).
 
-Installing, upgrading and removing never touch a device's configuration,
-mesh profile or identity (`/etc/trellis`, `/var/lib/trellis`); only `apt
-purge trellis` deletes them.
+Install, upgrade and removal never modify configuration, mesh profile or
+identity (`/etc/trellis`, `/var/lib/trellis`); only `apt purge trellis`
+deletes them.
 
 ### Installing from the apt repository
 
-An apt repository of the packages, built with `make apt-repo`
-([building.md](dev/building.md)), can be served from any web server. The
-project does not publish one yet. On the device, with the repository's
-address in `REPO`:
+`make apt-repo` builds an apt repository ([building.md](dev/building.md)),
+servable from any web server. No public repository yet. On the device,
+with the repository address in `REPO`:
 
 ```sh
 curl -fsSL "$REPO/trellis-archive-keyring.gpg" | sudo tee /usr/share/keyrings/trellis-archive-keyring.gpg > /dev/null
@@ -165,164 +151,156 @@ sudo apt install trellis trellis-batman-adv-dkms
 sudo meshctl prepare
 ```
 
-Check the key's fingerprint (`gpg --show-keys
-/usr/share/keyrings/trellis-archive-keyring.gpg`) against the one its
-publisher gives before you trust it. `apt upgrade` then brings new releases,
-but it installs them directly, without the health check and rollback of
-`meshctl upgrade`. For a node in the field, use `meshctl upgrade`, or the
-mesh-wide upgrade.
+Verify the key fingerprint (`gpg --show-keys
+/usr/share/keyrings/trellis-archive-keyring.gpg`) against the publisher's
+before trusting it. `apt upgrade` installs new releases directly, without
+the health check and rollback of `meshctl upgrade`. For fielded nodes, use
+`meshctl upgrade` or the mesh upgrade.
 
 ## Setting a device up from a phone
 
-A device with no mesh profile starts in **setup mode**: it runs its own
-Wi-Fi, `trellis-setup-XXXX` (passphrase `trellis-setup`), and serves the
-setup page there and on its Ethernet ports.
+A device with no mesh profile starts in **setup mode**: setup AP
+`trellis-setup-XXXX` (passphrase `trellis-setup`), setup page on the AP
+and on its Ethernet ports.
 
-1. Join `trellis-setup-XXXX` with a phone or laptop, and open
-   **https://10.73.0.1**. The certificate is the device's own: accept it
-   once.
-2. Choose the web UI's **admin password**.
-3. **Join a mesh**, by scanning the profile QR code of a node already in
-   it (Settings → Mesh profile → **Share with another node**), pasting its
-   profile code, or uploading its profile file; or **start a new one**: a
-   name, and a band, channel and width for each link (the device proposes
-   links for its radios; the secret is generated).
-4. **Name the node** (its callsign), review and apply. The setup Wi-Fi
-   gives way to the node's own, whose name and passphrase the page shows as
-   a QR code.
+1. Join `trellis-setup-XXXX` and open **https://10.73.0.1**. Accept the
+   self-signed certificate.
+2. Set the web UI **admin password**.
+3. **Join a mesh**: scan the profile QR code of a mesh node (Settings →
+   Mesh profile → **Share profile**), paste its profile code, or upload its
+   profile file. Or **start a new mesh**: name, and band, channel and width
+   per link (links proposed from the device's radios; secret generated).
+4. **Callsign**, review, apply. The setup AP is replaced by the client AP;
+   its SSID and passphrase are shown with a QR code.
 
-A node already set up without an admin password (installed by
-`trellis-deploy` with none given) shows "No admin password yet"; set one on
-the node with `sudo meshctl web password`.
+A provisioned node without an admin password (installed by
+`trellis-deploy` without one) shows "No admin password set". Set it on the
+node: `sudo meshctl web password`.
 
 ## Changing the whole mesh
 
-Every node of a mesh needs the same **mesh profile**: its links, channels,
-secret and regulatory mode. To change it, edit it on any node (Settings →
-Mesh profile) and choose **Every node**. That node sends the change to all
-the others, shows who has it, and every node switches at the same moment,
-a minute later by default. **This node only** is for experiments on one
-node.
+All nodes of a mesh need the same **mesh profile**: links, channels,
+secret, regulatory mode. To change it: edit on any node (Settings → Mesh
+profile), select **All nodes**. The node sends the change to all others,
+shows delivery per node, and all nodes switch over together (default: 1
+min later). **This node only**: single-node testing.
 
-- The review before sending names any node that cannot follow (no radio
-  for the new links, an older version), any node whose regulatory mode
-  would change, and the nodes that are off or out of reach and will miss
-  it.
-- A node that was out of reach takes the change when it next hears one
-  that has it, as long as they still share a link.
-- A node, or a group of nodes, that was off while the mesh moved comes
-  back on the old channel and hears few of the nodes it knew. After a
-  minute it looks for the rest on its radios' other channels and bands,
-  pays a short visit where it hears its mesh (Alerts shows it), and takes
-  the new profile there. A HaLow link cannot be looked for this way: a node
-  whose only link is HaLow needs the profile again by hand.
-- If two groups each change the mesh while apart, they reconcile when they
-  meet: the later change is kept everywhere, and the node that found the
-  conflict keeps the other in a file and says so under Alerts, so you can
-  send it again.
+- The review lists nodes that cannot follow (no radio for the new links,
+  older version), nodes whose regulatory mode would change, and nodes off
+  or out of range that will miss the change.
+- Out-of-range nodes take the change on next contact with a node that has
+  it, if they still share a link.
+- Nodes off during the change come back on the old channel and find few
+  peers. After 1 min they scan their radios' other channels and bands,
+  visit where the mesh is heard (shown in Alerts) and take the new profile
+  there. Not possible on HaLow: a HaLow-only node needs the profile
+  reinstalled manually.
+- Partitioned groups that both change the mesh reconcile on merge: the
+  later change wins everywhere; the node that detects the conflict saves
+  the other to a file and raises an alert, so it can be resent.
 
-To keep the mesh together, send changes when every node is on and in
-reach, and from one place at a time.
+Send changes with all nodes up and in range, from one location at a time.
 
-One change never undoes another unseen:
+No change silently overrides another:
 
-- While a change is on its way, every page says so, and no second one
-  is sent to every node until the switch: it would replace the first and
-  drop what that one sets.
-- A wrong change can be put right before it lands. On the banner,
-  **Replace it** opens the editors on that change's profile: correct it
-  and send, and yours goes in its place. **Cancel it** sends the profile
-  the mesh runs now instead, so nothing changes at the switch. From the
-  command line: `meshctl profile push --replace FILE` (the mesh's own
-  profile file cancels).
-- A change made in the web UI from a profile, or from node settings, that
-  have changed on the node since the page read them (another browser,
-  another node, `meshctl`) is refused: the page reads them again and says
-  so. Edits not saved yet stay on the page, to be made again.
-- `meshctl profile edit` opens the profile the mesh runs in your editor
-  (`$EDITOR`), shows what the change does, and sends it once you
-  confirm. Like the web UI, it is refused when the profile changed on
-  the node while you were editing; your edits are kept in a file.
-- `meshctl profile push` with a file sends what the file says: the file
-  is the truth. Its review says when the file is older than the profile
-  the mesh runs (start from `meshctl profile edit`, or `meshctl profile
-  show`), and it is refused while another change is on its way unless
-  you add `--replace`.
+- While a change is pending, every page shows it, and no second mesh-wide
+  change is sent before switchover (it would supersede the first).
+- A pending change can be corrected before switchover. Banner →
+  **Replace…** opens the editors on the pending profile; edit and send to
+  supersede it. **Cancel…** sends the current profile instead: no change
+  at switchover. CLI: `meshctl profile push --replace FILE` (the mesh's
+  current profile file cancels).
+- A web UI change based on a profile or node settings changed on the node
+  since the page loaded them (another session, another node, `meshctl`)
+  is refused; the page reloads and says so. Unsaved edits stay on the page.
+- `meshctl profile edit` opens the current mesh profile in `$EDITOR`,
+  shows the impact, and sends on confirmation. Refused if the profile
+  changed on the node during editing; edits are saved to a file.
+- `meshctl profile push FILE` sends the file as is. The review flags a
+  file older than the mesh's current profile (start from `meshctl profile
+  edit` or `meshctl profile show`); refused while a change is pending
+  unless `--replace` is given.
 
 ## Radios and mesh links
 
-A mesh profile can have several **links**, each on its own band and
-channel: for example 5 GHz for speed, 2.4 GHz and HaLow for reach. Every
-node uses the links it has radios for, all at once, and traffic takes the
-fastest path to each node. Nodes with different radios still mesh through
-the links they share.
+A mesh profile can define several **links**, each on its own band and
+channel (e.g. 5 GHz for throughput, 2.4 GHz and HaLow for range). Each
+node runs every link it has a radio for, concurrently; routing takes the
+fastest path per destination. Nodes with different radios mesh over the
+links they share.
 
-- One radio carries one link. A dual-band USB adapter uses one band at a
-  time; a card with two radios carries two links.
-- A node with fewer radios than links takes the first links in the
-  profile's order that its radios can carry: put the link most nodes
-  should use first.
-- On the **Radios** page you can pin a link to a radio, turn a link off on
-  one node, or ignore a radio. "Automatic" lets the node decide.
-- **Busy channels:** Settings → Channels shows how busy each link's channel
-  is at every node, and **Survey channels** has every node listen across
-  its links' bands for a few seconds. When a channel is clearly better,
-  one button moves the link there on every node, as a change to the whole
-  mesh.
-- Higher bands are faster but reach less far. When a link is established
-  but cannot carry traffic (one end hears the other too weakly), Alerts
-  says so: move the nodes closer, use a narrower width, or let them meet
-  on a band that reaches further.
-- A radio that carries a link is Trellis's alone: meshd removes any other
-  interface that appears on it (a `p2p` or `wlan` one that a network
-  manager would scan on), except a **monitor** interface, which listens
-  on the link's channel. To capture a link: `sudo iw phy PHY interface add
-  mon0 type monitor && sudo ip link set mon0 up`, then `tcpdump -i mon0`.
+- One link per radio. A dual-band USB adapter: one band at a time. A card
+  with two radios: two links.
+- A node with fewer radios than links takes links in profile order: put
+  the link most nodes should use first.
+- **Radios** page: pin a link to a radio, disable a link on one node, or
+  ignore a radio. "Automatic": node decides.
+- **Channel load:** Settings → Channels shows channel utilization per
+  link per node. **Survey channels**: all nodes scan their link bands for
+  a few seconds (receive only). Where a channel is clearly better, one
+  button moves the link on all nodes (mesh-wide change).
+- Higher bands: more throughput, less range. A link that is established
+  but cannot carry traffic (one end too weak) raises an alert: reduce
+  distance, use a narrower width, or use a longer-range band.
+- **Width:** wider channels: higher throughput at short range, less
+  range. Noise rises (+6 dB at 80 MHz vs 20 MHz) and Tx power drops.
+  Where the hardware database has per-width power, the Radios page and the
+  profile editor show the link budget for this node's radio: MT7916 at
+  20 dBm (20 MHz) and 13.5 dBm (80 MHz), so 80 MHz costs 12.5 dB (about a
+  quarter of the open-field range). Both ends run one width: size it for
+  the link's longest hop.
+- **Temperature:** radios with a driver sensor show temperature on the
+  Radios page. Thermal throttling raises an alert; the Mesh page shows
+  hot nodes.
+- **PCIe radios:** the Radios page shows the trained link (Gen, lanes)
+  and error state. "Marginal": the card and slot (or adapter) corrupt
+  data and retransmit; under load the card can hang and the node resets.
+  Reseat the card, or change adapter or slot.
+- A radio carrying a link is exclusive to Trellis: meshd removes other
+  interfaces on it (e.g. `p2p` or `wlan` created by a network manager),
+  except **monitor** interfaces on the link's channel. Capture: `sudo iw
+  phy PHY interface add mon0 type monitor && sudo ip link set mon0 up`,
+  then `tcpdump -i mon0`.
 
 ## Sharing an uplink
 
-A node with an uplink of its own (the interface of its default route, a
-port with role `wan`, or `gateway.wan`) shares it with the mesh
-(`gateway.mode: auto`; `off` never shares and still uses other nodes'
-gateways). Two checks decide whether the uplink is shared, both out of
-the uplink itself:
+A node with a local uplink (default route interface, a port with role
+`wan`, or `gateway.wan`) acts as a gateway (`gateway.mode: auto`; `off`:
+never shares, still uses other gateways). Two checks, both via the uplink,
+decide sharing:
 
-- **Pings** to `gateway.probe_targets` (default `1.1.1.1`, `8.8.8.8`,
-  `9.9.9.9`) every `gateway.probe_interval_ms` (1000). Three missed rounds
-  withdraw the uplink; three good ones bring it back.
-- **A web check** (`gateway.web_check`, on by default): a request to
-  each of `gateway.web_check_urls` for the empty "204" answer phones and
-  laptops use to spot a login page. The defaults are Google's, Cloudflare's
-  and Ubuntu's connectivity-check addresses. The check runs every minute,
-  and again when the pings start or stop passing. Any other answer, such as
-  a redirect or a page, means a **login page** (a hotel or café network)
-  sits in front of the internet.
+- **Ping** to `gateway.probe_targets` (default `1.1.1.1`, `8.8.8.8`,
+  `9.9.9.9`) every `gateway.probe_interval_ms` (1000). 3 missed rounds:
+  uplink withdrawn; 3 good rounds: restored.
+- **Web check** (`gateway.web_check`, default on): HTTP request to each
+  `gateway.web_check_urls` for the empty "204" response used for
+  captive-portal detection. Defaults: Google, Cloudflare and Ubuntu
+  connectivity-check URLs. Runs every minute and on ping state changes.
+  Any other response (redirect, page): **captive portal**.
 
-An uplink behind a login page is not offered to the mesh, even when it
-answers pings. While no other gateway is usable, the node's own devices
-still go out through it, so someone can open any `http://` page there,
-reach the login page and sign in. The check then runs every 10 s, and
-sharing starts on its own once it passes. The Internet page and `meshctl
-status` say "behind a login page", with the answer seen. When none of the
-web addresses answer (a network that blocks them), the pings alone decide.
-`gateway.web_check: false` turns the web check off.
+An uplink behind a captive portal is not shared, even if ping succeeds.
+While no other gateway is available, local clients still use it, so the
+portal can be reached from any `http://` page and signed in. The check
+then runs every 10 s; sharing starts automatically when it passes. The
+Internet page and `meshctl status` show "captive portal" with the
+response seen. If no web check URL responds (blocked), ping alone
+decides. `gateway.web_check: false` disables the web check.
 
-The requests carry no cookies and no details about the node; the sites
-asked see the uplink's public address, as the ping targets do.
+Requests carry no cookies or node details; the checked sites see the
+uplink's public address, as do the ping targets.
 
 ## Linking sites over the internet
 
-Parts of one mesh in different places, each with internet, join into one
-mesh over the internet: one client network, names, gateways, ATAK and
-voice across all of them. The parts share one mesh profile. One or two
-nodes with an uplink at each site hold the link (members); two keep it up
-when one fails.
+Joins parts of one mesh at different locations, each with internet, into
+one mesh: one client network, DNS names, gateways, ATAK and voice. All
+parts share one mesh profile. One or two uplink-equipped nodes per site
+carry the link (members); two provide redundancy.
 
-1. On each member, read its key: `meshctl site`, or Internet → Site link
-   in the web UI. `meshctl site` prints the line to add to the profile.
-2. Add the members to the profile: Internet → Members in the web UI, or
-   the file. The web UI adds this node, and any node this one hears, by
-   name; a node at a site not linked yet goes in by its key.
+1. Get each member's key: `meshctl site`, or Internet → Site link in the
+   web UI. `meshctl site` prints the profile line to add.
+2. Add members to the profile: Internet → Members (web UI), or the file.
+   The web UI adds this node and heard nodes by name; nodes at sites not
+   yet linked are added by key.
 
    ```yaml
    site_link:
@@ -332,214 +310,195 @@ when one fails.
        - {name: field-1, site: field, public_key: "…"}
    ```
 
-   `endpoint` is where the other sites reach the member: its public
-   address or name, and the UDP port forwarded to it. Leave it out for a
-   member behind NAT: it dials out, and the members it links to need an
-   endpoint. Every member links to the members of the other sites.
-3. Send the profile to every node at one site (**Every node**, or
-   `meshctl profile push`).
-4. At each other site, install the same profile on one node:
-   `meshctl profile show > p.yaml` on a node that has it, then `meshctl
-   profile install p.yaml` there. The rest of that site takes it from that
-   node. (Pushing it again at the second site makes a second change; the
-   two are settled when the sites meet, with an alert.)
-5. Check: `meshctl site` on a member, or Internet → Site link, lists each
-   peer with its last handshake and its tunnel's state; `meshctl status`
-   shows the nodes of the other sites. A tunnel that is not up says why,
-   and what to look at: no endpoint at either end, a name that does not
-   resolve, no uplink on this node, or no answer from the other end.
+   `endpoint`: public address or name and the forwarded UDP port. Omit for
+   members behind NAT (outbound only); their peers then need an endpoint.
+   Members link to the members of other sites.
+3. Send the profile to all nodes at one site (**All nodes**, or `meshctl
+   profile push`).
+4. At each other site, install the same profile on one node: `meshctl
+   profile show > p.yaml` on a node that has it, then `meshctl profile
+   install p.yaml` there. The rest of that site takes it from that node.
+   (Pushing again at the second site creates a second change; reconciled
+   when the sites connect, with an alert.)
+5. Verify: `meshctl site` on a member, or Internet → Site link: each peer
+   with last handshake and tunnel state. `meshctl status` lists the nodes
+   at other sites. A down tunnel states the cause: no endpoint at either
+   end, unresolvable name, no local uplink, or no response.
 
-To take a member off, or the whole link down, remove it from the list
-and send the profile again, the same way: from one node while the link is
-up, or at each site. A peer stays listed on a member for as long as the
-profile lists it.
+To remove a member, or the whole link: remove from the list and resend
+the profile the same way (from one node while the link is up, or per
+site). Peers stay listed on a member while the profile lists them.
 
-The review before a profile is sent says when two sites could not dial
-each other (no endpoint at either), and when members listed at different
-sites already reach each other without a link: nodes at one place take
-the same site name, and do not link to each other.
+The review flags sites that cannot connect (no endpoint at either), and
+members at different sites that are already connected without a link
+(same location: use one site name; members of one site do not link).
 
 | Setting | Default | |
 |---|---|---|
-| `site_link.port` | 51873 | UDP port every member listens on; a member with its firewall closed opens it itself |
-| `site_link.mbit` | 10 | the speed batman-adv ranks a tunnel by, not a limit or a measurement; best left as it is: higher, and a gateway at another site competes with the site's own. Each tunnel also gets a hop penalty from it, so local traffic never goes out to another site and back |
-| `site_link.mtu` | 1420 | WireGuard's MTU; the tunnels inside carry 38 bytes less. Bigger frames still cross: batman-adv splits unicast, and broadcast goes as fragments inside WireGuard |
-| `site_link.multicast_kbit` | 1000 | broadcast and multicast each tunnel carries each way, in kbit/s; the rest is dropped at the tunnel |
+| `site_link.port` | 51873 | UDP listen port on every member; opened automatically when the firewall is closed |
+| `site_link.mbit` | 10 | Throughput figure batman-adv uses to rank a tunnel; not a limit or measurement. Leave as is: higher makes gateways at other sites compete with local ones. Also sets a hop penalty so local traffic never transits another site |
+| `site_link.mtu` | 1420 | WireGuard MTU; inner tunnels carry 38 bytes less. Larger frames pass: batman-adv fragments unicast; broadcast is fragmented inside WireGuard |
+| `site_link.multicast_kbit` | 1000 | Broadcast and multicast per tunnel per direction (kbit/s); excess dropped at the tunnel |
 
-- A member's tunnel leaves by its own uplink only, never through the mesh.
-  A member without an uplink keeps trying until it has one.
-- A member needs `nft` (the `nftables` package, installed with Trellis):
-  it drops anything addressed as a tunnel's that did not come through
-  WireGuard, from its uplink network or the client network. `meshctl
-  site` says how many packets that was, when any.
-- A profile is passed from node to node whole, in one message of about
-  8 kB. A members list too long for that (about 40 members with names
-  and endpoints) is refused when it is reviewed, before anything is
-  sent.
-- While a member in reach says a tunnel of the site link that was up in
-  the last day is down, nodes do not look for the missing part of the
-  mesh on other channels (see [Changing the whole
-  mesh](#changing-the-whole-mesh)): the nodes of the other sites are
-  missing because of the link, and Alerts says so. A node that hears no
-  member at all still looks, and a tunnel that never came up does not
-  count.
-- `meshctl site --new-key`, or **New key…** on the Internet page, gives a
-  node a new key: for when the current one may have been copied. A member
-  leaves the link until the profile lists the new key in its place; the
-  web UI puts it into the members list, ready to send.
-- Any node shows how the link stands, member or not: `meshctl site`
-  lists every member with the tunnels it reports up, and the web UI's
-  Overview and Internet pages say the same.
-- What one site broadcasts, and multicast batman-adv floods, reaches
-  every node of the other sites, up to `site_link.multicast_kbit` per
-  tunnel: enough for ATAK and voice, not for video. Multicast to a few
-  listeners goes as unicast copies, which the budget does not count.
-- Nodes on a release before 0.3.0 cannot read a profile with a site link
-  and refuse it: upgrade every node first.
+- Tunnels use the member's own uplink only, never the mesh. A member
+  without an uplink retries until it has one.
+- Members require `nft` (`nftables`, installed with Trellis): traffic
+  addressed as tunnel traffic that did not arrive via WireGuard (from the
+  uplink network or the client network) is dropped. `meshctl site` shows
+  the count when non-zero.
+- A profile is passed between nodes whole, in one ~8 kB message. Member
+  lists too long for that (about 40 members with names and endpoints) are
+  refused at review, before sending.
+- While a reachable member reports a site link tunnel down that was up in
+  the last day, nodes do not scan other channels for the missing part of
+  the mesh (see [Changing the whole mesh](#changing-the-whole-mesh)): the
+  missing nodes are behind the link; alert raised. Nodes that hear no
+  member still scan; tunnels never established do not count.
+- `meshctl site --new-key`, or **New key…** on the Internet page:
+  generates a new node key (if compromised). The member drops off the link
+  until the profile lists the new key; the web UI adds it to the member
+  list, ready to send.
+- Link state is visible on every node, member or not: `meshctl site`
+  lists every member with its reported tunnels; also on the Overview and
+  Internet pages.
+- Broadcast, and multicast flooded by batman-adv, reaches every node at
+  other sites, up to `site_link.multicast_kbit` per tunnel: sufficient for
+  ATAK and voice, not video. Multicast to few subscribers goes as unicast
+  copies (not counted against the budget).
+- Releases before 0.3.0 cannot read a profile with a site link and refuse
+  it: upgrade all nodes first.
 
 ## Access from outside the mesh
 
-Settings → Access → **Firewall** (`firewall.*` in node.yaml) is an nftables
-table, `inet trellis_fw`. `lo`, `br-mesh` and `anycast0` (the mesh, the
-node's Wi-Fi and device ports) are trusted and never filtered; the rules
-apply to every other interface: the uplink, and any VPN or container
-link on the host.
+Settings → Access → **Firewall** (`firewall.*` in node.yaml): nftables
+table `inet trellis_fw`. `lo`, `br-mesh` and `anycast0` (mesh, client AP,
+client ports) are trusted and not filtered; rules apply to all other
+interfaces: uplink, VPN, container links.
 
-With **Drop new connections from filtered interfaces** on
-(`firewall.wan: closed`, the default for nodes Trellis sets up):
+**Drop new connections from filtered interfaces** on (`firewall.wan:
+closed`; default for nodes set up by Trellis):
 
-- **Input:** established and related, ICMP and ICMPv6, DHCP replies
-  (udp/68, udp/546), SSH (tcp/22, unless `firewall.ssh: false`), the web
-  UI (tcp/80, tcp/443) while "Also on the node's uplink network" is on,
-  and the ports under **Also accept** (`firewall.allow`, e.g. `tcp/5201`)
-  are accepted; the rest is dropped.
-- **Forward:** new connections from filtered interfaces into the mesh are
-  dropped; your own DNAT port forwards pass. Traffic leaving the mesh,
-  including the internet the node shares, is not touched.
+- **Input:** accept established/related, ICMP/ICMPv6, DHCP replies
+  (udp/68, udp/546), SSH (tcp/22, unless `firewall.ssh: false`), web UI
+  (tcp/80, tcp/443) while "Allow access from uplink network" is on, and
+  **Also accept** ports (`firewall.allow`, e.g. `tcp/5201`); drop all
+  else.
+- **Forward:** new connections from filtered interfaces into the mesh
+  dropped; DNAT port forwards pass. Outbound traffic, including shared
+  internet, unaffected.
 
-Off (`firewall.wan: open`), Trellis installs no rules and the host's own
-firewall, if any, applies. A node upgraded from a release without this
-firewall stays open until you turn it on; Alerts reminds you.
+Off (`firewall.wan: open`): no Trellis rules; host firewall applies.
+Nodes upgraded from a release without this firewall stay open until it
+is enabled; an alert is raised.
 
 ## Regulatory modes
 
-Each mesh profile sets how the radios are limited:
+Set per mesh profile:
 
-- **Country**: the selected country's licence-exempt channels and power.
-- **Unrestricted**: every channel, width and power the hardware allows,
-  for operators who hold their own frequency authorization. Using it
-  without one is unlawful in most countries.
+- **Country**: national licence-exempt channels and power limits.
+- **Unrestricted**: all channels, widths and power the hardware supports.
+  Requires frequency authorization; unlawful without it in most
+  countries.
 
-The mode in force is always shown (Overview, Settings → System, `meshctl
-status`), with a banner while unrestricted mode is on. **Dismiss** shrinks
-the banner, in that browser, to a triangle marked U in the corner, which
-shows the warning when you point at it or tap it; it comes back in full
-the next time the mesh enters unrestricted mode.
+The active mode is always shown (Overview, Settings → System, `meshctl
+status`), with a banner while unrestricted. **Dismiss** minimizes the
+banner to a "U" corner marker in that browser (warning on hover or tap);
+the full banner returns the next time the mesh enters unrestricted mode.
 
 ## Upgrading a device by itself
 
-`trellis-deploy` upgrades every device on your list. One device can also
-take a release by itself: in its web UI, Settings → System → Software,
-**Choose a release file** (the `trellis` package for its architecture),
-or on the device:
+`trellis-deploy` upgrades every listed device. Single device: web UI,
+Settings → System → Software → **Choose a release file** (the `trellis`
+package for its architecture), or on the device:
 
 ```sh
 sudo meshctl upgrade trellis_0.4.0_arm64.deb
 ```
 
-- The package must be signed with a release key the node trusts: the keys
-  built into the version it runs, and any in
-  `/etc/trellis/release-keys/NAME.pub`. `--check` only checks the file.
-- Before installing, the node notes how healthy it is and keeps the
-  version it runs, its configuration, mesh profile and identity. After,
-  it checks itself for up to three minutes (`meshd` on the new version,
-  nothing failing that worked before, a mesh peer back if it had one, the
-  web page answering), and puts the old version and configuration back if
-  that does not hold, saying why.
-- It does not depend on your connection: it carries on if the session
-  drops, and a node that loses power in the middle finishes, or goes back,
-  when it next starts. If one is ever left unfinished (`meshctl upgrade
-  --status` or `meshctl doctor` says so), `sudo systemctl start
-  trellis-upgrade-resume` finishes it.
-- The Software panel and `meshctl upgrade --status` show how the last
-  upgrade ended; **Go back** there, or `meshctl upgrade --rollback`,
-  returns to the version before (`--restore-config` also puts back the
-  configuration from before the upgrade).
+- The package must be signed with a trusted release key: keys built into
+  the running version, plus `/etc/trellis/release-keys/NAME.pub`.
+  `--check`: verify only.
+- Before installing, the node records its health baseline and keeps the
+  running version, configuration, mesh profile and identity. After
+  installing, it self-tests for up to 3 min (meshd on the new version, no
+  new failures, mesh peer restored if it had one, web UI responding) and
+  rolls back version and configuration on failure, with the reason.
+- Independent of the session: continues if the session drops; after power
+  loss mid-upgrade it completes or rolls back on next start. An
+  unfinished upgrade (`meshctl upgrade --status` or `meshctl doctor`):
+  `sudo systemctl start trellis-upgrade-resume`.
+- Last result: Software panel or `meshctl upgrade --status`. **Go back**
+  there, or `meshctl upgrade --rollback`, returns to the previous version
+  (`--restore-config` also restores the pre-upgrade configuration).
 
 ## Upgrading the whole mesh from one node
 
-A node can send a release through the mesh: every node that can takes
-it, one at a time, farthest from that node first and that node last. In
-its web UI, Settings → System → **Every node**, choose the `trellis`
-package for each architecture in the mesh; or on the node:
+A node distributes a release through the mesh: every eligible node
+upgrades, one at a time, farthest first, the sending node last. Web UI:
+Settings → System → **Mesh upgrade**, select the `trellis` package for
+each architecture in the mesh. Or on the node:
 
 ```sh
 meshctl upgrade --mesh trellis_0.4.0_arm64.deb trellis_0.4.0_armhf.deb
 meshctl upgrade --mesh --yes --follow trellis_0.4.0_arm64.deb trellis_0.4.0_armhf.deb
 ```
 
-- Without `--yes`, nothing starts: it shows the order, and which nodes are
-  left out and why (no package for their architecture, not installed
-  from the package, a release too old to take part).
-- Each node fetches its package from the sending node over the mesh,
-  checks the signature with its own release keys, then waits for its
-  turn. On its turn it upgrades as `meshctl upgrade` does: health check,
-  and back to the old version by itself if it is not healthy.
-- **The first node that goes back halts the rest,** as does a node that
-  does not move on its turn for 15 minutes. The others keep the release
-  they run. A halted upgrade is over once the nodes still out have been
-  silent for 15 minutes; one that was away halts too when it is back,
-  instead of upgrading by itself.
-- The sending node may go away, or restart: the nodes go on by
-  themselves. A node that was out of reach when it was sent asks another
-  node for it.
-- `meshctl upgrade --mesh` shows the progress, `meshctl status` a line;
-  the overview shows it while it runs. `meshctl upgrade --mesh --cancel`,
-  or **Cancel the upgrade**, on the sending node, stops the nodes that
-  have not begun.
+- Without `--yes`: plan only (order; skipped nodes with reason: no
+  package for the architecture, not installed from the package, release
+  too old).
+- Each node fetches its package from the sender over the mesh, verifies
+  the signature with its own release keys, and waits for its turn. Then
+  it upgrades as `meshctl upgrade` does: health check, automatic rollback
+  on failure.
+- **The first rollback halts the upgrade**, as does a node not
+  progressing on its turn for 15 min. Remaining nodes keep their release.
+  A halted upgrade ends once outstanding nodes have been silent for 15
+  min; a node returning later halts instead of upgrading.
+- The sender may go offline or restart: nodes continue on their own. A
+  node out of range when it was sent fetches it from another node.
+- Progress: `meshctl upgrade --mesh`; summary line in `meshctl status`;
+  Overview while active. Cancel on the sending node (`meshctl upgrade
+  --mesh --cancel`, or **Cancel the upgrade**): nodes not yet started
+  stop.
 
-Upgrade every node of a mesh to the same release. Nodes say so under
-Alerts while they differ, with a warning when one is a release series
-apart (the first number, or the first two below 1.0): such nodes may not
-follow each other's changes to the mesh.
+Run the same release on all nodes. Differences raise an alert; a warning
+when a node is a release series apart (first number, or first two below
+1.0): such nodes may not follow each other's mesh changes.
 
 ## The web UI
 
-Open **https://10.73.0.1** (or `https://node.mesh`) from a device on a
-node's Wi-Fi or Ethernet ports; from anywhere on the mesh, a node answers
-at `https://<callsign>.mesh`. The `.mesh` names work where the device asks
-the node for names: turn off a phone's Private DNS, or a browser's secure
-DNS, if they do not resolve.
+**https://10.73.0.1** (or `https://node.mesh`) from a client on a node's
+AP or Ethernet ports; from anywhere in the mesh,
+`https://<callsign>.mesh`. `.mesh` names require the node's DNS: disable
+Private DNS on phones and secure DNS in browsers if they do not resolve.
 
-| Page | What it shows |
+| Page | Content |
 |---|---|
-| Overview | The node's state and clock, its mesh links, nodes nearby, internet, the site link, warnings |
-| Mesh | A live map of the mesh with link speeds, direct links, routes |
-| Internet | The node's uplink, the gateway in use, every gateway on the mesh; the site link and its members |
-| Devices | Who is on the node's Wi-Fi and ports, the Wi-Fi QR code |
-| Radios | Every radio, what it can do, and which job it has |
-| Multicast | Whether multicast takes the efficient path, and why not |
-| Alerts | Everything the node wants you to know, most serious first |
+| Overview | Node state and clock, mesh links, nodes, internet, site link, alerts |
+| Mesh | Live topology with link rates, direct links, routes |
+| Internet | Local uplink, gateway in use, all gateways; site link and members |
+| Devices | Clients on the AP and ports; AP QR code |
+| Radios | Radios, capabilities, role assignment |
+| Multicast | Multicast path state and causes |
+| Alerts | Faults, warnings and notes, most severe first |
 | Settings | Node, Wi-Fi, internet, ports, mesh profile, channels, access, system, appearance |
 
-Every change is checked first: when it would interrupt something (a link,
-the Wi-Fi, your own connection), the page says what before it is applied.
-A page with edits not saved or sent yet is marked in the menu, and the
-browser asks before it is closed.
+Changes are validated before apply; any service impact (link, AP, the
+current session) is shown for review. Pages with unsaved or unsent edits
+are marked in the menu; the browser warns before closing them.
 
-Times are shown in the zone of the device looking at the page, when the
-browser knows it; Settings → Appearance chooses another zone, or Zulu
-(UTC), which is also what shows when the device reports none. The
-Overview shows the node's clock that way, with Zulu beside it and where
-the node takes its time from; a clock that follows nothing is marked.
-The theme button cycles a dark, a light and a red night theme; Settings →
-Appearance chooses the dark and light ones (Trellis's own, or editor
-themes such as Nord, Gruvbox, Dracula, Catppuccin or Solarized). Everything
-in the UI is also in `meshctl` on the node and in the [HTTP API](api.md).
+Times are shown in the viewing device's zone where the browser reports
+one; Settings → Appearance selects another zone or Zulu (UTC, also the
+fallback). The Overview shows the node clock in that zone, with Zulu and
+the time source; an unsynced clock is marked. The theme button cycles
+dark, light and red night themes; Settings → Appearance selects the dark
+and light themes (Trellis defaults, or editor themes such as Nord,
+Gruvbox, Dracula, Catppuccin, Solarized). Everything in the UI is also
+available in `meshctl` and the [HTTP API](api.md).
 
 ## Push-to-talk voice
 
-A preview: built and tested in the lab, not yet with headsets on nodes.
+Preview: lab-tested; not yet field-tested with headsets on nodes.
 Voice is part of the `trellis` package on arm64 and amd64 (not armhf
 yet), off until `voice.enable` is set (or the Voice page). It loads
 `libopus0` and `libasound2t64` (`libasound2` on older releases), which the
@@ -616,7 +575,7 @@ phone-style adapter (3.5 mm to a Kenwood PTT, for Zello and the like)
 keys by shorting the microphone line, as a phone headset's button does:
 while it is held the microphone is silent (measured: about -78 dBFS,
 against -48 for a quiet room). Use it with **press to start, press to
-stop**, or with VOX. Trellis catches the mismatch three ways:
+stop**, or with VOX. Mismatch detection:
 - a headset-button PTT with hold to talk is flagged in the change's
   review, on the Voice page and in Alerts, with one-click fixes;
 - with a headset-button PTT in hold to talk, a talk is stopped when the
@@ -627,12 +586,11 @@ stop**, or with VOX. Trellis catches the mismatch three ways:
   page say why. A PTT read apart from the microphone (a CM108 pin,
   GPIO, serial, the browser) is never watched, and a microphone as quiet
   at rest as when keyed (a gated headset, a silent room) is never cut;
-- **Check my PTT** (Voice page, Headset): hold the PTT, say a sentence,
-  release; you hear what would have been sent, with the microphone's
-  level held and at rest, and a verdict: works, cuts the microphone,
-  too quiet, released at once, or no press. Nothing goes on the air.
-  With press to start, press to stop: press, say the sentence, press
-  again.
+- **PTT test** (Voice page, Headset): hold PTT, speak, release: playback
+  of the would-be transmission, mic level keyed and idle, and a verdict
+  (OK, mic muted by PTT, too quiet, released immediately, no press).
+  Nothing transmitted. With press to start, press to stop: press, speak,
+  press again.
 
   The node's `ptt` keys channel A; `channels.b.ptt` gives channel B one
   of its own (two CM108 pins, or a second line): dual PTT. With
@@ -646,87 +604,135 @@ stop**, or with VOX. Trellis catches the mismatch three ways:
   speaker and mic to the node's audio, its carrier-sense output to the
   channel's PTT input, and its PTT to an output named by
   `channels.a.key` (`cm108:<pin>`, `serial:<tty>:<rts|dtr>`,
-  `gpio:<chip>:<line>`). What the radio receives goes out on the group;
-  what the group says keys the radio (held 0.3 s through gaps, and let
-  go after 3 minutes in one go until the group is quiet).
-- **Redundancy:** Opus's in-band FEC follows the loss the node hears:
-  planned for 10 % loss on a clean mesh, up to 40 %.
+  `gpio:<chip>:<line>`). Radio Rx is transmitted on the group; group
+  audio keys the radio (0.3 s hang time; released after 3 min continuous,
+  until the group is idle).
+- **FEC:** Opus in-band FEC adapts to measured loss: 10 % on a clean
+  mesh, up to 40 %.
 - **Busy:** a group that carried a packet in the last 250 ms refuses PTT,
   with the busy tone; release and press again.
 - **Levels:** voiced sets the adapter's own mixer at start: its outputs
   to 0 dB (many adapters start lower: a KT USB Audio at -20 dB), its
   microphone raised to 0 dB if below, any path that plays the
   microphone straight into the earpiece off, and the adapter's own
-  automatic gain off. A control it does not know by name is left as it
-  is. The Headset panel lists what it set. **Automatic microphone gain** (`mic_agc`, on by default) brings
-  speech to about -18 dBFS by up to +30 dB, so a radio speaker-mic is as
-  loud as a headset; `mic_gain` adds a fixed gain before it.
+  automatic gain off. Unknown controls are left unchanged. The Headset
+  panel lists the settings applied. **Automatic microphone gain**
+  (`mic_agc`, default on) normalizes speech to about -18 dBFS (up to +30
+  dB), matching speaker-mics to headsets; `mic_gain` adds fixed gain
+  before it.
 - **Tones** (local only): PTT granted (two beeps), released, busy, volume.
 - A mono device (OpenVLM's one earpiece) hears both channels.
 
 `meshctl voice` shows each group, who is talking and the packets heard
 and lost, and both channels.
 
-**Console (a TOC):** the Voice page's Console panel lets this browser
-monitor talk groups and talk on one, through the node, for anyone signed
-in to the UI. Start it (the browser needs a click before it plays sound),
-choose the groups to hear, each with its volume, pan and mute, and hold
-the PTT button (or Space or Enter on it) to talk on the chosen group. The
-browser asks for the microphone the first time; it needs the UI over
-HTTPS (accept the node's certificate once). The same rules as a headset:
-a busy group refuses, with three tones; talk stops after 60 s; while you
-talk, what you monitor is muted so the speakers do not feed the
-microphone. A button is released when it is let go, and also when the
-page loses the keyboard or goes out of sight; a press let go while the
-browser asks for the microphone keys nothing. Listeners see you as `<node callsign>/<console name>`.
+**Console (TOC):** Voice page → Console: browser monitor and PTT
+through the node, for any signed-in user. Start it (browsers require a
+click before audio), select groups (volume, pan, mute each), hold the PTT
+button (or Space/Enter on it) to transmit on the selected group. Mic
+permission requested on first transmit; requires HTTPS (accept the node
+certificate once). Headset rules apply: busy groups refuse (three tones);
+60 s transmit limit; monitored audio muted while transmitting (feedback
+prevention). PTT releases on button release, loss of focus, or page
+hidden; a press released during the mic permission prompt keys nothing.
+Console ID: `<node callsign>/<console name>`.
 
-**All call:** the console's second button talks on every talk group at
-once, for urgent messages. It is not refused where someone is talking:
-Trellis nodes switch to it at once, mark it ALL CALL, sound the override
-tone and duck their other groups; when it ends they go back to whoever
-was talking. It is marked in RTCP (an SDES NOTE, `all-call`), which
-other RTP receivers (the ATAK Voice plugin) do not read: on a busy group
-they hear both at once. It costs a stream per group on the mesh while it
-lasts, and stops after 60 s like any talk. The
-node does the Opus work, so any current browser works (Firefox, Chrome,
-Edge, Safari, phones); each group a console hears takes about 256 kbit/s
-between the node and the browser while someone talks, which suits the
-node's own Wi-Fi or LAN. A node needs voice on (`voice.enable`) to serve
-consoles; it needs no headset.
+**All call:** the console's second button transmits on all talk groups
+(priority override). Not refused on busy groups: Trellis nodes switch to
+it immediately, mark it ALL CALL, sound the override tone and duck other
+groups, then return to the previous talker when it ends. Marked in RTCP
+(SDES NOTE `all-call`); other RTP receivers (ATAK Voice plugin) ignore
+the mark and mix both streams on a busy group. One stream per group on
+the mesh while active; 60 s limit. Opus runs on the node, so any current
+browser works (Firefox, Chrome, Edge, Safari, mobile); each monitored
+group uses about 256 kbit/s between node and browser while active
+(client AP or LAN). Consoles require voice enabled (`voice.enable`); no
+headset required.
 
-**Reset to defaults** (Voice page, This node) puts the device, PTT,
-volumes, gain and switches back to their defaults; voice on or off and
-the node's talk groups stay. It takes effect when saved.
+**Reset to defaults** (Voice page, This node): device, PTT, volumes,
+gain and options to defaults; voice on/off and talk groups unchanged.
+Applied on save.
 
-**Supported adapters** are an OpenVLM and other CM108 adapters. Other
-audio adapters and onboard jacks may not support every feature: the
-Voice page says when a device shows no microphone or no PTT.
+**Supported adapters:** OpenVLM and other CM108 adapters. Other adapters
+and onboard jacks may lack features; the Voice page flags devices without
+a microphone or PTT.
 
-**Plugging in:** voiced looks at the sound cards every second; an
-adapter plugged in, unplugged or replugged restarts its audio, which
-finds it again (a second's gap, no configuration needed).
+**Hot-plug:** voiced polls sound cards every second; plug, unplug or
+replug restarts audio and re-detects the adapter (about 1 s gap, no
+configuration).
 
 **Onboard audio jacks** may have no microphone and no button detection
-(some boards' 3.5 mm jack is line out only, or line out and video): such
-a device listens only. The Voice page says so (no PTT found; no signal
-at all from the microphone input), and Alerts lists a node whose device
-offers no PTT. A USB audio adapter adds both.
+(some boards' 3.5 mm jack is line out only, or line out and video):
+receive only. The Voice page flags it (no PTT found; no signal
+on the mic input), and Alerts lists nodes whose device has no PTT. A
+USB audio adapter provides both.
 
-The web UI's **Voice** page shows the same live (who is on the air on
-each group, each channel's state and level), edits this node's settings
-(saved like any node setting), checks the headset (a tone in either
-channel's ear, or the microphone played back for 10 s; nothing goes on
-the air), and edits the talk groups, which it sends to every node as a
-mesh-wide profile change.
+**Voice** page: live state (active talkers per group, channel state and
+levels), node settings (saved like any node setting), headset tests
+(tone per ear, 10 s mic loopback; nothing transmitted), and talk groups
+(sent as a mesh-wide profile change).
+
+## Trying a new driver, firmware or board file
+
+A faulty driver, firmware or board configuration file can disable a node.
+`meshctl trial` installs new files with automatic recovery:
+
+```sh
+sudo meshctl trial begin halow-bcf --kind bcf --version "27 dBm" --module morse \
+     --file /lib/firmware/morse/bcf_board.bin=./bcf_27dbm.bin
+```
+
+- The replaced files are backed up and the trial recorded before the new
+  files are installed and the module reloaded (`--reboot`: no reload;
+  loads at next boot).
+- meshd confirms the trial after 5 min of continuous health on that
+  driver's radios: present, mesh up on their links, peer restored if one
+  existed at trial start. Ignored radios are not checked. Not healthy
+  15 min after the new files load (`--reboot`: 15 min after that boot):
+  reverted. Healthy, then not healthy for 5 min: reverted. After a
+  restart of meshd: at least 5 min from the restart.
+- One open trial per file: a trial of a file another pending or armed
+  trial replaces is refused.
+- A reboot while the trial is pending restores the previous files at
+  next boot, before any driver loads (`trellis-trial.service`). The trial
+  is then **locked out**: the same files are refused until `sudo meshctl
+  trial rearm NAME`.
+- `meshctl trial`: list. `confirm NAME`: confirm now. `revert NAME`:
+  restore the previous files, also after confirmation. Shown in Settings →
+  System and `meshctl status`; reverts raise an alert.
+
+The boot hook requires the state directory on the root filesystem.
+Modules loaded by the initramfs load before it.
 
 ## When something is wrong
 
-- **Alerts** names the problem and what to do about it. **Ignore** on an
-  alert leaves it out of the overview and the alert count in that
-  browser; it stays on the Alerts page, and shows everywhere again if it
-  turns more serious or comes back after being gone for an hour.
-- `sudo meshctl doctor` checks the kernel, batman-adv, radios, helpers and
-  configuration, and gives a report you can paste into an issue.
-- `meshctl status` shows the whole node in text.
-- Bug reports and hardware results are welcome: see
-  [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Alerts**: cause and corrective action. **Ignore** hides an alert from
+  the Overview and alert count in that browser; it stays on the Alerts
+  page, and is shown again on higher severity or on return after 1 h
+  clear.
+- `sudo meshctl doctor`: kernel, batman-adv, radios, helpers and
+  configuration checks; report formatted for issues.
+- `meshctl status`: full node state as text.
+- **Unplanned resets:** Alerts lists restarts without shutdown, with the
+  cause from the kernel crash record (card hang, kernel panic, serial
+  console SysRq) or, with no record, power loss. An oops the kernel
+  recovers from is not a reset. A crash while `meshctl trial` or `meshctl
+  prepare` loads a driver is one. Times come from the clock as chrony sets
+  it; without an RTC, a reset in a boot whose clock was never set is
+  dated by the start of the next boot. With no RTC and no time source in
+  reach, the time shows as unknown, and the 24 h alert counts only the
+  resets found at this boot. Requires a pstore
+  backend; `meshctl doctor` reports whether the board has one (Raspberry
+  Pi 4 / CM4: `dtoverlay=ramoops-pi4` in `config.txt`).
+- **Hardware:** Settings → System → Hardware: CPU temperature, CPU and
+  memory use (3 min history), storage, supply voltage, radio temperatures,
+  PCIe links. `meshctl status`: the `host:` line. Alert thresholds:
+
+  | Alert | Warning | Fault |
+  |---|---|---|
+  | `host-hot` | Throttle point (passive trip; default 80 °C) | 5 °C below shutdown |
+  | `undervoltage` | Undervoltage now (Raspberry Pi); note for 10 min after | — |
+  | `disk-full` | Filesystem ≥ 90 % | ≥ 97 % |
+  | `memory-low` | Free memory < 10 % | < 5 % |
+
+- Bug reports and hardware results: [CONTRIBUTING.md](../CONTRIBUTING.md).

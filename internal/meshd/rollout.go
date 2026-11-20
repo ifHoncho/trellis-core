@@ -320,7 +320,7 @@ func (r *rolloutReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	}
 	if err := d.ensureRolloutServer(); err != nil {
 		res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "rollout-serve",
-			Message: fmt.Sprintf("cannot serve the mesh-wide upgrade's package to other nodes: %v", err)})
+			Message: fmt.Sprintf("Cannot serve the mesh upgrade package to other nodes: %v", err)})
 	}
 	// Quick passes while it runs; once over, it is only shown.
 	s.mu.Lock()

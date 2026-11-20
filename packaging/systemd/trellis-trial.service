@@ -1,0 +1,23 @@
+[Unit]
+Description=Trellis driver trials: undo one the last boot did not confirm
+# A new driver module, firmware or board file is on trial until meshd has
+# seen the node run well on it (meshctl trial). A node that restarts before
+# that gets the old files back here, before udev loads any driver, so that
+# a version that takes the node down at boot does so once.
+#
+# It runs only when there are trials, and needs the state directory on the
+# root filesystem (a /var on a partition of its own is not mounted yet;
+# meshd then undoes the trial after boot instead).
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=systemd-udev-trigger.service systemd-modules-load.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/trellis/trials/state.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/trellis meshctl trial boot
+
+[Install]
+WantedBy=sysinit.target

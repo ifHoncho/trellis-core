@@ -7,6 +7,30 @@ export function mbps(v) {
   return v.toFixed(v > 0 && v < 1 ? 2 : 1);
 }
 
+// widthCost is what a channel width costs in link budget against the
+// band's narrowest (20 MHz on Wi-Fi, 1 on HaLow): the noise a wider channel
+// takes in, and the transmit power a radio gives up at it, where the
+// hardware database knows that radio's power per width (a status radio's
+// power_by_width). Null at the narrowest width. The node works out the
+// same for the links it runs (mesh_link.width_cost).
+export function widthCost(powerByWidth, band, width) {
+  const base = band === 's1g' ? 1 : 20;
+  if (!(width > base)) return null;
+  const noise = 10 * Math.log10(width / base);
+  const t = (powerByWidth || {})[band] || {};
+  const known = t[width] != null && t[base] != null;
+  const power = known ? t[base] - t[width] : 0;
+  return { width, base, noise, known, power, total: noise + power, dbm: t[width], baseDbm: t[base] };
+}
+
+// widthCostText says a width's cost in a sentence.
+export function widthCostText(c) {
+  if (!c) return '';
+  return c.known
+    ? `Link budget −${c.total.toFixed(1)} dB vs ${c.base} MHz: Tx ${c.dbm} dBm at ${c.width} MHz (vs ${c.baseDbm}), +${c.noise.toFixed(0)} dB noise. Higher throughput, shorter range.`
+    : `Link budget about −${c.noise.toFixed(0)} dB vs ${c.base} MHz (wider-channel noise). Higher throughput, shorter range.`;
+}
+
 export function duration(seconds) {
   seconds = Math.max(0, Math.floor(seconds));
   const d = Math.floor(seconds / 86400), hrs = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
@@ -100,16 +124,16 @@ export const linkOn = (st, ifname) => meshLinks(st).find((l) => l.interface && l
 export function fewerRadios(st) {
   const links = meshLinks(st);
   const radios = (st.radios || []).filter((r) => r.mesh_point && !r.ignored);
-  if (links.length < 2 || radios.length >= links.length || st.mesh_link.transport === 'not yet determined') return null;
+  if (links.length < 2 || radios.length >= links.length || st.mesh_link.transport === 'undetermined') return null;
   const on = links.filter(carried), off = links.filter((l) => !carried(l));
   const and = (xs) => xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1];
   const one = radios.length === 1;
   return {
     on, off, radios,
-    lead: `${one ? 'This node has one mesh radio' : `This node has ${radios.length} mesh radios`} for ${links.length} links` +
-      (one && radios[0].bands && radios[0].bands.length > 1 ? ', and it works on one band at a time' : '') + '. ' +
-      (on.length ? `It is on ${and(on.map((l) => linkName(l, st)))} now, and connects directly only to nodes on ${on.length === 1 ? 'that channel' : 'those channels'}; ` +
-        `it reaches nodes on ${and(off.map((l) => linkName(l, st)))} only through a node that carries both.` : 'It is on no link yet.'),
+    lead: `${radios.length} mesh radio${one ? '' : 's'} for ${links.length} links` +
+      (one && radios[0].bands && radios[0].bands.length > 1 ? ' (one band at a time)' : '') + '. ' +
+      (on.length ? `Active: ${and(on.map((l) => linkName(l, st)))}. ` +
+        `Nodes on ${and(off.map((l) => linkName(l, st)))} reachable only via a node carrying both.` : 'No active link.'),
   };
 }
 
@@ -117,20 +141,20 @@ export function fewerRadios(st) {
 // "mesh + Wi-Fi", "Wi-Fi", "idle". Which link is told by linkName.
 export function roleKind(r) {
   if (!r || r === 'unused') return 'idle';
-  if (r === 'ap') return 'Wi-Fi';
-  return roleLink(r) ? (r.endsWith('+ap') ? 'mesh + Wi-Fi' : 'mesh') : r;
+  if (r === 'ap') return 'AP';
+  return roleLink(r) ? (r.endsWith('+ap') ? 'mesh + AP' : 'mesh') : r;
 }
 
 // roleName is a radio role in words, naming its link: "Mesh on 5 GHz · ch
-// 149", "Mesh on 2.4 GHz · ch 6 + client Wi-Fi", "Client Wi-Fi", "Unused".
+// 149", "Mesh on 2.4 GHz · ch 6 + client AP", "Client AP", "Unused".
 export function roleName(r, st) {
   if (!r) return '–';
   if (r === 'unused') return 'Unused';
-  if (r === 'ap') return 'Client Wi-Fi';
+  if (r === 'ap') return 'Client AP';
   const n = roleLink(r);
   if (!n) return r;
   const on = st && linkAt(st, n) ? ` on ${linkName(linkAt(st, n), st)}` : '';
-  return `Mesh${on}${r.endsWith('+ap') ? ' + client Wi-Fi' : ''}`;
+  return `Mesh${on}${r.endsWith('+ap') ? ' + client AP' : ''}`;
 }
 
 // radioBands names one radio's bands: "2.4/5 GHz", "HaLow".
@@ -155,19 +179,19 @@ export function plural(n, one, many) {
   return `${n} ${n === 1 ? one : (many || one + 's')}`;
 }
 
-// clockShort is how the node keeps time, in a few words for the overview:
-// "GNSS", "mesh · relay-1", "internet", "not synchronised".
+// clockShort is the clock's sync state for the overview: "Synced · GNSS",
+// "Synced · relay-1 (mesh)", "Not synced".
 export function clockShort(c) {
-  if (!c || c.service !== 'chrony') return 'not kept';
-  if (!c.synced) return 'not synchronised';
-  if (c.source_kind === 'mesh') return 'mesh · ' + (c.source || '').replace(/ \(.*\)$/, '');
-  return { gnss: 'GNSS', internet: 'internet' }[c.source_kind] || c.source || 'synchronised';
+  if (!c || c.service !== 'chrony') return 'Not managed';
+  if (!c.synced) return 'Not synced';
+  if (c.source_kind === 'mesh') return `Synced · ${(c.source || 'mesh').replace(/ \(.*\)$/, '')} (mesh)`;
+  return 'Synced · ' + ({ gnss: 'GNSS', internet: 'NTP' }[c.source_kind] || c.source || '–');
 }
 
 // gnssShort is the receiver in a few words: "3D fix · 9 satellites",
 // "no fix".
 export function gnssShort(g) {
   if (!g || !g.receiver) return 'no receiver';
-  if (g.fix === 'none') return 'no fix' + (g.sats_seen ? ` · ${g.sats_seen} satellites heard` : '') + ((g.signals || []).length ? `, strongest ${g.signals[0]} dB-Hz` : '');
-  return `${g.fix.toUpperCase()} fix · ${plural(g.sats_used, 'satellite')}` + (g.h_acc_m ? ` · ±${Math.round(g.h_acc_m)} m` : '');
+  if (g.fix === 'none') return 'No fix' + (g.sats_seen ? ` · ${g.sats_seen} sats seen` : '') + ((g.signals || []).length ? ` · best ${g.signals[0]} dB-Hz` : '');
+  return `${g.fix.toUpperCase()} fix · ${g.sats_used} sats` + (g.h_acc_m ? ` · ±${Math.round(g.h_acc_m)} m` : '');
 }

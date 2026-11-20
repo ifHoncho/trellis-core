@@ -105,7 +105,7 @@ function connect() {
       // Slower each time it fails before the node's hello, and said: the
       // session may have ended, or voice stopped.
       c.status = 'connecting';
-      if (fails >= 3) c.error = 'The console cannot connect to this node. If you were signed out, sign in again; otherwise voice may not be running. Still trying.';
+      if (fails >= 3) c.error = 'Console cannot connect. Sign in again if signed out; otherwise voice may not be running. Retrying.';
       retry = setTimeout(connect, Math.min(30000, 2000 * 2 ** Math.min(fails, 4)));
     } else c.status = 'off';
     redraw();
@@ -142,7 +142,7 @@ function onMessage(m) {
       break;
     case 'notice':
       if (m.what === 'busy') { c.ptt = 'refused'; beep('busy'); }
-      if (m.what === 'tx-limit') { stopTalking(false); c.ptt = 'refused'; c.error = 'Released after 60 s: press again to go on.'; beep('busy'); }
+      if (m.what === 'tx-limit') { stopTalking(false); c.ptt = 'refused'; c.error = 'Released after 60 s limit. Press again to continue.'; beep('busy'); }
       break;
     case 'error':
       // Refused before the hello (voice not running, too many consoles):
@@ -197,7 +197,7 @@ async function ensureMic() {
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
   } catch (e) {
-    C().error = 'No microphone: ' + (e.name === 'NotAllowedError' ? 'the browser was not allowed to use it.' : e.message);
+    C().error = 'No microphone: ' + (e.name === 'NotAllowedError' ? 'browser permission denied.' : e.message);
     redraw();
     return false;
   }
@@ -223,7 +223,7 @@ export async function pttDown(all = false) {
   if (!(await ensureMic())) { held = false; return; }
   if (!held) {
     // Released while the browser asked for the microphone: nothing is keyed.
-    c.error = 'The microphone is ready. Hold the button again to talk.'; redraw();
+    c.error = 'Microphone ready. Hold to talk.'; redraw();
     return;
   }
   if (c.status !== 'on' || c.ptt === 'talking' || c.ptt === 'asking') return;

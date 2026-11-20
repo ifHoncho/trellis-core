@@ -4,6 +4,10 @@
 #
 #   build-mt7915e.sh KERNEL_VERSION KERNEL_BUILD_DIR
 #
+# Source older than Linux 6.14 gets that release's band selection
+# (band-select.sh), so the driver is also built for kernels that have an
+# mt7915e of their own without it.
+#
 # Where the source comes from:
 #   - Raspberry Pi OS kernels name their raspberrypi/linux commit in
 #     /usr/share/doc/linux-image-<version>/changelog.Debian.gz
@@ -77,6 +81,14 @@ rm -rf src out
 mkdir -p src out
 cp -r "$SRC/$MT76/." src/
 [ -f src/mt7915/Makefile ] || die "$REF has no mt7915 driver"
+
+# Linux 6.14's band selection for 5/6 GHz radios, on older source
+# (band-select.sh says why). Source it does not know is built as it is: a
+# driver without the fix is better than no driver, and meshd shows the
+# radio it leaves deaf as broken.
+if ! sh "$HERE/band-select.sh" src/mt7915/eeprom.c; then
+  say "WARNING: band selection not applied to this source; a radio with 5 and 6 GHz stays without either"
+fi
 
 # Same compiler major version as the kernel (see trellis-build.sh).
 CC_SEL="$(sh "$HERE/trellis-build.sh" --print-cc "$KDIR")"

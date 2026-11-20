@@ -286,7 +286,10 @@ own interfaces on it.
     so it carries a HaLow link and never a Wi-Fi role.
 
 **Dual-band concurrent cards.** A dual-band-concurrent (DBDC) card appears
-as two radios, one per band, each with its own fingerprint. The planner
+as two radios, one per band, each with its own fingerprint: the card's
+plus the radio's bands. Bands a radio runs one at a time (the MT7916's
+5/6 GHz radio) count as the first, so the fingerprint stays the same
+whichever band the driver offers. The planner
 treats them like two adapters: two mesh links at once, or a mesh link on
 one and the client AP on the other, with no shared airtime. The two radios
 share one chip, so a peer that moves its one radio between this node's
@@ -1066,6 +1069,8 @@ One binary, several subcommands, each run as its own process.
 | `webd` | none | Web UI and HTTP/JSON API with live updates; talks to `meshd` over its socket. |
 | `crda` | root, run by udev | Answers the kernel's regulatory requests with the mesh profile's rules (§5.1). Runs for a moment and exits. |
 | `meshctl` | operator | CLI, including `meshctl doctor`. |
+| `pcie-watch` | root with `CAP_SYS_ADMIN` only, no network (`trellis-pcie.service`) | Samples the error status of PCIe radios' links and writes `/run/trellis-pcie/links.json` for meshd and doctor (§12.7). Started by `meshd` on a node with a PCIe radio. |
+| `meshctl trial boot` | root, a oneshot before udev's trigger (`trellis-trial.service`), only when a trial is on record | Undoes a driver trial the last boot did not confirm (§12.7). |
 
 **Why:** a bug in the web UI is not a root bug. One binary keeps packaging
 simple.
@@ -1292,6 +1297,57 @@ Validation-first keeps a bad config from ever reaching a running node.
   throughput, gateways and the selected one, EUDs per node, multicast path in
   use, warnings.
 - **Diagnostics:** `meshctl doctor` gives a single paste-able report.
+- **Hardware health:** a `hardware` reconciler
+  reads what the radios' hardware says about itself and raises warnings.
+  - *PCIe link:* speed and width against the slower end's maximum, the
+    kernel's AER counters, and what sampling the AER status registers
+    found. The registers need `CAP_SYS_ADMIN`, so `trellis pcie-watch`
+    (a unit of its own, started by meshd when it has a PCIe radio) reads
+    them: the upstream port's correctable status, read and cleared 100
+    times at 10 ms, every 15 s; the share of windows with a REPLAY_NUM
+    rollover is the measure. A port that reports its correctable errors
+    is left to the kernel.
+  - *Temperature:* hwmon under the wiphy, the driver's throttle and the
+    cooling device; read once a minute (mt76 asks the card on each read).
+    Gossip carries no figures: `dg` lists degraded radios with a reason
+    code (`thermal`, `pcie`), absent while all are fine.
+  - *Width cost:* the hardware database's power per width, and the noise
+    of the wider channel, against the band's narrowest.
+  - *The host:* `internal/hoststat` reads thermal zones (hwmon's CPU
+    sensor where there are none), `/proc/stat`, `loadavg`, `meminfo`,
+    cpufreq, a Raspberry Pi's `rpi_volt` alarm and, per block device,
+    statfs at its shortest mount point in meshd's namespace (the sandbox
+    bind-mounts `/` again on `/usr` and `/etc`). A sample is taken on each
+    reconcile pass and for each status (kept 1 s); CPU use is the
+    difference from the sample before. The alerts come from the pass.
+- **Reset history:** at start meshd reads the
+  kernel's crash records (pstore, and where systemd-pstore moves them),
+  gives each new one a verdict and keeps `resets.json` in the state
+  directory. It records whether it is running, was stopped by hand or
+  stopped by a shutdown, at the stop signal (a teardown past systemd's
+  stop timeout is killed): a new boot after "running" with no new record
+  is a loss of power. `meshctl trial` and `meshctl prepare` mark it "reload" while they
+  have meshd stopped to load a module: a crash there is a reset too. A record gives a verdict only with a panic, an
+  SError or a SysRq reset in it (ramoops also keeps oopses the kernel
+  survived); console records after a clean stop are not read. Times: a crash is dated by
+  the start of its boot plus the uptime in its record; a boot's start is
+  read once chrony has set the clock (a board without an RTC starts from a
+  stale saved time). Without a known start, a reset is dated by the start
+  of the boot that found it, once that boot's clock is set. A boot whose
+  clock is never set leaves its resets marked `time_unknown`. Each entry
+  keeps the boot that found it: before the clock is set, only this
+  boot's resets count as recent.
+- **Driver trials:** `internal/trial`. A trial's
+  files are swapped in with the old ones kept; state is one file under a
+  lock, shared by `meshctl trial`, the boot hook (a unit ordered before
+  udev's trigger: a trial pending from another boot is undone there and
+  latched) and meshd's `trials` reconciler (keeps a trial after 5 min of
+  unbroken health, has one undone 15 min after its files load, counted
+  in uptime from when it became pending, or 5 min after it loses the
+  health it had; at least 5 min from a restart of meshd, which forgets
+  what it knew of the trial's health; one open trial per file; the undo runs outside
+  meshd's bounds, through `systemd-run`; meshd never waits on the lock,
+  which `meshctl` holds while it stops meshd for a reload).
 - **Logs:** structured, to journald or syslog, with RAM-backed volatile state
   to spare SD cards.
 

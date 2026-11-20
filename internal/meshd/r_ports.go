@@ -209,19 +209,19 @@ func (r *portsReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 		}
 		switch {
 		case p.role == portPeer:
-			warn("warning", "port-peer", "port %s leads to another Trellis node (%s); not bridging it, which would loop the mesh. For a wired mesh link give it role mesh on both nodes", name, p.why)
+			warn("warning", "port-peer", "Port %s connects to another Trellis node (%s): not bridged (loop). For a wired mesh link, set role mesh on both nodes", name, p.why)
 		case p.role == portInUse && p.listed:
-			warn("warning", "port-in-use", "port %s is listed with role auto but the system uses it (%s); Trellis leaves it alone", name, p.why)
+			warn("warning", "port-in-use", "Port %s (role auto) in use by the system (%s): not managed", name, p.why)
 		case p.role == portFailed:
 			warn("warning", "port-probe", "cannot probe port %s: %s", name, p.why)
 			res.RequeueAfter = probeRetryIn
 		case p.role == portMissing:
-			warn("warning", "port-missing", "port %s (role auto) does not exist", name)
+			warn("warning", "port-missing", "Port %s (role auto) not present", name)
 		}
 		if p.role == portWAN && p.lease != nil {
 			if _, mesh, err := net.ParseCIDR(r.d.profile.Prefix); err == nil {
 				if sub := p.lease.Subnet(); sub.Contains(mesh.IP) || mesh.Contains(sub.IP) {
-					warn("warning", "wan-overlaps-mesh", "the uplink on %s is %s, which overlaps the mesh prefix %s: hosts in the overlap are not reachable from the mesh, nor the mesh from them. "+
+					warn("warning", "wan-overlaps-mesh", "Uplink %s is %s, overlapping mesh prefix %s: overlapping hosts unreachable in both directions. "+
 						"Give the mesh another prefix (profile), or the uplink another subnet", name, sub, mesh)
 				}
 			}

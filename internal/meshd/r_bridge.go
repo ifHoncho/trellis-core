@@ -177,7 +177,7 @@ func (b *bridgeReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 				res.Changed = true
 				continue
 			}
-			warn("warning", "extra-address", "%s also has %s inside the mesh prefix; Trellis manages %s", BridgeIfname, a.IPNet, addr)
+			warn("warning", "extra-address", "%s has extra address %s in the mesh prefix; Trellis manages %s", BridgeIfname, a.IPNet, addr)
 		}
 	}
 	if ch, err := rtnl.EnsureUp(link); err != nil {

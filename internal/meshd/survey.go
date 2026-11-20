@@ -339,7 +339,7 @@ func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string,
 				out[i].Busy = -1
 			}
 		}
-		return out, errors.New("this radio's busy times during a scan are not usable (it reports nearly every channel as fully busy): only the networks heard count")
+		return out, errors.New("Radio busy-time data unusable during scan (all channels reported fully busy); networks heard only")
 	}
 	return out, nil
 }
@@ -367,7 +367,7 @@ func saturated(chs []gossip.SurveyCh, own int) bool {
 func (d *Daemon) StartSurvey(ctx context.Context) (*status.Survey, error) {
 	me := d.identity()
 	if me == nil || d.gossip == nil || d.gossip.currentKey() == nil || d.peers == nil {
-		return nil, errors.New("gossip has not started: try again in a moment")
+		return nil, errors.New("Gossip not started; retry shortly")
 	}
 	s := &d.survey
 	s.mu.Lock()

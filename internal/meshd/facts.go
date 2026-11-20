@@ -2,6 +2,8 @@ package meshd
 
 import (
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +22,14 @@ type Facts struct {
 	Firewall firewallFacts
 	// SiteLink is what the site link reconciler set up (r_sitelink.go).
 	SiteLink siteLinkFacts
+
+	// Trials are the driver and firmware trials as the trials reconciler
+	// last saw them (r_trial.go).
+	Trials []status.Trial
+
+	// Hardware is what the radios' hardware says about itself: PCIe link
+	// and temperature (r_hardware.go). Replaced whole on each pass.
+	Hardware hardwareFacts
 
 	Radios      []*radio.Radio
 	Plan        *radio.Plan
@@ -105,6 +115,17 @@ func (f *Facts) AddSAEFailure(ifname, mac, kind, msg string) {
 	if len(f.SAEFailures) > 20 {
 		f.SAEFailures = f.SAEFailures[len(f.SAEFailures)-20:]
 	}
+}
+
+// ClearSAEFailures drops what was recorded for a peer on a link's
+// interface once the link to it is up: a failure while it restarted is
+// resolved, and only peers that still fail stay listed.
+func (f *Facts) ClearSAEFailures(ifname, mac string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.SAEFailures = slices.DeleteFunc(f.SAEFailures, func(e status.SAEEvent) bool {
+		return strings.EqualFold(e.MAC, mac) && (e.Interface == ifname || e.Interface == "")
+	})
 }
 
 // saeFailures are the recorded failures on interface ifname; first adds

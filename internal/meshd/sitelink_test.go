@@ -123,15 +123,15 @@ func TestSitePeerNote(t *testing.T) {
 		want []string
 	}{
 		{"up", me, sitePeerFacts{Endpoint: "192.0.2.1:1"}, now.Add(-time.Minute), nil},
-		{"no endpoint at either end", me, sitePeerFacts{}, time.Time{}, []string{"neither this node nor it has an endpoint"}},
-		{"name does not resolve", me, sitePeerFacts{Endpoint: "x.example:1", EndpointErr: "cannot look up x.example"}, time.Time{}, []string{"x.example:1 cannot be used (cannot look up x.example)", "this node has none"}},
-		{"name does not resolve, it can dial", withEP, sitePeerFacts{Endpoint: "x.example:1", EndpointErr: "boom"}, time.Time{}, []string{"waiting for it to dial this node (hq.example.org:51873)"}},
-		{"no uplink", me, sitePeerFacts{Endpoint: "192.0.2.1:1", NoRoute: true}, time.Time{}, []string{"no uplink that leads to 192.0.2.1:1", "internet of its own"}},
-		{"never, it dials", withEP, sitePeerFacts{}, time.Time{}, []string{"no answer yet", "it has no endpoint, so it dials", "UDP port 51873"}},
-		{"never, this node dials", me, sitePeerFacts{Endpoint: "192.0.2.1:1"}, time.Time{}, []string{"no answer yet", "it at 192.0.2.1:1"}},
+		{"no endpoint at either end", me, sitePeerFacts{}, time.Time{}, []string{"no endpoint on either node"}},
+		{"name does not resolve", me, sitePeerFacts{Endpoint: "x.example:1", EndpointErr: "cannot look up x.example"}, time.Time{}, []string{"x.example:1 unusable (cannot look up x.example)", "this node has no endpoint"}},
+		{"name does not resolve, it can dial", withEP, sitePeerFacts{Endpoint: "x.example:1", EndpointErr: "boom"}, time.Time{}, []string{"waiting for remote to connect to this node (hq.example.org:51873)"}},
+		{"no uplink", me, sitePeerFacts{Endpoint: "192.0.2.1:1", NoRoute: true}, time.Time{}, []string{"no uplink route to 192.0.2.1:1", "its own internet"}},
+		{"never, it dials", withEP, sitePeerFacts{}, time.Time{}, []string{"no handshake yet", "remote has no endpoint", "UDP port 51873"}},
+		{"never, this node dials", me, sitePeerFacts{Endpoint: "192.0.2.1:1"}, time.Time{}, []string{"no handshake yet", "UDP to 192.0.2.1:1"}},
 		{"just set up", siteLinkFacts{Port: 51873, Since: now.Add(-5 * time.Second)}, sitePeerFacts{Endpoint: "192.0.2.1:1"}, time.Time{}, nil},
-		{"just set up, nothing to dial", siteLinkFacts{Port: 51873, Since: now.Add(-5 * time.Second)}, sitePeerFacts{}, time.Time{}, []string{"neither this node nor it"}},
-		{"stopped", withEP, sitePeerFacts{Endpoint: "192.0.2.1:1"}, now.Add(-10 * time.Minute), []string{"it stopped answering 10m0s ago", "192.0.2.1:1, or this node (hq.example.org:51873)"}},
+		{"just set up, nothing to dial", siteLinkFacts{Port: 51873, Since: now.Add(-5 * time.Second)}, sitePeerFacts{}, time.Time{}, []string{"no endpoint on either node"}},
+		{"stopped", withEP, sitePeerFacts{Endpoint: "192.0.2.1:1"}, now.Add(-10 * time.Minute), []string{"no handshake for 10 min", "192.0.2.1:1 or this node (hq.example.org:51873)"}},
 	} {
 		got := sitePeerNote(tc.f, tc.p, tc.last, now)
 		if len(tc.want) == 0 && got != "" {
@@ -156,7 +156,7 @@ func TestSiteLinkEffects(t *testing.T) {
 		got = append(got, e.Level+" "+e.Message)
 	}
 	all := strings.Join(got, "\n")
-	for _, want := range []string{"gains f-2 (site field)", "f-1 (site field) leaves the site link: its tunnels close", "site or endpoint of hq-1 (site hq) changes", "port or MTU changes"} {
+	for _, want := range []string{"members added: f-2 (site field)", "f-1 (site field) removed from the site link: tunnels close", "endpoint change: hq-1 (site hq)", "port or MTU change"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing %q in:\n%s", want, all)
 		}
@@ -192,7 +192,7 @@ func TestSiteLinkEffects(t *testing.T) {
 	if got := codes(es); got != "site-link-members site-link-no-endpoint site-link-same-mesh" {
 		t.Errorf("two nodes of one mesh: %s", got)
 	}
-	if m := es[2].Message; !strings.Contains(m, "node-1 (site hq) and node-2 (site field) already reach each other") {
+	if m := es[2].Message; !strings.Contains(m, "node-1 (site hq) and node-2 (site field) already connected") {
 		t.Errorf("same mesh: %s", m)
 	}
 	// With an endpoint, and a node this mesh does not hold: neither.

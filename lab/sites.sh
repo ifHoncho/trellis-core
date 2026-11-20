@@ -235,7 +235,7 @@ while [ $SECONDS -lt $deadline ]; do
   [ -n "$note" ] && break
   sleep 1
 done
-if echo "$note" | grep -q "no answer yet" && echo "$note" | grep -q "it has no endpoint, so it dials" && ctl 1 site | grep -q "field-4: no answer yet"; then
+if echo "$note" | grep -q "no handshake yet" && echo "$note" | grep -q "remote has no endpoint" && ctl 1 site | grep -q "field-4: no handshake yet"; then
   pass "S1.2b before the field has the list, hq-1 says what its quiet tunnel waits for (status and meshctl site)"
 else
   fail "S1.2b note on a quiet tunnel" "note=[$note] $(ctl 1 site 2>&1)"

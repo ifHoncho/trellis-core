@@ -86,7 +86,7 @@ func (d *Daemon) commit(changes ...*fileChange) error {
 	}
 	if err := d.Reload(); err != nil {
 		restoreFiles(changes)
-		return fmt.Errorf("the new configuration was written but meshd refused it, so the old one was put back: %w", err)
+		return fmt.Errorf("Configuration rejected by meshd; previous configuration restored: %w", err)
 	}
 	return nil
 }
@@ -249,7 +249,7 @@ func (d *Daemon) SetProfile(ctx context.Context, in api.ProfileInput, dryRun boo
 	}
 	// A mesh-wide change on its way replaces whatever is installed now.
 	if m := d.meshChangeState(); m != nil && m.State == "pending" && res.Changed {
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-pending", "A mesh-wide change from %s is on its way: at %s this node switches to it, and what is installed now is replaced.", m.From, m.ApplyAt.Format("15:04:05")))
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-pending", "Mesh change from %s pending: switchover at %s replaces this installation.", m.From, m.ApplyAt.Format("15:04:05")))
 		sortEffects(res.Effects)
 	}
 	if dryRun || !res.Changed {
@@ -335,7 +335,7 @@ func (d *Daemon) ProfileExport() (*api.ProfileExport, error) {
 
 // Doctor runs the host checks and returns the paste-able report.
 func (d *Daemon) Doctor(ctx context.Context) (string, error) {
-	rep := doctor.Run(doctor.Options{Version: d.opts.Version, NodePath: d.opts.NodePath, ProfilePath: d.opts.ProfilePath, Socket: d.opts.Socket})
+	rep := doctor.Run(doctor.Options{Version: d.opts.Version, NodePath: d.opts.NodePath, ProfilePath: d.opts.ProfilePath, Socket: d.opts.Socket, StateDir: d.opts.StateDir})
 	return rep.Text(), nil
 }
 
@@ -403,13 +403,13 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	add := func(level, code, format string, args ...any) { es = append(es, effect(level, code, format, args...)) }
 
 	if cur.Callsign != n.Callsign {
-		add("info", "renamed", "The node is renamed from %s to %s; on the mesh it becomes %s.mesh.", cur.Callsign, n.Callsign, n.Callsign)
+		add("info", "renamed", "Callsign %s → %s (DNS %s.mesh).", cur.Callsign, n.Callsign, n.Callsign)
 	}
 	if cur.NodeID != n.NodeID {
 		if n.NodeID == 0 {
-			add("info", "node-id", "The node ID is no longer pinned; the node keeps its current ID unless another node claims it.")
+			add("info", "node-id", "Node ID unpinned: current ID kept unless claimed by another node.")
 		} else if id := d.identity(); id == nil || id.NodeID != n.NodeID {
-			add("warning", "node-id", "The node ID changes to %d: the node gets a new address, and devices on it are sent for new addresses (a short interruption for them).", n.NodeID)
+			add("warning", "node-id", "Node ID → %d: new node address; clients re-address (brief interruption).", n.NodeID)
 		}
 	}
 
@@ -424,11 +424,11 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	}
 	switch {
 	case was == nil && will != nil:
-		add("warning", "firewall-closes", "Firewall on: from every interface but lo, br-mesh and anycast0 (the uplink, VPNs, containers) the node accepts %s, and drops new connections into the mesh except your DNAT port forwards. Services reached that way before stop answering; the mesh, this node's Wi-Fi and device ports, and the internet it shares are not affected.", openList(will))
+		add("warning", "firewall-closes", "Firewall on: filtered interfaces (all but lo, br-mesh, anycast0) accept %s; new inbound connections to the mesh dropped except DNAT forwards. Services reached that way stop responding. Mesh, client AP, client ports and shared internet unaffected.", openList(will))
 	case was != nil && will == nil:
-		add("info", "firewall-opens", "Firewall off: Trellis removes its rules (table inet trellis_fw). The host's own firewall, if any, decides what the uplink network reaches.")
+		add("info", "firewall-opens", "Firewall off: Trellis rules removed (inet trellis_fw). Host firewall applies.")
 	case was != nil && will != nil && openList(was) != openList(will):
-		add("info", "firewall-ports", "Firewall: from filtered interfaces the node will accept %s.", openList(will))
+		add("info", "firewall-ports", "Firewall: filtered interfaces accept %s.", openList(will))
 	}
 
 	// Radios: compare the plan in force with the one this configuration gives.
@@ -465,14 +465,14 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 					drops = fmt.Sprintf(" Its %d direct links there (%s) drop.", len(peers[i]), listAnd(peers[i]))
 				}
 				if len(left) > 0 {
-					add("error", "mesh-link-down", "%s goes down on this node: no radio carries it any more.%s The node stays in the mesh over %s only, and reaches the nodes in range there. You lose this page if you reach it through a node that is not.", title, drops, listAnd(left))
+					add("error", "mesh-link-down", "%s down on this node: no radio assigned.%s Remains in the mesh over %s only. Web UI access via other links may be lost.", title, drops, listAnd(left))
 				} else {
-					add("error", "mesh-link-down", "%s goes down: no radio carries it any more.%s It is this node's only link: the node leaves the mesh, and you lose this page if you reach it through another node.", title, drops)
+					add("error", "mesh-link-down", "%s down: no radio assigned.%s Only link: node leaves the mesh; web UI access via the mesh lost.", title, drops)
 				}
 			case was == "":
-				add("info", "mesh-link-up", "%s comes up on %s.", title, name(now))
+				add("info", "mesh-link-up", "%s up on %s.", title, name(now))
 			default:
-				add("warning", "mesh-link-moves", "%s moves from %s to %s and drops for a few seconds.", title, name(was), name(now))
+				add("warning", "mesh-link-moves", "%s moves %s → %s (down a few seconds).", title, name(was), name(now))
 			}
 		}
 		// Each link by its band and channel, as everywhere in the UI.
@@ -490,11 +490,11 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 		switch {
 		case was == now:
 		case now == "":
-			add("warning", "ap-down", "The client Wi-Fi turns off. Devices on it are disconnected, and so are you if you are on it.")
+			add("warning", "ap-down", "Client AP off: clients disconnected, including this session if on the AP.")
 		case was == "":
-			add("info", "ap-up", "The client Wi-Fi comes up on %s.", name(now))
+			add("info", "ap-up", "Client AP up on %s.", name(now))
 		default:
-			add("warning", "ap-moves", "The client Wi-Fi moves from %s to %s; devices on it reconnect.", name(was), name(now))
+			add("warning", "ap-moves", "Client AP moves %s → %s; clients reconnect.", name(was), name(now))
 		}
 		// On a mesh radio the client Wi-Fi uses that link's channel: when
 		// the radio changes link, the Wi-Fi changes band with it.
@@ -505,7 +505,7 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 			return ""
 		}
 		if a, b := sharedBand(before), sharedBand(after); was == now && a != "" && b != "" && a != b {
-			add("warning", "ap-band", "The client Wi-Fi shares that radio and moves with it, from %s to %s: devices on it reconnect, and those that cannot use %s lose it.", bandName(a), bandName(b), bandName(b))
+			add("warning", "ap-band", "Client AP (shared radio) moves %s → %s; clients reconnect; clients without %s support lose access.", bandName(a), bandName(b), bandName(b))
 		}
 		for _, nt := range after.Notices {
 			if nt.Level == "error" {
@@ -515,20 +515,20 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 	}
 
 	if apChanged(cur, n) && n.APEnabled() && cur.APEnabled() {
-		add("warning", "ap-credentials", "The client Wi-Fi's name or passphrase changes. Devices must join again with the new ones, and so must you if you are on it.")
+		add("warning", "ap-credentials", "Client AP SSID or passphrase change: clients must rejoin, including this session if on the AP.")
 	} else if n.APEnabled() && cur.APEnabled() && (cur.AP.Band != n.AP.Band || cur.AP.Channel != n.AP.Channel || cur.AP.Country != n.AP.Country || cur.AP.Isolate != n.AP.Isolate) {
-		add("warning", "ap-restart", "The client Wi-Fi restarts with the new settings; devices on it reconnect.")
+		add("warning", "ap-restart", "Client AP restarts; clients reconnect.")
 	}
 
 	if cur.Gateway.Mode != n.Gateway.Mode {
 		if n.Gateway.Mode == config.GatewayOff {
-			add("warning", "gateway-off", "This node stops sharing its internet uplink with the mesh. Its own devices use another node's gateway, if there is one.")
+			add("warning", "gateway-off", "Gateway off: uplink not shared. Local clients use another gateway, if any.")
 		} else {
-			add("info", "gateway-auto", "This node shares its internet uplink with the mesh whenever it has a healthy one.")
+			add("info", "gateway-auto", "Gateway on: uplink shared while healthy.")
 		}
 	} else if cur.Gateway.WAN != n.Gateway.WAN || cur.Gateway.DownMbit != n.Gateway.DownMbit || cur.Gateway.UpMbit != n.Gateway.UpMbit ||
 		!slices.Equal(cur.Gateway.ProbeTargets, n.Gateway.ProbeTargets) || cur.Gateway.ProbeIntervalMS != n.Gateway.ProbeIntervalMS {
-		add("info", "gateway-settings", "The uplink settings change; the uplink is probed again before it is shared.")
+		add("info", "gateway-settings", "Uplink settings change; uplink re-probed before sharing.")
 	}
 
 	if !slices.Equal(cur.Ports, n.Ports) {
@@ -571,23 +571,23 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 
 	if cur.Web.WANAccess != n.Web.WANAccess {
 		if n.Web.WANAccess {
-			add("warning", "web-wan-access", "This page also becomes reachable from the node's uplink network, not only from the mesh. The admin password is then all that protects it there.")
+			add("warning", "web-wan-access", "Web UI reachable from the uplink network, protected by the admin password only.")
 		} else {
-			add("warning", "web-wan-access", "This page stops answering on the node's uplink network. If that is how you reach it now, you lose it: use the mesh or one of the node's client ports instead.")
+			add("warning", "web-wan-access", "Web UI closed to the uplink network. Sessions via the uplink are lost; use the mesh or a client port.")
 		}
 	}
 	if cur.Positions.Shared() != n.Positions.Shared() {
 		if n.Positions.Shared() {
-			add("info", "positions", "This node puts itself on the team's ATAK map whenever it has a GNSS fix (unless the mesh profile turns that off).")
+			add("info", "positions", "Node position to ATAK on, with GNSS fix (unless disabled by the mesh profile).")
 		} else {
-			add("info", "positions", "This node stops putting itself on the team's ATAK map, and stops sharing its position with the other nodes. Its marker goes stale on the phones within 3 minutes.")
+			add("info", "positions", "Node position to ATAK off (ATAK and mesh). Marker goes stale on EUDs within 3 min.")
 		}
 	}
 	if cur.MeshMTU != n.MeshMTU {
-		add("warning", "mesh-mtu", "The mesh link's MTU changes; the link restarts.")
+		add("warning", "mesh-mtu", "Mesh link MTU change; link restarts.")
 	}
 	if cur.AllowOldBatman != n.AllowOldBatman && n.AllowOldBatman {
-		add("warning", "old-batman", "The node may run an old batman-adv: with one in the mesh, every node falls back to flooding multicast.")
+		add("warning", "old-batman", "Legacy batman-adv allowed: forces mesh-wide multicast flooding.")
 	}
 	// A headset-button PTT shorts the microphone while it is held: with
 	// hold to talk, talks go out silent (or are stopped as such).
@@ -598,7 +598,7 @@ func (d *Daemon) nodeEffects(cur, n *config.Node, profile *config.Profile, setup
 		}
 		for _, ch := range [][2]string{{"A", pttA}, {"B", n.Voice.Channels.B.PTT}} {
 			if ch[1] == "button" {
-				add("warning", "voice-ptt-cuts-mic", "Channel %s's PTT is the audio adapter's headset button, which silences the microphone while it is held: with hold to talk, nothing you say is sent. Choose press to start, press to stop, or VOX.", ch[0])
+				add("warning", "voice-ptt-cuts-mic", "Channel %s PTT is the adapter headset button, which mutes the mic while held: hold to talk transmits silence. Use press to start, press to stop, or VOX.", ch[0])
 			}
 		}
 	}
@@ -749,15 +749,15 @@ func canCarry(radios [][]string, band string) bool {
 func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.Warning {
 	var es []status.Warning
 	add := func(level, code, format string, args ...any) { es = append(es, effect(level, code, format, args...)) }
-	const farthestFirst = "install it on every node, the farthest first, or this one is cut off from the rest (and from you, if you reach it through the mesh)"
+	const farthestFirst = "install on all nodes, farthest first, or this node is isolated (including web UI access via the mesh)"
 	meshChange := false // something every node has to agree on changes
 	if setup {
 		var on []string
 		for _, l := range p.AllLinks() {
 			on = append(on, linkDesc(l))
 		}
-		add("info", "joins-mesh", "The node joins the mesh %q on %s and leaves setup mode.", p.Name, listAnd(on))
-		add("warning", "ap-credentials", "The setup Wi-Fi goes away. The node's own client Wi-Fi replaces it under a new name and passphrase: note them before applying if that is how you are connected.")
+		add("info", "joins-mesh", "Node joins mesh %q on %s; setup mode ends.", p.Name, listAnd(on))
+		add("warning", "ap-credentials", "Setup AP shuts down, replaced by the client AP with a new SSID and passphrase. Record them before applying if connected via the setup AP.")
 	} else {
 		was, now := cur.AllLinks(), p.AllLinks()
 		peers := func(i int) []string {
@@ -798,7 +798,7 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 				stay = append(stay, linkDesc(l))
 				kept = append(kept, peers(i)...)
 				if j != i {
-					moved = append(moved, fmt.Sprintf("%s moves from place %d to %d", linkName(l), i+1, j+1))
+					moved = append(moved, fmt.Sprintf("%s: position %d → %d", linkName(l), i+1, j+1))
 				}
 			}
 		}
@@ -816,12 +816,12 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			if len(lost) == 1 {
 				drops += "s"
 			}
-			drops += " until the other end has the same profile."
+			drops += " until peers have the same profile."
 		}
 		switch {
 		case len(what) > 0:
 			meshChange = true
-			add("error", "leaves-mesh", "This changes %s.%s The node then only reaches nodes that have the same profile: %s.", listAnd(what), drops, farthestFirst)
+			add("error", "leaves-mesh", "Changes %s.%s Node then reaches only nodes with the same profile: %s.", listAnd(what), drops, farthestFirst)
 		case len(gone)+len(noRadio) > 0:
 			meshChange = true
 			off := listAnd(append(append([]string{}, gone...), noRadio...))
@@ -834,26 +834,26 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 					}
 				}
 				if len(to) > 0 {
-					onto = " and puts it on " + listAnd(to)
+					onto = " for " + listAnd(to)
 				}
 			}
 			switch {
 			case len(stay) == 0 && !v.Wired:
-				add("error", "leaves-mesh", "This takes the node off %s%s.%s It then only reaches nodes that have the same profile: %s.", off, onto, drops, farthestFirst)
+				add("error", "leaves-mesh", "Node leaves %s%s.%s Then reaches only nodes with the same profile: %s.", off, onto, drops, farthestFirst)
 			case len(lost) > 0 && len(kept) == 0 && !v.Wired:
-				add("error", "leaves-mesh", "This takes the node off %s%s.%s It keeps %s, but has no neighbour there now: it is cut off from the rest (and from you, if you reach it through the mesh) until the other nodes have this profile too.", off, onto, drops, listAnd(stay))
+				add("error", "leaves-mesh", "Node leaves %s%s.%s Keeps %s but has no neighbours there: isolated, including web UI access via the mesh, until other nodes have this profile.", off, onto, drops, listAnd(stay))
 			default:
 				over := "its wired mesh ports"
 				if len(stay) > 0 {
 					over = listAnd(stay)
 					if len(kept) > 0 {
-						over += fmt.Sprintf(", where it has %s", strings.TrimPrefix(directLinks(kept), "its "))
+						over += fmt.Sprintf(": %s", strings.TrimPrefix(directLinks(kept), "its "))
 					}
 				}
-				add("warning", "links-drop", "This takes the node off %s%s.%s It stays in the mesh over %s.", off, onto, drops, over)
+				add("warning", "links-drop", "Node leaves %s%s.%s Remains in the mesh over %s.", off, onto, drops, over)
 			}
 			if len(noRadio) > 0 {
-				add("info", "link-no-radio", "The profile keeps %s, but with the new link order this node has no radio left for it.", listAnd(noRadio))
+				add("info", "link-no-radio", "%s kept in the profile; no radio left for it on this node with the new link order.", listAnd(noRadio))
 			}
 		}
 		if len(what) == 0 {
@@ -904,48 +904,45 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 						bands = append(bands, b)
 					}
 				}
-				verb := map[bool]string{true: "has", false: "have"}[len(cannot) == 1]
-				add("warning", "nodes-cannot-follow", "%s %s no mesh radio for %s: a mesh that runs this profile leaves %s out, whatever is installed there.", listAnd(cannot), verb, listAnd(bands),
-					map[bool]string{true: "it", false: "them"}[len(cannot) == 1])
+				add("warning", "nodes-cannot-follow", "%s: no mesh radio for %s. Excluded from a mesh running this profile.", listAnd(cannot), listAnd(bands))
 			}
 			if len(unknown) > 0 && len(gone) > 0 {
-				add("info", "nodes-unknown-radios", "Not known whether %s can follow: %s not report its radios (an older version).", listAnd(unknown),
-					map[bool]string{true: "it does", false: "they do"}[len(unknown) == 1])
+				add("info", "nodes-unknown-radios", "Unknown whether %s can follow: radios not reported (older version).", listAnd(unknown))
 			}
 			if len(moved) > 0 {
 				meshChange = true
-				add("warning", "link-restarts", "The link order changes: %s. Each restarts, and is away for a few seconds.", listAnd(moved))
+				add("warning", "link-restarts", "Link order change: %s. Each restarts (down a few seconds).", listAnd(moved))
 			}
 		}
 		if v.APBand != "" && v.APBandAfter != "" && v.APBand != v.APBandAfter {
-			add("warning", "ap-band", "The client Wi-Fi shares the mesh radio and moves with it, from %s to %s: devices on it reconnect, and those that cannot use %s lose it.", bandName(v.APBand), bandName(v.APBandAfter), bandName(v.APBandAfter))
+			add("warning", "ap-band", "Client AP (shared mesh radio) moves %s → %s; clients reconnect; clients without %s support lose access.", bandName(v.APBand), bandName(v.APBandAfter), bandName(v.APBandAfter))
 		}
 		if cur.Prefix != p.Prefix {
 			meshChange = true
-			add("error", "prefix", "The mesh prefix changes from %s to %s: every node and device gets a new address, and nodes on the old prefix cannot reach those on the new one.", cur.Prefix, p.Prefix)
+			add("error", "prefix", "Mesh prefix %s → %s: all nodes and clients re-address; nodes on the old prefix cannot reach the new.", cur.Prefix, p.Prefix)
 		}
 		if cur.Name != p.Name {
-			add("info", "mesh-name", "The mesh is renamed from %q to %q (a label only).", cur.Name, p.Name)
+			add("info", "mesh-name", "Mesh name %q → %q (label only).", cur.Name, p.Name)
 		}
 		if cur.Batman != p.Batman && fmt.Sprint(cur.Batman.BLAMode(), deref(cur.Batman.MulticastFanout), cur.Batman.OrigIntervalMS, cur.Batman.MinVersion, cur.Batman.PinnedVersion, cur.Batman.MulticastFlood) !=
 			fmt.Sprint(p.Batman.BLAMode(), deref(p.Batman.MulticastFanout), p.Batman.OrigIntervalMS, p.Batman.MinVersion, p.Batman.PinnedVersion, p.Batman.MulticastFlood) {
 			meshChange = true
-			add("info", "batman-settings", "batman-adv settings change; they should be the same on every node.")
+			add("info", "batman-settings", "batman-adv settings change; must match on all nodes.")
 		}
 		if cur.Batman.MulticastFlood != p.Batman.MulticastFlood {
 			if p.Batman.MulticastFlood {
-				add("warning", "multicast-flood", "Multicast floods: every group (ATAK, voice, video) goes to every node over every link, whether anyone there listens or not. Use it only where the efficient path misbehaves; it costs airtime everywhere.")
+				add("warning", "multicast-flood", "Multicast flooding on: all groups (ATAK, voice, video) to all nodes on all links. Use only if optimized multicast fails; high airtime cost.")
 			} else {
-				add("info", "multicast-flood", "Multicast goes back to the efficient path: each group only to the nodes with listeners.")
+				add("info", "multicast-flood", "Multicast flooding off: groups forwarded to subscribers only.")
 			}
 		}
 	}
 	if !setup && cur.Positions.Shared() != p.Positions.Shared() {
 		meshChange = true
 		if p.Positions.Shared() {
-			add("info", "positions", "Nodes with a GNSS fix put themselves on the team's ATAK map, unless turned off on the node.")
+			add("info", "positions", "Node positions to ATAK on (nodes with GNSS fix, unless disabled per node).")
 		} else {
-			add("warning", "positions", "No node puts itself on the ATAK map or shares its position, and last known positions are forgotten (emissions control). Markers already on the phones go stale within 3 minutes. The phones' own positions are not affected: that is set in ATAK.")
+			add("warning", "positions", "Node positions to ATAK off: no node reports position; last known positions cleared (EMCON). Markers go stale on EUDs within 3 min. EUD positions unaffected (set in ATAK).")
 		}
 	}
 	if !setup {
@@ -957,9 +954,9 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 	if setup || cur.Regulatory != p.Regulatory {
 		meshChange = meshChange || !setup
 		if p.Regulatory.Mode == config.RegModeUnrestricted {
-			add("warning", "regulatory", "Regulatory mode is unrestricted: radios use every channel and the full power the hardware allows. That is lawful only with frequency authorization; without it, use country mode.")
+			add("warning", "regulatory", "Regulatory mode unrestricted: all channels, full hardware power. Requires frequency authorization.")
 		} else if !setup {
-			add("info", "regulatory", "Regulatory mode is country (%s): radios follow that country's channel and power limits.", p.Regulatory.Country)
+			add("info", "regulatory", "Regulatory mode country (%s): national channel and power limits.", p.Regulatory.Country)
 		}
 	}
 	if meshChange && len(v.Nodes) > 0 {
@@ -968,10 +965,7 @@ func profileEffects(cur, p *config.Profile, setup bool, v ProfileView) []status.
 			names = append(names, n.Callsign)
 		}
 		slices.Sort(names)
-		one := len(names) == 1
-		add("info", "this-node-only", "Only this node changes. The %s of this mesh (%s) %s until the profile is installed on %s.",
-			map[bool]string{true: "other node", false: fmt.Sprintf("%d other nodes", len(names))}[one], listAnd(names),
-			map[bool]string{true: "keeps its own", false: "keep theirs"}[one], map[bool]string{true: "it too", false: "each of them"}[one])
+		add("info", "this-node-only", "Applies to this node only. Other nodes (%s) keep their profile until it is installed there.", listAnd(names))
 	}
 	sortEffects(es)
 	return noNil(es)
@@ -1010,22 +1004,21 @@ func siteLinkEffects(cur, p config.SiteLinkPlan, v ProfileView) []status.Warning
 		}
 	}
 	if len(added) > 0 {
-		es = append(es, effect("info", "site-link-members", "The site link gains %s: each member links over the internet to the members of the other sites.", listAnd(added)))
+		es = append(es, effect("info", "site-link-members", "Site link members added: %s.", listAnd(added)))
 	}
 	if len(removed) > 0 {
-		es = append(es, effect("warning", "site-link-members", "%s %s the site link: %s tunnels close, and parts of the mesh that met only through them go apart.",
-			listAnd(removed), map[bool]string{true: "leaves", false: "leave"}[len(removed) == 1], map[bool]string{true: "its", false: "their"}[len(removed) == 1]))
+		es = append(es, effect("warning", "site-link-members", "%s removed from the site link: tunnels close; mesh segments joined only through them separate.", listAnd(removed)))
 	}
 	if len(moved) > 0 {
-		es = append(es, effect("info", "site-link-members", "The site or endpoint of %s changes.", listAnd(moved)))
+		es = append(es, effect("info", "site-link-members", "Site or endpoint change: %s.", listAnd(moved)))
 	}
 	// Settings mean something only where there are tunnels, before or
 	// after.
 	if len(cur.Members)+len(p.Members) == 0 {
 	} else if cur.ListenPort() != p.ListenPort() || cur.LinkMTU() != p.LinkMTU() {
-		es = append(es, effect("warning", "site-link-settings", "The site link's port or MTU changes: every tunnel restarts, and a member's uplink must let the new port in."))
+		es = append(es, effect("warning", "site-link-settings", "Site link port or MTU change: all tunnels restart; members must allow the new port inbound."))
 	} else if cur.ThroughputMbit() != p.ThroughputMbit() || cur.MulticastBudgetKbit() != p.MulticastBudgetKbit() {
-		es = append(es, effect("info", "site-link-settings", "The site link's throughput figure or broadcast budget changes."))
+		es = append(es, effect("info", "site-link-settings", "Site link throughput figure or broadcast budget change."))
 	}
 	if len(p.Members) > 0 {
 		sites := map[string]bool{}
@@ -1033,14 +1026,14 @@ func siteLinkEffects(cur, p config.SiteLinkPlan, v ProfileView) []status.Warning
 			sites[m.Site] = true
 		}
 		if len(sites) < 2 {
-			es = append(es, effect("info", "site-link-one-site", "Every site link member is at one site: members link only to other sites, so nothing links yet."))
+			es = append(es, effect("info", "site-link-one-site", "All site link members at one site: nothing to link."))
 		}
 	}
 	// Two sites none of whose members has an endpoint: neither side can
 	// dial. Said when the change makes it so.
 	if !slices.Equal(cur.Members, p.Members) {
 		for _, pair := range sitesWithoutEndpoint(p) {
-			es = append(es, effect("warning", "site-link-no-endpoint", "No member at site %s or at site %s has an endpoint, so neither can dial the other and the two do not link: give one member its public address and UDP port.", pair[0], pair[1]))
+			es = append(es, effect("warning", "site-link-no-endpoint", "No endpoint at site %s or site %s: sites cannot connect. Set a public address and UDP port for one member.", pair[0], pair[1]))
 		}
 	}
 	// Members at different sites that this mesh already holds, with no
@@ -1069,7 +1062,7 @@ func siteLinkEffects(cur, p config.SiteLinkPlan, v ProfileView) []status.Warning
 				more = fmt.Sprintf(", and %d more pairs", len(pairs)-2)
 				pairs = pairs[:2]
 			}
-			es = append(es, effect("warning", "site-link-same-mesh", "%s%s already reach each other in this mesh, without a site link: they look to be at one place. Members of one site take the same site name and do not link to each other; a link between them over the internet is a detour at best.", listAnd(pairs), more))
+			es = append(es, effect("warning", "site-link-same-mesh", "%s%s already connected within the mesh without a site link (same location). Members of one site share a site name and do not link; an internet link between them is redundant.", listAnd(pairs), more))
 		}
 	}
 	return es

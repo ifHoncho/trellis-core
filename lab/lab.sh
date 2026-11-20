@@ -1540,7 +1540,7 @@ if [ "$NODES" -ge 3 ]; then
   review=$(ctl 2 profile push --in 15 "$RUN/push.yaml" 2>&1)
   still=1; pending_on 2 3 || still=0
   sent=$(ctl 2 profile push --in 15 --yes --replace "$RUN/push.yaml" 2>&1 | tail -1)
-  if [ "$had" = 0 ] && [ "$rc" != 0 ] && echo "$refused" | grep -q 'is on its way' && echo "$review" | grep -q 'add --yes --replace' && [ "$still" = 1 ] && all_at 4 800 40; then
+  if [ "$had" = 0 ] && [ "$rc" != 0 ] && echo "$refused" | grep -q 'pending (switchover' && echo "$review" | grep -q 'add --yes --replace' && [ "$still" = 1 ] && all_at 4 800 40; then
     pass "P3 a push while node 1's change waited was refused (it kept waiting); the review said to add --replace; with it node 2's went instead, and every node runs revision 4 (800), never 700"
   else
     fail "P3 replacing a change on its way" "first: $out; had it: $had; refused (rc $rc): $refused; review: $(echo "$review" | tail -1); still pending: $still; replace: $sent; now: $(now_at)"

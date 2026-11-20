@@ -215,6 +215,8 @@ shared. What limits a buggy or hostile member:
 | `hostapd`, `wpa_supplicant`, `dnsmasq` | children of meshd, inside its sandbox; dnsmasq drops to an unprivileged user | their own jobs |
 | `webd` | a user that exists only while it runs, no capabilities, no network namespace of its own, unix sockets only | serve pages and pass a signed-in admin's requests to meshd's socket |
 | `trellis crda` | root, run by udev for a moment | answer the kernel's regulatory requests |
+| `trellis pcie-watch` | root with one capability (`CAP_SYS_ADMIN`), no network, no devices, a read-only file system; started by meshd on a node with a PCIe radio | read and clear the error status registers of the radios' PCIe links, and write what it finds to a file meshd reads |
+| `meshctl trial boot` | root, for a moment at boot before drivers load, when a trial is on record | put back the files of a driver trial the last boot did not confirm |
 | `meshctl` | the operator | talk to meshd's socket (root and the `trellis` group) |
 
 Membership of the `trellis` group is admin access: the API socket needs no

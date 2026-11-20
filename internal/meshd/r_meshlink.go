@@ -364,7 +364,7 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		case m.noHTOverrides:
 			why = ": this node's wpa_supplicant has no HT overrides to hold it narrower"
 		}
-		warn("warning", "mesh-width", "%s runs at %d MHz, not the profile's %d MHz%s", meshIfname, width, rp.Width, why)
+		warn("warning", "mesh-width", "%s running %d MHz (profile: %d MHz)%s", meshIfname, width, rp.Width, why)
 	}
 
 	if sup.Joined && !halow {
@@ -377,12 +377,12 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		m.checkOneSided(meshIfindex, meshIfname, rp, w, warn)
 	}
 	if sup.Restarts > 3 {
-		warn("warning", "supplicant-restarting", "wpa_supplicant has restarted %d times; see the journal", sup.Restarts)
+		warn("warning", "supplicant-restarting", "wpa_supplicant restarted %d times (see journal)", sup.Restarts)
 	}
 	if !sup.Joined {
 		res.RequeueAfter = 2 * time.Second
 		if time.Since(m.supSince) > 20*time.Second {
-			warn("warning", "mesh-not-joined", "mesh interface %s is not joined after %s (wpa_state=%s)", meshIfname, time.Since(m.supSince).Round(time.Second), sup.State)
+			warn("warning", "mesh-not-joined", "Mesh interface %s not joined after %s (wpa_state=%s)", meshIfname, time.Since(m.supSince).Round(time.Second), sup.State)
 		}
 	}
 	m.setFacts(sup, st.Freq(), width, txDBm)
@@ -408,6 +408,9 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 			m.d.log.Info("mesh peer connected", "interface", m.ifname(), "peer", ev.Arg())
 			m.blocks.connected(ev.Arg())
 			m.peers.connected(ev.Arg(), time.Now())
+			// Authenticated now: its earlier failures (most often while it
+			// restarted) are resolved.
+			m.d.facts.ClearSAEFailures(m.ifname(), ev.Arg())
 			m.d.Kick("peer connected")
 			time.AfterFunc(connectedCheckAfter+100*time.Millisecond, func() { m.d.Kick("check a connected peer") })
 		case wpa.EvMeshPeerDisconnected:
@@ -438,7 +441,7 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 			// node: another passphrase, most often, or it is blocking this
 			// node or restarting.
 			m.d.log.Warn("SAE authentication failed: the peer did not answer, or has a different passphrase", "interface", m.ifname(), "peer", addr)
-			m.d.facts.AddSAEFailure(m.ifname(), addr, "failure", "SAE authentication failed (no answer, or another passphrase)")
+			m.d.facts.AddSAEFailure(m.ifname(), addr, "failure", "SAE authentication failed")
 			// One cause is a leftover entry of this peer on another link
 			// (peermove.go): look now, not at the next slow pass.
 			m.d.Kick("SAE failure")
@@ -452,11 +455,11 @@ func (m *meshLinkReconciler) eventLoop(ec *wpa.EventConn, stop chan struct{}) {
 			}
 			if delay, ok := m.blocks.blocked(addr, time.Now(), rand.N(saeLiftSpread)); ok {
 				m.d.log.Warn("SAE authentication blocked after repeated failures; meshd lifts the block early", "interface", m.ifname(), "peer", addr, "seconds", ev.KV["duration"], "lift_in", delay.Round(time.Second))
-				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked after repeated failures; tried again in "+delay.Round(time.Second).String())
+				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked: repeated failures. Retry in "+spoken(delay))
 				time.AfterFunc(delay+100*time.Millisecond, func() { m.d.Kick("lift SAE block") })
 			} else {
 				m.d.log.Warn("SAE authentication blocked after repeated failures; left blocked, this peer has failed through every early retry", "interface", m.ifname(), "peer", addr, "seconds", ev.KV["duration"])
-				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked for "+ev.KV["duration"]+" s after repeated failures")
+				m.d.facts.AddSAEFailure(m.ifname(), addr, "blocked", "SAE blocked for "+ev.KV["duration"]+" s: repeated failures")
 			}
 		}
 	}

@@ -29,6 +29,7 @@ import (
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/doctor"
 	"meridian/trellis/internal/fsutil"
+	"meridian/trellis/internal/hoststat"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/qr"
 	"meridian/trellis/internal/status"
@@ -83,6 +84,11 @@ Commands:
   site --new-key [--force]       give this node a new site link key
   upgrade FILE.deb               install a release; the node goes back to the old one if it is not healthy after
   upgrade --status|--rollback|--resume
+  trial                          new driver modules, firmware or board files on trial, and the last
+                                 trial of each
+  trial begin NAME --file PLACE=NEWFILE [--module MOD] [--reboot]
+                                 try new files (root): kept once the node has run well on them,
+                                 undone if it restarts first. Also: trial confirm|revert|rearm NAME
   reconcile                      ask meshd for a pass now
   reload                         ask meshd to re-read its configuration
   version
@@ -132,6 +138,8 @@ Commands:
 		err = cmdWeb(ctx, client, rest[1:], stdout, stderr)
 	case "upgrade":
 		err = cmdUpgrade(client, rest[1:], stdout)
+	case "trial":
+		err = cmdTrial(ctx, client, rest[1:], stdout)
 	case "reconcile":
 		if err = client.Reconcile(ctx); err == nil {
 			fmt.Fprintln(stdout, "reconcile requested")
@@ -160,7 +168,7 @@ Commands:
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		if errors.Is(err, api.ErrNotRunning) {
-			fmt.Fprintln(stderr, "hint: start it with 'systemctl start trellis-meshd', or run 'meshctl doctor'")
+			fmt.Fprintln(stderr, "hint: systemctl start trellis-meshd, or run meshctl doctor")
 		}
 		return 1
 	}
@@ -209,7 +217,7 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	case st.Regulatory.ActiveMode == config.RegModeUnrestricted:
 		fmt.Fprintf(w, "regulatory: UNRESTRICTED (no regulatory limits), country %s, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
 	case st.Regulatory.RequestedMode == config.RegModeUnrestricted:
-		fmt.Fprintf(w, "regulatory: unrestricted requested, NOT IN FORCE: %s rules, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
+		fmt.Fprintf(w, "regulatory: unrestricted requested, NOT ACTIVE: %s rules, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
 	default:
 		fmt.Fprintf(w, "regulatory: country %s, kernel domain %s, %s\n", st.Regulatory.Country, kdom, src)
 	}
@@ -222,6 +230,34 @@ func PrintStatus(w io.Writer, st *status.Status) {
 	}
 	if st.GNSS.Receiver {
 		fmt.Fprintf(w, "gnss: %s\n", gnssLine(st.GNSS))
+	}
+	for _, t := range st.Trials {
+		what := strings.TrimSpace(t.Name + " " + t.Version)
+		switch {
+		case t.State == "pending" && t.ConfirmAfterS > 0:
+			fmt.Fprintf(w, "trial: %s pending, confirms in %s if healthy\n", what, (time.Duration(t.ConfirmAfterS) * time.Second).String())
+		case t.State == "pending":
+			fmt.Fprintf(w, "trial: %s pending, not healthy yet\n", what)
+		case t.State == "armed":
+			fmt.Fprintf(w, "trial: %s loads at the next boot\n", what)
+		case t.State == "reverted" && t.Latched:
+			fmt.Fprintf(w, "trial: %s UNDONE and off until re-armed: %s\n", what, t.Reason)
+		}
+	}
+	if l := hostLine(st.Host); l != "" {
+		fmt.Fprintf(w, "host: %s\n", l)
+	}
+	if len(st.Resets) > 0 {
+		last := st.Resets[0]
+		more := ""
+		if n := len(st.Resets); n > 1 {
+			more = fmt.Sprintf(" (%d on record: meshctl status --json)", n)
+		}
+		at := last.Time.Local().Format("2006-01-02 15:04")
+		if last.TimeUnknown {
+			at = "time unknown"
+		}
+		fmt.Fprintf(w, "last reset: %s, %s%s\n", at, last.Summary, more)
 	}
 	if l := positionsLine(st.Positions, st.GNSS.Receiver); l != "" {
 		fmt.Fprintf(w, "positions: %s\n", l)
@@ -375,6 +411,12 @@ func cmdRadios(ctx context.Context, c *api.Client, args []string, stdout io.Writ
 		if len(r.Interfaces) > 0 {
 			fmt.Fprintf(stdout, "  interfaces: %s\n", strings.Join(r.Interfaces, ", "))
 		}
+		if r.PCIe != nil {
+			fmt.Fprintf(stdout, "  pcie link %s: %s\n", r.PCIe.Device, r.PCIe)
+		}
+		if r.Thermal != nil {
+			fmt.Fprintf(stdout, "  temperature: %s\n", r.Thermal)
+		}
 		for _, q := range r.Quirks {
 			fmt.Fprintf(stdout, "  quirk: %s\n", q)
 		}
@@ -491,7 +533,7 @@ func cmdProfile(ctx context.Context, client *api.Client, args []string, stdout i
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "Mesh %q: %s channel %d, %d MHz. This is the mesh secret: show it only to people setting up nodes.\n\n", ex.Profile.Name, ex.Profile.Radio.Band, ex.Profile.Radio.Channel, ex.Profile.Radio.Width)
+		fmt.Fprintf(stdout, "Mesh %q: %s channel %d, %d MHz. Contains the mesh secret: authorized personnel only.\n\n", ex.Profile.Name, ex.Profile.Radio.Band, ex.Profile.Radio.Channel, ex.Profile.Radio.Width)
 		if c, err := qr.Encode(ex.Code, qr.M); err == nil {
 			io.WriteString(stdout, c.TerminalANSI())
 		}
@@ -834,7 +876,7 @@ func cmdProfileInstall(ctx context.Context, client *api.Client, args []string, s
 	}
 	if err := client.Reload(ctx); err != nil {
 		if errors.Is(err, api.ErrNotRunning) {
-			fmt.Fprintln(stdout, "meshd is not running; the profile applies when it starts")
+			fmt.Fprintln(stdout, "meshd not running; profile applies on start")
 			return nil
 		}
 		return fmt.Errorf("installed, but meshd rejected the reload: %w", err)
@@ -1314,6 +1356,9 @@ func printMeshLink(w io.Writer, title string, ml status.MeshLink, st *status.Sta
 		fmt.Fprintf(w, ", wired %s", strings.Join(ml.WiredPorts, ","))
 	}
 	fmt.Fprintln(w)
+	if ml.WidthCost != nil {
+		fmt.Fprintf(w, "  width: %s\n", ml.WidthCost)
+	}
 	names := nodeNames(st)
 	printLinks(w, ml.Peers, linkNeighbors(st, ml, first), names)
 	for _, line := range saeSummary(ml.SAEFailures, ml.Peers, time.Now()) {
@@ -1397,11 +1442,11 @@ func printGateway(w io.Writer, st *status.Status) {
 		if len(g.FirewallOpen) > 0 {
 			open = strings.Join(g.FirewallOpen, " ")
 		}
-		fmt.Fprintf(w, "Firewall: closed on non-mesh interfaces (accepting %s, plus replies, ICMP, DHCP), %d dropped\n", open, g.FirewallDrop)
+		fmt.Fprintf(w, "Firewall: closed on non-mesh interfaces (open: %s, + replies, ICMP, DHCP), %d dropped\n", open, g.FirewallDrop)
 	case "open":
 		fmt.Fprintln(w, "Firewall: off, no Trellis rules on non-mesh interfaces (firewall.wan)")
 	case "failed":
-		fmt.Fprintln(w, "Firewall: set to closed, but the rules could not be applied: open (see warnings)")
+		fmt.Fprintln(w, "Firewall: set closed, rules failed to apply: OPEN (see warnings)")
 	}
 	if len(g.Candidates) > 0 {
 		tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -1521,7 +1566,7 @@ func cmdProfilePush(ctx context.Context, client *api.Client, args []string, stdo
 	fs := flag.NewFlagSet("profile push", flag.ContinueOnError)
 	in := fs.Int("in", 60, "seconds from now at which every node switches (15 to 900)")
 	yes := fs.Bool("yes", false, "send it (without: only show what it would do)")
-	replace := fs.Bool("replace", false, "send it although another change is on its way: that change is dropped")
+	replace := fs.Bool("replace", false, "send even with a mesh change pending (supersedes it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1578,7 +1623,7 @@ func hasEffectCode(res *api.ApplyResult, code string) bool {
 // --replace too when another change is on its way.
 func howToSend(res *api.ApplyResult, replace bool) string {
 	if hasEffectCode(res, "mesh-change-replaced") && !replace {
-		return "Another change is on its way: add --yes --replace to send this in its place, or wait for the switch."
+		return "Mesh change pending: add --yes --replace to supersede it, or wait for switchover."
 	}
 	return "Add --yes to send it to every node."
 }
@@ -1596,7 +1641,7 @@ func cmdProfileEdit(client *api.Client, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("profile edit", flag.ContinueOnError)
 	in := fs.Int("in", 60, "seconds from now at which every node switches (15 to 900)")
 	yes := fs.Bool("yes", false, "send it without asking")
-	replace := fs.Bool("replace", false, "send it although another change is on its way: that change is dropped")
+	replace := fs.Bool("replace", false, "send even with a mesh change pending (supersedes it)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1615,7 +1660,7 @@ func cmdProfileEdit(client *api.Client, args []string, stdout io.Writer) error {
 		return err
 	}
 	if cfg.Setup.Needed {
-		return errors.New("this node has no mesh yet: install a profile on it first (meshctl profile install)")
+		return errors.New("No mesh profile: install one first (meshctl profile install)")
 	}
 	orig, err := cfg.Profile.YAML(fmt.Sprintf("The profile mesh %q runs, revision %d. Change it, save and quit: the change\nis reviewed, and sent to every node once you confirm.\nThe secret is not shown: leave sae_passphrase as it is.", cfg.Profile.Name, cfg.Profile.Revision))
 	if err != nil {
@@ -1713,7 +1758,7 @@ func runEditor(path string) error {
 		}
 	}
 	if len(argv) == 0 {
-		return errors.New("no editor found: set EDITOR (for example EDITOR=nano meshctl profile edit)")
+		return errors.New("No editor: set EDITOR (e.g. EDITOR=nano meshctl profile edit)")
 	}
 	cmd := exec.Command(argv[0], append(argv[1:], path)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -1781,7 +1826,7 @@ func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io
 		if sv, err = client.StartSurvey(ctx); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, "surveying: every node scans the band of each of its links once…")
+		fmt.Fprintln(stdout, "Surveying: all nodes scanning their link bands…")
 		for !sv.Done {
 			select {
 			case <-ctx.Done():
@@ -1841,6 +1886,67 @@ func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io
 		tw.Flush()
 	}
 	return nil
+}
+
+// hostLine is the computer the node runs on in a line: board, uptime, its
+// hottest sensor, CPU, memory, each filesystem, and its supply when the
+// board reports it. Empty when meshd reports nothing (an older version).
+func hostLine(h status.Host) string {
+	if h.CPUs == 0 && h.MemTotal == 0 {
+		return ""
+	}
+	var parts []string
+	first := h.Model
+	if h.UptimeS > 0 {
+		sec := int(h.UptimeS)
+		up := fmt.Sprintf("%dm", sec/60)
+		switch {
+		case sec >= 86400:
+			up = fmt.Sprintf("%dd %dh", sec/86400, sec%86400/3600)
+		case sec >= 3600:
+			up = fmt.Sprintf("%dh %02dm", sec/3600, sec%3600/60)
+		}
+		if first != "" {
+			first += ", "
+		}
+		first += "up " + up
+	}
+	if first != "" {
+		parts = append(parts, first)
+	}
+	if len(h.Temps) > 0 {
+		t := h.Temps[0]
+		s := fmt.Sprintf("%s %.0f °C", t.Name, t.TempC)
+		if t.TempC >= t.HotC {
+			s += fmt.Sprintf(" HIGH (throttle at %.0f °C)", t.HotC)
+		}
+		parts = append(parts, s)
+	}
+	cpu := "CPU –"
+	if h.CPUPct >= 0 {
+		cpu = fmt.Sprintf("CPU %.0f%%", h.CPUPct)
+	}
+	parts = append(parts, fmt.Sprintf("%s (load %.2f, %d CPUs)", cpu, h.Load[0], h.CPUs))
+	if h.MemTotal > 0 {
+		parts = append(parts, fmt.Sprintf("memory %.0f%% used of %s", 100*(1-float64(h.MemAvailable)/float64(h.MemTotal)), hoststat.Bytes(h.MemTotal)))
+	}
+	var fs []string
+	for _, f := range h.Filesystems {
+		fs = append(fs, fmt.Sprintf("%s %.0f%% of %s", f.Mount, f.UsedPct(), hoststat.Bytes(f.Size)))
+	}
+	if len(fs) > 0 {
+		parts = append(parts, strings.Join(fs, ", "))
+	}
+	switch {
+	case h.Undervoltage == nil:
+	case *h.Undervoltage:
+		parts = append(parts, "supply TOO LOW")
+	case h.UndervoltageAt != nil:
+		parts = append(parts, "supply low at "+h.UndervoltageAt.Local().Format("15:04:05"))
+	default:
+		parts = append(parts, "supply ok")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // positionsLine says whether this node is on the ATAK map, and which nodes

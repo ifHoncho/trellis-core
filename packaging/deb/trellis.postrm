@@ -13,7 +13,7 @@ case "$1" in
     rm -f /usr/share/trellis/regulatory.db.none /usr/share/trellis/regulatory.db.p7s.none
     rmdir /usr/share/trellis 2>/dev/null || true
     if command -v deb-systemd-helper >/dev/null 2>&1; then
-      deb-systemd-helper purge trellis-meshd.service trellis-webd.socket >/dev/null 2>&1 || true
+      deb-systemd-helper purge trellis-meshd.service trellis-webd.socket trellis-trial.service >/dev/null 2>&1 || true
     fi
     if getent group trellis >/dev/null 2>&1; then groupdel trellis 2>/dev/null || true; fi
     if getent group trellis-voice >/dev/null 2>&1; then groupdel trellis-voice 2>/dev/null || true; fi

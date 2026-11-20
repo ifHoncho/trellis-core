@@ -68,7 +68,7 @@ func (h *hostUpgrader) Vouch(ctx context.Context, pkg []byte) (string, string, s
 		return "", "", "", err
 	}
 	if len(keys) == 0 {
-		return "", "", "", fmt.Errorf("this node trusts no release key, so it cannot vouch for a package; on the node, put the release's public key in %s/NAME.pub", release.KeyDir)
+		return "", "", "", fmt.Errorf("No release key installed: package cannot be verified. Install the public key at %s/NAME.pub", release.KeyDir)
 	}
 	return vouch(pkg, keys)
 }

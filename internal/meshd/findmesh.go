@@ -161,8 +161,8 @@ func (r *findMeshReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if siteLinkApart(profile.SiteLink, own, records) {
 			wanted = false
 			missing := len(known) - len(records)
-			warn("info", "mesh-apart", "%d of the %d other nodes heard in the last day %s not in reach, and the site link is not whole: they are taken to be at another site, and this node does not look for them on other channels",
-				missing, len(known), map[bool]string{true: "is", false: "are"}[missing == 1])
+			warn("info", "mesh-apart", "%d/%d nodes heard in the last day not in range, site link incomplete: treated as another site; no channel search for them",
+				missing, len(known))
 		}
 	}
 
@@ -196,7 +196,7 @@ func (r *findMeshReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 	}
 
 	if v := fm.visit; v != nil {
-		warn("warning", "mesh-visit", "the %s link is visiting %s, where this mesh was heard, to see whether the rest of the mesh is there (since %s; back to channel %d after)",
+		warn("warning", "mesh-visit", "%s link scanning %s for the rest of the mesh (since %s; returns to ch %d)",
 			bandName(v.from.Band), v.plan.Name(), now.Sub(v.since).Round(time.Second), v.from.Channel)
 	} else if wanted && now.Sub(fm.missingSince) >= findMeshAfter {
 		missing := len(known) - len(records)

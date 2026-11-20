@@ -2,7 +2,10 @@
 // consume. It is the one description of a node's state (architecture §12.7).
 package status
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Status is a complete snapshot of one node.
 type Status struct {
@@ -33,6 +36,14 @@ type Status struct {
 	// SiteLink: this node's part in joining parts of the mesh in
 	// different places over the internet.
 	SiteLink SiteLink `json:"site_link"`
+	// Resets are the last times the node went down other than by a
+	// shutdown, newest first, each with what the kernel's crash record (or
+	// the lack of one) says about why.
+	Resets []Reset `json:"resets"`
+	// Trials are new driver modules, firmware or board files being tried,
+	// and the last trial of each: pending until the node has run well on
+	// them for a while, undone if it restarts first.
+	Trials []Trial `json:"trials"`
 	// MeshChange is a mesh-wide profile change on its way, or the last one
 	// for a while after it is in force (meshd meshchange.go); nil when none.
 	MeshChange *MeshChange `json:"mesh_change,omitempty"`
@@ -44,8 +55,54 @@ type Status struct {
 	Gossip    Gossip     `json:"gossip"`
 	Reconcile Reconcile  `json:"reconcile"`
 	Process   Process    `json:"process"`
-	Warnings  []Warning  `json:"warnings"`
-	Setup     Setup      `json:"setup"`
+	// Host is the computer the node runs on: temperatures, load, memory,
+	// storage and its power supply.
+	Host     Host      `json:"host"`
+	Warnings []Warning `json:"warnings"`
+	Setup    Setup     `json:"setup"`
+}
+
+// Trial is a new driver module, firmware or board file being tried.
+type Trial struct {
+	Name    string `json:"name"`
+	Kind    string `json:"kind,omitempty"` // module, firmware, bcf
+	Version string `json:"version,omitempty"`
+	Module  string `json:"module,omitempty"`
+	// State: armed (loads at the next boot), pending (loaded, not kept
+	// yet), confirmed (kept), reverted (the old files are back).
+	State string `json:"state"`
+	// Latched: undone by the fallback; that version stays off until it is
+	// re-armed. Reason says why it was undone.
+	Latched bool   `json:"latched,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// ConfirmAfterS is how long a pending trial still has to run well
+	// before it is kept; 0 while it is not healthy.
+	ConfirmAfterS int       `json:"confirm_after_s,omitempty"`
+	RebootNeeded  bool      `json:"reboot_needed,omitempty"`
+	Started       time.Time `json:"started"`
+	Ended         time.Time `json:"ended,omitempty"`
+	Files         []string  `json:"files"`
+}
+
+// Reset is one time the node went down other than by a shutdown.
+type Reset struct {
+	// Time is when the crash happened (the start of its boot plus the
+	// uptime in its record); for a reset that left none, or a boot whose
+	// clock was never set, when the next boot started.
+	Time time.Time `json:"time"`
+	// TimeUnknown: Time was read from a clock not set yet (no RTC, no
+	// time source in reach), and may be days out.
+	TimeUnknown bool `json:"time_unknown,omitempty"`
+	// Verdict: pcie-link (an interrupt flood on the PCIe port, then a card
+	// stopped answering), card-stopped (a card stopped answering on its
+	// bus), sysrq (a reset request on a serial console), panic (another
+	// kernel panic), power-loss (nothing recorded), unrecorded (the board
+	// keeps no crash records).
+	Verdict string `json:"verdict"`
+	Summary string `json:"summary"`
+	Detail  string `json:"detail,omitempty"`
+	// UptimeS is how long the node had been up; 0 when not known.
+	UptimeS float64 `json:"uptime_s,omitempty"`
 }
 
 // Setup says whether the node still waits to be provisioned. A node with
@@ -131,17 +188,111 @@ type Radio struct {
 	AP                bool                 `json:"ap"`
 	MeshAndAP         bool                 `json:"mesh_and_ap"`
 	Power             map[string]PowerFact `json:"power"`
-	Role              string               `json:"role"`
-	Recommended       string               `json:"recommended"`
-	Interfaces        []string             `json:"interfaces"`
-	Quirks            []string             `json:"quirks,omitempty"`
-	Ignored           bool                 `json:"ignored,omitempty"`
-	Broken            string               `json:"broken,omitempty"`
-	HardBlocked       bool                 `json:"hard_blocked,omitempty"`
-	InUse             string               `json:"in_use,omitempty"`
+	// PowerByWidth is the radio's transmit power in dBm by band, then by
+	// channel width in MHz, where the hardware database has it.
+	PowerByWidth map[string]map[int]float64 `json:"power_by_width,omitempty"`
+	Role         string                     `json:"role"`
+	Recommended  string                     `json:"recommended"`
+	Interfaces   []string                   `json:"interfaces"`
+	Quirks       []string                   `json:"quirks,omitempty"`
+	Ignored      bool                       `json:"ignored,omitempty"`
+	Broken       string                     `json:"broken,omitempty"`
+	HardBlocked  bool                       `json:"hard_blocked,omitempty"`
+	InUse        string                     `json:"in_use,omitempty"`
 	// LED: the driver exposes an LED, so the radio can be identified by
 	// blinking it.
 	LED bool `json:"led"`
+	// PCIe is the radio's link to its slot, for a PCIe radio.
+	PCIe *PCIeLink `json:"pcie,omitempty"`
+	// Thermal is the radio's temperature and transmit throttling, where
+	// its driver has a sensor.
+	Thermal *RadioThermal `json:"thermal,omitempty"`
+}
+
+// PCIeLink is a PCIe radio's link to the port it sits in. A card with two
+// radios has one link, shown on both.
+type PCIeLink struct {
+	Device string `json:"device"`         // PCI address
+	Port   string `json:"port,omitempty"` // the upstream port's
+	// SpeedGTs and Width are what the link trained at, MaxSpeedGTs and
+	// MaxWidth the most both ends support; Gen and MaxGen the same speeds
+	// as PCIe generations. Zero when the kernel does not say.
+	SpeedGTs    float64 `json:"speed_gts,omitempty"`
+	Width       int     `json:"width,omitempty"`
+	MaxSpeedGTs float64 `json:"max_speed_gts,omitempty"`
+	MaxWidth    int     `json:"max_width,omitempty"`
+	Gen         int     `json:"gen,omitempty"`
+	MaxGen      int     `json:"max_gen,omitempty"`
+	// Counted: the kernel has error counters for the link; Correctable,
+	// NonFatal and Fatal are their totals since boot. On some boards they
+	// stay at zero whatever the link does (see Health).
+	Counted     bool   `json:"counted"`
+	Correctable uint64 `json:"correctable"`
+	NonFatal    uint64 `json:"nonfatal"`
+	Fatal       uint64 `json:"fatal"`
+	// Health is what sampling the link's error status found: "ok",
+	// "marginal" (packets go unacknowledged and are sent again: the radio
+	// can stop answering under traffic), "kernel" (the kernel counts the
+	// errors itself; see the counters) or "unknown" (not sampled).
+	Health string `json:"health"`
+	// HealthDetail says it in words. ReplayPct is the share of the last
+	// sample's windows with a replay rollover and PeakReplayPct the
+	// highest of the last minutes, in percent; Errors the corrected
+	// errors seen, at either end.
+	HealthDetail  string    `json:"health_detail,omitempty"`
+	ReplayPct     float64   `json:"replay_pct"`
+	PeakReplayPct float64   `json:"peak_replay_pct"`
+	Errors        []string  `json:"errors,omitempty"`
+	SampledAt     time.Time `json:"sampled_at,omitempty"`
+}
+
+// String is the link in a line: what it trained at, the kernel's counters,
+// and what sampling found.
+func (l *PCIeLink) String() string {
+	s := "speed unknown"
+	if l.Gen > 0 {
+		s = fmt.Sprintf("Gen%d x%d", l.Gen, l.Width)
+		if l.MaxGen > l.Gen || l.MaxWidth > l.Width {
+			s += fmt.Sprintf(" (card and slot can do Gen%d x%d)", l.MaxGen, l.MaxWidth)
+		}
+	}
+	if l.Counted {
+		s += fmt.Sprintf("; kernel counters: %d corrected, %d uncorrectable", l.Correctable, l.NonFatal+l.Fatal)
+	}
+	switch {
+	case l.HealthDetail != "":
+		s += "; error status: " + l.HealthDetail
+	case l.Health == "unknown":
+		s += "; error status not sampled"
+	}
+	return s
+}
+
+// String is the temperature and throttling in a line.
+func (t *RadioThermal) String() string {
+	s := fmt.Sprintf("%.0f °C", t.TempC)
+	if t.ThrottleAtC > 0 {
+		s += fmt.Sprintf(" (throttles at %.0f °C)", t.ThrottleAtC)
+	}
+	switch {
+	case t.Throttling:
+		s += fmt.Sprintf(", THROTTLING: transmit time cut to %d%%", t.DutyPct)
+	case t.DutyPct >= 0:
+		s += ", not throttling"
+	}
+	return s
+}
+
+// RadioThermal is a radio's temperature and transmit throttling.
+type RadioThermal struct {
+	TempC float64 `json:"temp_c"`
+	// ThrottleAtC is the temperature at which the driver starts to cut the
+	// radio's transmit time; 0 when it does not say.
+	ThrottleAtC float64 `json:"throttle_at_c,omitempty"`
+	// DutyPct is the share of time the radio may transmit: 100 when
+	// nothing holds it back, -1 when the driver does not say.
+	DutyPct    int  `json:"duty_pct"`
+	Throttling bool `json:"throttling"`
 }
 
 // Plan is the role assignment result.
@@ -180,12 +331,43 @@ type MeshLink struct {
 	// RunningWidthMHz is the width the interface runs at once the mesh has
 	// started (Wi-Fi links): wpa_supplicant, the radio or the regulatory
 	// domain may narrow WidthMHz, and a warning says so.
-	RunningWidthMHz int        `json:"running_width_mhz,omitempty"`
-	MTU             int        `json:"mtu,omitempty"`
-	TXPowerDBm      float64    `json:"tx_power_dbm,omitempty"`
-	Peers           []Peer     `json:"peers"`
-	SAEFailures     []SAEEvent `json:"sae_failures,omitempty"`
-	WiredPorts      []string   `json:"wired_ports,omitempty"`
+	RunningWidthMHz int     `json:"running_width_mhz,omitempty"`
+	MTU             int     `json:"mtu,omitempty"`
+	TXPowerDBm      float64 `json:"tx_power_dbm,omitempty"`
+	// WidthCost is what the link's width costs in link budget on this
+	// node's radio, against the band's narrowest width; nil for a link at
+	// that width, or with no radio here.
+	WidthCost   *WidthCost `json:"width_cost,omitempty"`
+	Peers       []Peer     `json:"peers"`
+	SAEFailures []SAEEvent `json:"sae_failures,omitempty"`
+	WiredPorts  []string   `json:"wired_ports,omitempty"`
+}
+
+// WidthCost is the link budget a channel width costs against the band's
+// narrowest (BaseMHz: 20 on Wi-Fi). A wider channel takes in more noise
+// (NoiseDB), and a radio sends it with less power (PowerDB, when the
+// hardware database knows the radio's power per width: PowerKnown, with
+// PowerDBm at this width and BasePowerDBm at the narrowest). TotalDB is
+// their sum: how much weaker a signal the link would cope with at the
+// narrowest width. Range falls with it; throughput close by rises.
+type WidthCost struct {
+	WidthMHz     int     `json:"width_mhz"`
+	BaseMHz      int     `json:"base_mhz"`
+	NoiseDB      float64 `json:"noise_db"`
+	PowerKnown   bool    `json:"power_known"`
+	PowerDBm     float64 `json:"power_dbm,omitempty"`
+	BasePowerDBm float64 `json:"base_power_dbm,omitempty"`
+	PowerDB      float64 `json:"power_db"`
+	TotalDB      float64 `json:"total_db"`
+}
+
+// String is the cost in a line.
+func (c *WidthCost) String() string {
+	if c.PowerKnown {
+		return fmt.Sprintf("%.1f dB less link budget than at %d MHz (this radio sends %g dBm at %d MHz against %g; %.0f dB more noise)",
+			c.TotalDB, c.BaseMHz, c.PowerDBm, c.WidthMHz, c.BasePowerDBm, c.NoiseDB)
+	}
+	return fmt.Sprintf("%.0f dB less link budget than at %d MHz (more noise in the wider channel; this radio's power per width is not known)", c.TotalDB, c.BaseMHz)
 }
 
 // Supplicant is wpa_supplicant's state.
@@ -430,6 +612,74 @@ type Process struct {
 	Goroutines int `json:"goroutines"`
 }
 
+// Host is the computer the node runs on, as its kernel reports it. A
+// figure the kernel does not give is zero (or, for CPUPct, -1).
+type Host struct {
+	// Model is the board or machine: the device tree's model, else the
+	// firmware's vendor and product name.
+	Model   string  `json:"model,omitempty"`
+	UptimeS float64 `json:"uptime_s"`
+	CPUs    int     `json:"cpus"`
+	// CPUPct is the share of all CPUs' time spent busy since the sample
+	// before (a few seconds); -1 before there is one.
+	CPUPct float64 `json:"cpu_pct"`
+	// Load is the run queue averaged over 1, 5 and 15 minutes.
+	Load [3]float64 `json:"load"`
+	// CPUMHz is the first CPU's clock now, CPUMaxMHz the most it may run
+	// at.
+	CPUMHz    int `json:"cpu_mhz,omitempty"`
+	CPUMaxMHz int `json:"cpu_max_mhz,omitempty"`
+	// MemTotal and MemAvailable are in bytes; available is what programs
+	// can still have without swapping (caches given back included).
+	MemTotal     uint64 `json:"mem_total"`
+	MemAvailable uint64 `json:"mem_available"`
+	SwapTotal    uint64 `json:"swap_total"`
+	SwapFree     uint64 `json:"swap_free"`
+	// Temps are the board's thermal sensors (the SoC's, and on some
+	// boards a GPU's or the package's), hottest first. Radios' are on
+	// each radio.
+	Temps []HostTemp `json:"temps"`
+	// Undervoltage is whether the supply is too low now: nil when the
+	// board does not say (only Raspberry Pis do). UndervoltageAt is the
+	// last time meshd saw it low, since it started.
+	Undervoltage   *bool      `json:"undervoltage,omitempty"`
+	UndervoltageAt *time.Time `json:"undervoltage_at,omitempty"`
+	// Filesystems are those on a block device, one entry per device.
+	Filesystems []Filesystem `json:"filesystems"`
+}
+
+// HostTemp is one thermal sensor.
+type HostTemp struct {
+	Name  string  `json:"name"`
+	TempC float64 `json:"temp_c"`
+	// HotC is where the board starts to slow itself to cool down: the
+	// sensor's passive trip point, else 80 °C (where a Raspberry Pi's
+	// firmware does, a common figure for small boards). CritC is where
+	// the kernel turns the computer off; 0 when it does not say.
+	HotC  float64 `json:"hot_c"`
+	CritC float64 `json:"crit_c,omitempty"`
+}
+
+// Filesystem is one mounted filesystem's space, in bytes. Avail is what
+// programs may still write; Size - Avail - Used is reserved for root.
+type Filesystem struct {
+	Mount  string `json:"mount"`
+	Device string `json:"device"`
+	Type   string `json:"type"`
+	Size   uint64 `json:"size"`
+	Used   uint64 `json:"used"`
+	Avail  uint64 `json:"avail"`
+}
+
+// UsedPct is how full a filesystem is, as df counts it: used against
+// what is usable (used + avail).
+func (f Filesystem) UsedPct() float64 {
+	if f.Used+f.Avail == 0 {
+		return 0
+	}
+	return 100 * float64(f.Used) / float64(f.Used+f.Avail)
+}
+
 // Helper is the state of a supervised helper process (hostapd, dnsmasq).
 type Helper struct {
 	Running  bool   `json:"running"`
@@ -598,6 +848,9 @@ type MeshNode struct {
 	// ChannelBusy is how busy each mesh link's channel is where that node
 	// is, in percent, in the profile's order; -1 unknown.
 	ChannelBusy []int `json:"channel_busy,omitempty"`
+	// Degraded lists the node's radios that run but not as they should,
+	// as it reports them; absent while all are fine.
+	Degraded []NodeDegraded `json:"degraded,omitempty"`
 	// Position is the node's GNSS fix as it last shared it; nil without a
 	// fix, or when it does not share it (PositionOff).
 	Position    *Position `json:"position,omitempty"`
@@ -612,6 +865,14 @@ type MeshNode struct {
 	// SiteLink is the node's part in the site link, as it reports it:
 	// nil when it is not a member, or runs a version that does not say.
 	SiteLink *NodeSiteLink `json:"site_link,omitempty"`
+}
+
+// NodeDegraded is one degraded radio of another node: its bands, and the
+// reason code (thermal: throttling to cool; pcie: its PCIe link is
+// faulty; another code from a newer version).
+type NodeDegraded struct {
+	Bands  []string `json:"bands"`
+	Reason string   `json:"reason"`
 }
 
 // NodeSiteLink is another node's part in the site link: its site, the

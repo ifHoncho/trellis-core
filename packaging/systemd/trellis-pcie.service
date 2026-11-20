@@ -1,0 +1,50 @@
+[Unit]
+Description=Trellis PCIe link watch
+# meshd starts it on a node with a PCIe radio, and reads its report
+# (/run/trellis-pcie/links.json). It stops and restarts with meshd.
+After=trellis-meshd.service
+PartOf=trellis-meshd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trellis pcie-watch
+Restart=on-failure
+RestartSec=10
+
+# The watch reads the error status registers of PCIe radios' links, and
+# clears them to count again. They are in the part of a device's
+# configuration space that the kernel gives to CAP_SYS_ADMIN only: the one
+# capability it has, and the reason it is a service of its own (meshd and
+# the helpers that inherit its bounds do without). docs/security.md.
+# - no network, no devices, the filesystem read-only: it reads and writes
+#   /sys/bus/pci/devices/*/config and writes its report;
+# - not set, on purpose: ProtectKernelTunables, which makes /sys read-only;
+#   PrivateNetwork, which mounts a /sys of the new network namespace, where
+#   /sys/class/ieee80211 (how the watch finds the radios) is empty. No
+#   network all the same: RestrictAddressFamilies=none allows no socket.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+NoNewPrivileges=yes
+RestrictAddressFamilies=none
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RuntimeDirectory=trellis-pcie
+RuntimeDirectoryMode=0755
+MemoryMax=64M
+Environment=GOMEMLIMIT=32MiB
+TasksMax=32
+Environment=GOTRACEBACK=single

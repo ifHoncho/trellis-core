@@ -156,7 +156,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	if a.path == "" {
 		p, err := proc.LookPath("hostapd")
 		if err != nil {
-			warn("error", "ap-no-hostapd", "hostapd is not installed, so the client AP cannot start: apt install hostapd")
+			warn("error", "ap-no-hostapd", "hostapd not installed: client AP unavailable. Install: apt install hostapd")
 			res.RequeueAfter = 30 * time.Second
 			d.facts.Update(func(f *Facts) { f.AP = base })
 			return res, nil
@@ -211,7 +211,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 			return res, nil
 		}
 		if choice.Band != plan.APBand {
-			warn("info", "ap-band-fallback", "the client AP runs on %s because %s has no usable %s channel for an AP (driver or regulatory limit)", choice.Band, rd.Describe(), plan.APBand)
+			warn("info", "ap-band-fallback", "Client AP on %s: %s has no usable %s AP channel (driver or regulatory limit)", choice.Band, rd.Describe(), plan.APBand)
 		}
 	}
 	base.Band, base.Channel, base.FreqMHz = choice.Band, choice.Channel, choice.FreqMHz
@@ -219,7 +219,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	setup := d.setup.Needed
 	ssid, pass := apSSID(cfg, d.identity(), setup), apPassphrase(cfg, d.identity(), setup)
 	if len(pass) < 8 {
-		warn("error", "ap-passphrase", "no usable AP passphrase (set ap.passphrase in node.yaml or let meshd generate one)")
+		warn("error", "ap-passphrase", "No usable AP passphrase. Set ap.passphrase in node.yaml, or clear it for auto-generation")
 		d.facts.Update(func(f *Facts) { f.AP = base })
 		return res, nil
 	}
@@ -230,7 +230,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	// domain back and forth.
 	country := profile.Regulatory.Country
 	if cfg.AP.Country != "" && cfg.AP.Country != country {
-		warn("info", "ap-country-ignored", "ap.country %s in node.yaml is ignored: a node has one regulatory domain, the mesh profile's (%s), and the client AP uses it too. Remove ap.country", cfg.AP.Country, country)
+		warn("info", "ap-country-ignored", "ap.country %s (node.yaml) ignored: the AP uses the mesh profile regulatory domain (%s). Remove ap.country", cfg.AP.Country, country)
 	}
 	ht, vht := false, false
 	if nb, ok := nl80211.ParseBand(choice.Band); ok && rd.Wiphy != nil {
@@ -296,7 +296,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	h := status.Helper{Running: a.sup.Alive(), PID: a.sup.PID(), Restarts: a.sup.Restarts(), State: "starting"}
 	base.Hostapd = h
 	if h.Restarts > 3 {
-		warn("warning", "ap-restarting", "hostapd has exited %d times; its messages are in the journal: journalctl -u trellis-meshd | grep proc=hostapd", h.Restarts)
+		warn("warning", "ap-restarting", "hostapd exited %d times. Logs: journalctl -u trellis-meshd | grep proc=hostapd", h.Restarts)
 	}
 	if a.ctrl == nil {
 		c, err := wpa.DialCtrl(filepath.Join(a.ctrlDir(), apIfname))
@@ -339,7 +339,7 @@ func (a *apReconciler) Reconcile(ctx context.Context) (reconcile.Result, error) 
 	if !enabled {
 		res.RequeueAfter = 2 * time.Second
 		if time.Since(a.supSince) > 20*time.Second {
-			warn("warning", "ap-not-up", "the client AP on %s is not up after %s (hostapd state %s)", apIfname, time.Since(a.supSince).Round(time.Second), h.State)
+			warn("warning", "ap-not-up", "Client AP on %s not up after %s (hostapd state %s)", apIfname, time.Since(a.supSince).Round(time.Second), h.State)
 		}
 	}
 	d.facts.Update(func(f *Facts) { f.AP = base })

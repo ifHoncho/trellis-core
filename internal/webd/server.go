@@ -75,7 +75,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 			}
 			if o := r.Header.Get("Origin"); o != "" {
 				if u, err := url.Parse(o); err != nil || u.Host != r.Host {
-					writeError(w, http.StatusForbidden, "this request comes from another site")
+					writeError(w, http.StatusForbidden, "Cross-origin request refused")
 					return
 				}
 			}
@@ -143,7 +143,7 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequest))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "the request body is not the JSON this endpoint takes")
+		writeError(w, http.StatusBadRequest, "Invalid JSON request body")
 		return false
 	}
 	return true

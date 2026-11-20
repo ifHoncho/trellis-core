@@ -3,12 +3,16 @@ package prepare
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"meridian/trellis/internal/crashlog"
 )
 
 type exitErr int
@@ -153,6 +157,64 @@ func TestBatmanReload(t *testing.T) {
 	}
 }
 
+// While meshd is stopped for the module to load, its reset history is
+// marked: a crash in the load is a reset. Taken back after.
+func TestReloadMarked(t *testing.T) {
+	state := t.TempDir()
+	l, _, err := crashlog.Open(crashlog.Options{StateDir: state, BootID: "boot-1", Now: time.Now(), Dirs: []string{t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ready()
+	h.files["/sys/module/batman_adv/version"] = "2022.3"
+	h.cmds["systemctl stop trellis-meshd"] = func(*fakeHost) (string, int) {
+		_ = l.Stopped(false) // what meshd does at the stop
+		return "", 0
+	}
+	h.answer("systemctl start trellis-meshd", "", 0)
+	h.answer("modprobe -r batman-adv", "", 0)
+	during := ""
+	h.cmds["modprobe batman-adv"] = func(h *fakeHost) (string, int) {
+		if l, err := crashlog.Load(state); err == nil {
+			during = l.State
+		}
+		h.files["/sys/module/batman_adv/version"] = "2026.3"
+		return "", 0
+	}
+	var out bytes.Buffer
+	if _, err := Run(context.Background(), Options{Host: h, Out: &out, StateDir: state, BootID: "boot-1"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := crashlog.Load(state)
+	if during != "reload" || after.State != "stopped" {
+		t.Errorf("history during the load %q, after %q", during, after.State)
+	}
+}
+
+// Interrupted in a step: the rest is skipped, meshd is started again,
+// and the run says it stopped early.
+func TestInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := ready()
+	h.files["/sys/module/batman_adv/version"] = "2022.3"
+	h.answer("systemctl stop trellis-meshd", "", 0)
+	h.answer("systemctl start trellis-meshd", "", 0)
+	h.answer("modprobe -r batman-adv", "", 0)
+	h.cmds["modprobe batman-adv"] = func(*fakeHost) (string, int) {
+		cancel() // Ctrl-C
+		return "", 130
+	}
+	var out bytes.Buffer
+	_, err := Run(ctx, Options{Host: h, Out: &out})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v", err)
+	}
+	if !h.did("systemctl start trellis-meshd") || h.did("install-regulatory.sh") {
+		t.Errorf("ran %v", h.ran)
+	}
+}
+
 // The same release, rebuilt with new patches (a new packaging revision):
 // the loaded module is not the installed file, so it is reloaded.
 func TestBatmanNewPatches(t *testing.T) {
@@ -266,5 +328,78 @@ func TestNeedsThePackage(t *testing.T) {
 	delete(h.files, DefaultDir+"/scripts/install-regulatory.sh")
 	if _, err := Run(context.Background(), Options{Host: h, Out: io.Discard}); err == nil || !strings.Contains(err.Error(), "install the trellis package") {
 		t.Errorf("err: %v", err)
+	}
+}
+
+// An MT7916 on a kernel whose own mt7915e predates the band selection:
+// meshd is stopped and the script builds the replacement.
+func TestMT7916OldDriver(t *testing.T) {
+	h := ready()
+	h.files["/sys/bus/pci/devices/0000:01:00.0/vendor"] = "0x14c3\n"
+	h.files["/sys/bus/pci/devices/0000:01:00.0/device"] = "0x7906\n"
+	h.answer("modinfo -n mt7915e", "/lib/modules/6.1.0/kernel/drivers/net/wireless/mediatek/mt76/mt7915/mt7915e.ko\n", 0)
+	h.answer("modinfo -F parm mt7915e", "", 0)
+	h.answer("systemctl is-active --quiet trellis-meshd", "", 0)
+	h.answer("systemctl stop trellis-meshd", "", 0)
+	h.answer("systemctl start trellis-meshd", "", 0)
+	h.answer("install-mt7915e-dkms.sh", "== OK\n", 0)
+	res, out := prepare(t, h)
+	if !h.did("install-mt7915e-dkms.sh") || !h.did("systemctl stop trellis-meshd") || !h.did("systemctl start trellis-meshd") || len(res.Problems) != 0 {
+		t.Fatalf("%+v\n%s\nran: %v", res, out, h.ran)
+	}
+	if !strings.Contains(out, "predates Linux 6.14") {
+		t.Errorf("output: %s", out)
+	}
+}
+
+// This package's build is installed and has no band selection (the
+// kernel's source would not take it): not built again, meshd not stopped.
+func TestMT7916BuildWithoutBandSelect(t *testing.T) {
+	h := ready()
+	h.files["/sys/bus/pci/devices/0000:01:00.0/vendor"] = "0x14c3\n"
+	h.files["/sys/bus/pci/devices/0000:01:00.0/device"] = "0x7906\n"
+	h.files["/proc/sys/kernel/osrelease"] = "6.6.51+rpt-rpi-v8\n"
+	h.files[DefaultDir+"/scripts/install-mt7915e-dkms.sh"] = "#!/bin/sh\nset -eu\n\nPKG_VERSION=2   # bump when packaging/dkms-mt7915e changes\n"
+	h.answer("modinfo -n mt7915e", "/lib/modules/6.6.51+rpt-rpi-v8/updates/dkms/mt7915e.ko.xz\n", 0)
+	h.answer("modinfo -F parm mt7915e", "", 0)
+	h.answer("dkms status -m trellis-mt7915e -v 2 -k 6.6.51+rpt-rpi-v8", "trellis-mt7915e/2, 6.6.51+rpt-rpi-v8, aarch64: installed\n", 0)
+	res, out := prepare(t, h)
+	if h.did("install-mt7915e-dkms.sh") || h.did("systemctl stop trellis-meshd") || len(res.Problems) != 0 || len(res.Advice) != 1 {
+		t.Fatalf("%+v\n%s\nran: %v", res, out, h.ran)
+	}
+	// An earlier version of the package's build is replaced.
+	h = ready()
+	h.files["/sys/bus/pci/devices/0000:01:00.0/vendor"] = "0x14c3\n"
+	h.files["/sys/bus/pci/devices/0000:01:00.0/device"] = "0x7906\n"
+	h.files["/proc/sys/kernel/osrelease"] = "6.6.51+rpt-rpi-v8\n"
+	h.files[DefaultDir+"/scripts/install-mt7915e-dkms.sh"] = "PKG_VERSION=3\n"
+	h.answer("modinfo -n mt7915e", "/lib/modules/6.6.51+rpt-rpi-v8/updates/dkms/mt7915e.ko.xz\n", 0)
+	h.answer("modinfo -F parm mt7915e", "", 0)
+	h.answer("dkms status -m trellis-mt7915e -v 3 -k 6.6.51+rpt-rpi-v8", "", 0)
+	h.answer("systemctl is-active --quiet trellis-meshd", "", 0)
+	h.answer("systemctl stop trellis-meshd", "", 0)
+	h.answer("systemctl start trellis-meshd", "", 0)
+	h.answer("install-mt7915e-dkms.sh", "== OK\n", 0)
+	if res, out = prepare(t, h); !h.did("install-mt7915e-dkms.sh") || len(res.Advice) != 0 {
+		t.Fatalf("earlier build: %+v\n%s", res, out)
+	}
+}
+
+// A driver with the band selection, and an MT7915 (which has no such
+// radio) on an old driver, are left alone.
+func TestMT7915eCurrentOrNotMT7916(t *testing.T) {
+	for _, c := range []struct{ device, parm string }{
+		{"0x7906", "enable_6ghz:Enable 6 GHz instead of 5 GHz on hardware that supports both (bool)\n"},
+		{"0x7915", ""},
+	} {
+		h := ready()
+		h.files["/sys/bus/pci/devices/0000:01:00.0/vendor"] = "0x14c3\n"
+		h.files["/sys/bus/pci/devices/0000:01:00.0/device"] = c.device + "\n"
+		h.answer("modinfo -n mt7915e", "/lib/modules/x/updates/dkms/mt7915e.ko\n", 0)
+		h.answer("modinfo -F parm mt7915e", c.parm, 0)
+		res, out := prepare(t, h)
+		if h.did("install-mt7915e-dkms.sh") || h.did("systemctl stop trellis-meshd") || len(res.Problems) != 0 || !strings.Contains(out, "mt7915e is available") {
+			t.Errorf("%s: %+v\n%s", c.device, res, out)
+		}
 	}
 }

@@ -54,7 +54,7 @@ func (a *anycastReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 			res.Changed = true
 		}
 		if bridgePresent {
-			warn("error", "anycast-withheld", "the gateway address %s is not configured on this node because the bat0 filters are not in place; without them it would leak to the whole mesh", ip)
+			warn("error", "anycast-withheld", "Anycast gateway %s withheld: bat0 filters not applied (would leak mesh-wide)", ip)
 		}
 		d.facts.Update(func(f *Facts) { f.Anycast = status.Anycast{Interface: AnycastIfname} })
 		return res, nil
@@ -121,7 +121,7 @@ func (a *anycastReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 		d.log.Warn("some sysctls could not be set", "errors", sysErrs)
 	}
 	if len(sysErrs) > 0 {
-		warn("warning", "sysctl", "%d sysctl settings failed (see the journal); the anycast gateway may misbehave", len(sysErrs))
+		warn("warning", "sysctl", "%d sysctl settings failed (see journal); anycast gateway may misbehave", len(sysErrs))
 	}
 
 	// A permanent FDB entry makes br-mesh hand frames for the anycast MAC
@@ -131,7 +131,7 @@ func (a *anycastReconciler) Reconcile(ctx context.Context) (reconcile.Result, er
 	// EOPNOTSUPP.
 	fdb := &netlink.Neigh{LinkIndex: brIndex, Family: syscall.AF_BRIDGE, Flags: netlink.NTF_SELF, State: netlink.NUD_PERMANENT, HardwareAddr: mac}
 	if err := netlink.NeighAdd(fdb); err != nil && !errors.Is(err, syscall.EEXIST) {
-		warn("warning", "anycast-fdb", "cannot add the bridge FDB entry for %s: %v (frames for the gateway are flooded to every port)", AnycastMAC, err)
+		warn("warning", "anycast-fdb", "Bridge FDB entry for %s failed: %v (gateway frames flooded to all ports)", AnycastMAC, err)
 	}
 
 	if ch, err := rtnl.EnsureAddr(link, ip+"/32"); err != nil {

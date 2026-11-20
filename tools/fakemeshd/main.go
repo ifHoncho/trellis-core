@@ -29,6 +29,7 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/hostapd"
+	"meridian/trellis/internal/hoststat"
 	"meridian/trellis/internal/meshd"
 	"meridian/trellis/internal/qr"
 	"meridian/trellis/internal/status"
@@ -110,6 +111,9 @@ type fake struct {
 	oneRadio bool
 	// portal: the uplink is behind a login page (the WAN's web check).
 	portal bool
+	// troubled is a node whose hardware has had a bad day: a PCIe link
+	// that loses packets, a radio throttling, resets, a trial undone.
+	troubled bool
 	// upg is a made-up upgrade (upgrade.go).
 	upg  *fakeUpgrade
 	kept []byte // the package of the last dry run
@@ -227,7 +231,7 @@ func (f *fake) siteLink(now time.Time) status.SiteLink {
 	}
 	for _, m := range f.profile.SiteLink.Peers(f.siteKey) {
 		p := status.SitePeer{Name: m.Name, Site: m.Site, PublicKey: m.PublicKey, Endpoint: m.Endpoint, Interface: config.SiteIfname(m.PublicKey), Address: config.SiteAddr(m.PublicKey).String()}
-		check := ": check that the node there is up, has internet and has this profile, and that UDP reaches "
+		check := ". Check remote node power, internet and profile, and UDP to "
 		switch {
 		case m.PublicKey == fakeSiteKeys[2]:
 			p.Callsign = "truck-3"
@@ -240,14 +244,14 @@ func (f *fake) siteLink(now time.Time) status.SiteLink {
 		case m.PublicKey == fakeSiteKeys[3]:
 			p.Resolved, p.Current, p.LastHandshake = "192.0.2.61", "192.0.2.61:51873", now.Add(-47*time.Minute)
 			p.TxBytes = 412_330
-			p.Note = "it stopped answering 47m0s ago" + check + "it at " + m.Endpoint + ", or " + here + " from there (one of the two routers must forward the port)"
+			p.Note = "no handshake for 47 min" + check + m.Endpoint + " or " + here + "; forward the port on one router"
 		case m.Endpoint == "" && me.Endpoint == "":
-			p.Note = "neither this node nor it has an endpoint in the profile, so neither can dial the other: one of the two needs its public address and port there"
+			p.Note = "no endpoint on either node, neither can connect. Set a public address and port for one of them in the profile"
 		case m.Endpoint == "":
-			p.Note = "no answer yet" + check + here + fmt.Sprintf(" from there (it has no endpoint, so it dials; this node's router must forward UDP port %d to it)", sl.Port)
+			p.Note = "no handshake yet" + check + here + fmt.Sprintf("; remote has no endpoint, forward UDP port %d to this node", sl.Port)
 		default:
 			p.Current, p.TxBytes = m.Endpoint, 14_800
-			p.Note = "no answer yet" + check + "it at " + m.Endpoint + " (its router must forward that port to it)"
+			p.Note = "no handshake yet" + check + m.Endpoint + "; forward the port on the remote router"
 		}
 		// A node of the demo mesh listed at another site: next door.
 		for _, n := range nodes[1:] {
@@ -348,7 +352,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			Interfaces: []string{"wlx00c0ca98124c (station)"}},
 	}
 	st.Plan = status.Plan{MeshRadio: st.Radios[0].Fingerprint, APRadio: st.Radios[1].Fingerprint, APBand: "2g", Notices: []status.Warning{
-		{Level: "info", Code: "extra-radio", Message: "MediaTek MT7612U (phy2, usb:1-1.3) has no role: a third radio stays unused", Source: "radios"}}}
+		{Level: "info", Code: "extra-radio", Message: "1 radio(s) unused.", Source: "radios"}}}
 
 	st.MeshLink = status.MeshLink{Index: 1, Interface: "mesh0", Transport: "wifi", Supplicant: status.Supplicant{Running: true, PID: 812, State: "COMPLETED", Joined: true},
 		Band: f.profile.Radio.Band, Channel: f.profile.Radio.Channel, WidthMHz: f.profile.Radio.Width,
@@ -373,7 +377,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			st.Radios[1].Role, st.Radios[1].Recommended = role+"+ap", role+"+ap"
 			st.Radios[1].Interfaces = []string{ml.Interface + " (mesh point)", "ap0 (AP)"}
 			st.Plan.Notices = append(st.Plan.Notices, status.Warning{Level: "warning", Code: "ap-shares-mesh-radio",
-				Message: fmt.Sprintf("no free radio: the client AP shares the radio, channel and airtime of the %s link", l.Name()), Source: "radios"})
+				Message: fmt.Sprintf("No free radio for client AP: sharing the radio and channel of the %s link.", l.Name()), Source: "radios"})
 		}
 		st.MoreLinks = append(st.MoreLinks, ml)
 	}
@@ -390,7 +394,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		st.Radios[0].Role, st.Radios[0].Recommended = "mesh+ap", "mesh+ap"
 		st.Radios[0].Interfaces = append(st.Radios[0].Interfaces, "ap0 (AP)")
 		st.Plan.Notices = []status.Warning{{Level: "info", Code: "mesh2-no-radio", Source: "radios",
-			Message: "no radio for the 5 GHz · ch 149 link: this node meshes over the 2.4 GHz · ch 6 link"}}
+			Message: "No radio for the 5 GHz · ch 149 link: meshing on the 2.4 GHz · ch 6 link only."}}
 	}
 	st.Batman = status.Batman{Interface: "bat0", Present: true, ModuleVersion: "2026.3", ModulePath: "/lib/modules/6.18.60+rpt-rpi-v8/updates/dkms/batman-adv.ko",
 		Algo: "BATMAN_V", MAC: self.mac, MTU: 1500, MTUOK: true, HardIfs: []status.HardIf{{Name: "mesh0", MAC: self.orig, Active: true, MTU: 1560}},
@@ -532,7 +536,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		st.Gateway.WebCheck, st.Gateway.WebCheckDetail = "portal", "connectivitycheck.gstatic.com: 302 to http://wifi.example-hotel.com/"
 		st.Gateway.Candidates[0].Usable, st.Gateway.Candidates[0].Why = false, "its uplink is down (gossip)"
 		st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Source: "gateway", Code: "wan-portal",
-			Message: "the WAN on eth0 is behind a login page (connectivitycheck.gstatic.com: 302 to http://wifi.example-hotel.com/): not sharing it with the mesh until someone signs in. While no other gateway is usable, this node's own clients reach the login page; gateway.web_check: off shares it anyway"})
+			Message: "Uplink eth0 behind captive portal (connectivitycheck.gstatic.com: 302 to http://wifi.example-hotel.com/): not shared until sign-in. Local clients reach the portal while no other gateway is available. Override: gateway.web_check: off."})
 	}
 	if gwMode == config.GatewayOff {
 		st.Gateway.Role, st.Gateway.Announced = "client", ""
@@ -566,6 +570,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			Version: "demo", Gateway: n.gw, WANHealthy: n.wanOK, HeardAgoMS: int64(rand.IntN(30000)), MeshRadios: n.radios(), SiteKey: siteKeyOf(n.callsign)})
 	}
 	st.Nodes[5].Version = "4a48da6+1104.072526"
+	f.hardware(st, now)
 	// Each node's channel load per link, as gossip carries it; scout-7, on
 	// an older build, sends none, and HaLow reports none.
 	for i := range st.Nodes[:5] {
@@ -595,7 +600,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 				name = p.Callsign
 			}
 			st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Source: "sitelink", Code: "site-link-down",
-				Message: fmt.Sprintf("site link peer %s (site %s): %s", name, p.Site, p.Note)})
+				Message: fmt.Sprintf("Site link to %s (site %s) down: %s.", name, p.Site, p.Note)})
 		}
 	}
 	for i := range st.Nodes {
@@ -603,10 +608,10 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	}
 	st.Process = status.Process{PID: 790, OpenFiles: 31, Goroutines: 34}
 	st.Warnings = append(st.Warnings,
-		status.Warning{Level: "warning", Code: "weak-link", Message: "the 5 GHz · ch 149 link to bravo-5 is weak (-79 dBm): expect low throughput and retries", Source: "meshlink"},
-		status.Warning{Level: "info", Code: "version-mismatch", Message: "scout-7 runs another Trellis build (4a48da6+1104.072526)", Source: "gossip"})
+		status.Warning{Level: "warning", Code: "weak-link", Message: "Weak link to bravo-5 (5 GHz · ch 149): -79 dBm. Expect low throughput.", Source: "meshlink"},
+		status.Warning{Level: "info", Code: "version-mismatch", Message: "scout-7 runs a different build (4a48da6+1104.072526).", Source: "gossip"})
 	if f.setup {
-		st.Warnings = append(st.Warnings, status.Warning{Level: "info", Code: "setup-needed", Message: "this node has no mesh profile yet: it runs alone until it is set up"})
+		st.Warnings = append(st.Warnings, status.Warning{Level: "info", Code: "setup-needed", Message: "No mesh profile: node standalone. Provision via web UI or meshctl profile install."})
 		st.Nodes, st.MeshLink.Peers, st.Batman.Neighbors, st.Batman.Originators = nil, []status.Peer{}, []status.Neighbor{}, []status.Originator{}
 		st.Gateway.Candidates, st.Batman.Gateways = []status.GatewayCandidate{}, []status.Gateway{}
 	}
@@ -886,11 +891,11 @@ func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryR
 	// As meshd: only links whose settings change restart.
 	if linksChange {
 		effects = append(effects, status.Warning{Level: "warning", Code: "mesh-change-restart",
-			Message: "At the switch, every node restarts the 5 GHz · ch 149 link: a few seconds without it, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile."})
+			Message: "At switchover all nodes restart the 5 GHz · ch 149 link: down a few seconds, longer on DFS channels (CAC). Traffic uses other links meanwhile."})
 	}
 	res.Effects = append(effects, status.Warning{Level: "info", Code: "mesh-change",
-		Message: fmt.Sprintf("Every node switches at %s (in %s): this one and ridge-2, truck-3, alpha-4, bravo-5 and ops-6.", at.Format("15:04:05"), delay)},
-		status.Warning{Level: "warning", Code: "mesh-change-old", Message: "scout-7 runs a version that cannot follow a mesh-wide change: install the profile there by hand, or it will keep the old one."})
+		Message: fmt.Sprintf("Switchover at %s (in %s): this node and ridge-2, truck-3, alpha-4, bravo-5 and ops-6.", at.Format("15:04:05"), delay)},
+		status.Warning{Level: "warning", Code: "mesh-change-old", Message: "scout-7: version cannot follow mesh changes. Install the profile manually, or the old one stays."})
 	res.ApplyAt, res.Nodes = &at, []string{"alpha-4", "bravo-5", "ops-6", "ridge-2", "truck-3"}
 	if pending != nil {
 		what := ""
@@ -898,9 +903,9 @@ func (f *fake) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dryR
 			what = " (" + pending.Summary + ")"
 		}
 		if cancels {
-			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-cancelled", Message: fmt.Sprintf("This cancels the change from %s due at %s%s: every node keeps the profile it runs now, as a new revision.", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
+			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-cancelled", Message: fmt.Sprintf("Cancels the change from %s due at %s%s. All nodes keep the current profile (new revision).", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
 		} else {
-			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-replaced", Message: fmt.Sprintf("This replaces the change from %s due at %s%s: what that change sets and this profile does not is dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
+			res.Effects = append(res.Effects, status.Warning{Level: "warning", Code: "mesh-change-replaced", Message: fmt.Sprintf("Supersedes the change from %s due at %s%s; its settings not in this profile are dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what)})
 		}
 	}
 	if dryRun || (!res.Changed && !cancels) {
@@ -1148,6 +1153,7 @@ func main() {
 	unrestricted := flag.Bool("unrestricted", false, "a mesh profile in unrestricted regulatory mode")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
 	consoleSock := flag.String("console", "", "also serve a made-up voice console socket here (webd --voice-console)")
+	troubled := flag.Bool("troubled", false, "a node with hardware trouble: a PCIe link that loses packets, a throttling radio, resets, a trial that was undone")
 	flag.Parse()
 	if *socket == "" {
 		fmt.Fprintln(os.Stderr, "usage: fakemeshd --socket PATH [--setup] [--links N] [--bare] [--password PW]")
@@ -1166,6 +1172,7 @@ func main() {
 		f.oneRadioNode()
 	}
 	f.portal = *portal
+	f.troubled = *troubled
 	if *consoleSock != "" {
 		if err := f.serveConsole(*consoleSock); err != nil {
 			fmt.Fprintln(os.Stderr, "fakemeshd:", err)
@@ -1177,4 +1184,115 @@ func main() {
 		fmt.Fprintln(os.Stderr, "fakemeshd:", err)
 		os.Exit(1)
 	}
+}
+
+// hardware fills in what the radios' hardware says about itself: the PCIe
+// link and temperature of the dual-band card, what each link's width costs
+// on its radio, the other nodes' degraded radios, and, on a troubled node,
+// resets and trials.
+func (f *fake) hardware(st *status.Status, now time.Time) {
+	link := &status.PCIeLink{Device: "0000:01:00.0", Port: "0000:00:00.0", SpeedGTs: 2.5, Width: 1, MaxSpeedGTs: 5, MaxWidth: 1, Gen: 1, MaxGen: 2,
+		Counted: true, Health: "ok", HealthDetail: "no errors", SampledAt: now.Add(-6 * time.Second)}
+	temp, duty := 58.0, 100
+	if f.troubled {
+		link.Health, link.ReplayPct, link.PeakReplayPct = "marginal", 14, 71
+		link.HealthDetail = "replay rollovers 14% of 10 ms windows (~15/s, peak 71%)"
+		link.Errors = []string{"BadTLP", "BadDLLP", "Rollover", "Timeout"}
+		temp, duty = 121, 50
+		// A node on another passphrase: it never connects, so its
+		// failures stay listed.
+		st.MeshLink.SAEFailures = []status.SAEEvent{
+			{Time: now.Add(-40 * time.Second), Interface: "mesh0", MAC: "a0:b0:c0:00:77:01", Kind: "blocked", Message: "SAE blocked: repeated failures. Retry in 21 s"},
+			{Time: now.Add(-95 * time.Second), Interface: "mesh0", MAC: "a0:b0:c0:00:77:01", Kind: "failure", Message: "SAE authentication failed"},
+		}
+		st.Warnings = append(st.Warnings,
+			status.Warning{Level: "warning", Code: "pcie-link-marginal", Source: "hardware", Message: "PCIe link to MediaTek MT7915 (0000:01:00.0) marginal: " + link.HealthDetail + ". Risk of card hang and node reset. Reseat card and adapter, or change adapter or slot."},
+			status.Warning{Level: "warning", Code: "radio-throttling", Source: "hardware", Message: "MediaTek MT7915 (5g/6g) thermal throttling: 121 °C, Tx duty 50%. Improve card cooling."},
+			status.Warning{Level: "warning", Code: "node-reset", Source: "hardware", Message: "2 unplanned resets in 24 h, last at " + now.Add(-47*time.Minute).Format("15:04 2 Jan") + ": card hang in mt76, mt7915e (SError): suspect PCIe link or power."},
+			status.Warning{Level: "warning", Code: "trial-reverted", Source: "trials", Message: "Trial mt7915e-power 2 reverted: reboot before confirmation. Locked out; re-arm: sudo meshctl trial rearm mt7915e-power."})
+		st.Resets = []status.Reset{
+			{Time: now.Add(-47 * time.Minute), Verdict: "card-stopped", UptimeS: 163.9, Detail: "SError Interrupt on CPU2, code 0x00000000bf000002 -- SError",
+				Summary: "card hang in mt76, mt7915e (SError): suspect PCIe link or power"},
+			{Time: now.Add(-5 * time.Hour), Verdict: "power-loss", Detail: "the boot before started " + now.Add(-9*time.Hour).Format("2006-01-02 15:04"),
+				Summary: "no crash record: power loss or external reset (watchdog, reset line)"},
+			{Time: now.Add(-50 * time.Hour), Verdict: "sysrq", UptimeS: 5123.4,
+				Summary: "SysRq reset from serial console: disconnect the console or set kernel.sysrq=0"},
+			{Time: now.Add(-6 * 24 * time.Hour), TimeUnknown: true, Verdict: "power-loss",
+				Summary: "no crash record: power loss or external reset (watchdog, reset line)"},
+		}
+		st.Trials = []status.Trial{
+			{Name: "halow-bcf", Kind: "bcf", Version: "27 dBm", Module: "morse", State: "pending", ConfirmAfterS: 214, Started: now.Add(-86 * time.Second),
+				Files: []string{"/lib/firmware/morse/bcf_fgh100mhaamd.bin"}},
+			{Name: "mt7915e-power", Kind: "module", Version: "2", Module: "mt7915e", State: "reverted", Latched: true, Started: now.Add(-49 * time.Minute), Ended: now.Add(-46 * time.Minute),
+				Reason: "reboot before confirmation", Files: []string{"/lib/modules/6.18.60/updates/dkms/mt7915e.ko"}},
+		}
+	}
+	byWidth := map[string]map[int]float64{"2g": {20: 20, 40: 17}, "5g": {20: 20, 40: 17, 80: 13.5, 160: 13.5}, "6g": {20: 20, 40: 17, 80: 13.5, 160: 13.5}}
+	for i := range st.Radios {
+		r := &st.Radios[i]
+		if r.Driver != "mt7915e" {
+			continue
+		}
+		r.PCIe, r.PowerByWidth = link, byWidth
+		r.Thermal = &status.RadioThermal{TempC: temp, ThrottleAtC: 120, DutyPct: duty, Throttling: duty < 100}
+		// What the width of the link it carries costs on it.
+		for _, l := range append([]*status.MeshLink{&st.MeshLink}, linkPtrs(st.MoreLinks)...) {
+			role := "mesh"
+			if l.Index > 1 {
+				role = fmt.Sprintf("mesh%d", l.Index)
+			}
+			pw, ok := byWidth[l.Band][l.WidthMHz]
+			if (r.Role != role && r.Role != role+"+ap") || l.WidthMHz <= 20 || !ok {
+				continue
+			}
+			noise := math.Round(100*math.Log10(float64(l.WidthMHz)/20)) / 10
+			l.WidthCost = &status.WidthCost{WidthMHz: l.WidthMHz, BaseMHz: 20, NoiseDB: noise, PowerKnown: true, PowerDBm: pw, BasePowerDBm: 20,
+				PowerDB: 20 - pw, TotalDB: math.Round(10*(noise+20-pw)) / 10}
+		}
+	}
+	st.Host = f.host(now)
+	for _, w := range hoststat.Check(st.Host, now) {
+		st.Warnings = append(st.Warnings, status.Warning{Level: w.Level, Code: w.Code, Message: w.Message, Source: "hardware"})
+	}
+	for i := range st.Nodes {
+		switch i {
+		case 1:
+			st.Nodes[i].Degraded = []status.NodeDegraded{{Bands: []string{"5g"}, Reason: "thermal"}}
+		case 2:
+			st.Nodes[i].Degraded = []status.NodeDegraded{{Bands: []string{"2g"}, Reason: "pcie"}, {Bands: []string{"5g"}, Reason: "pcie"}}
+		}
+	}
+}
+
+// host is a CM4, its figures wandering a little; on a
+// troubled node, hot, short of power and with its card nearly full.
+func (f *fake) host(now time.Time) status.Host {
+	up := now.Sub(f.started).Seconds() + 3*86400 + 4*3600
+	wobble := math.Sin(now.Sub(f.started).Seconds() / 20)
+	low := false
+	h := status.Host{Model: "Raspberry Pi Compute Module 4 Rev 1.1", UptimeS: up, CPUs: 4,
+		CPUPct: math.Round(10*(6+4*wobble+3*rand.Float64())) / 10, Load: [3]float64{0.31 + 0.1*wobble, 0.27, 0.22},
+		CPUMHz: 1500, CPUMaxMHz: 1500,
+		MemTotal: 1_933_062_144, MemAvailable: 1_190_000_000 - uint64(20e6*wobble), SwapTotal: 1_932_521_472, SwapFree: 1_932_521_472,
+		Temps:        []status.HostTemp{{Name: "cpu-thermal", TempC: math.Round(10*(48+1.5*wobble)) / 10, HotC: 80, CritC: 110}},
+		Undervoltage: &low,
+		Filesystems: []status.Filesystem{
+			{Mount: "/", Device: "/dev/mmcblk0p2", Type: "ext4", Size: 30_168_961_024, Used: 4_654_776_320, Avail: 24_243_888_128},
+			{Mount: "/boot/firmware", Device: "/dev/mmcblk0p1", Type: "vfat", Size: 528_592_896, Used: 69_558_272, Avail: 459_034_624},
+		}}
+	if f.troubled {
+		yes, at := true, now.Add(-2*time.Second)
+		h.Temps[0].TempC = math.Round(10*(82+wobble)) / 10
+		h.CPUMHz, h.Undervoltage, h.UndervoltageAt = 1000, &yes, &at
+		h.Filesystems[0].Used, h.Filesystems[0].Avail = 27_900_000_000, 2_268_961_024-1_500_000_000
+	}
+	return h
+}
+
+func linkPtrs(ls []status.MeshLink) []*status.MeshLink {
+	out := make([]*status.MeshLink, len(ls))
+	for i := range ls {
+		out[i] = &ls[i]
+	}
+	return out
 }

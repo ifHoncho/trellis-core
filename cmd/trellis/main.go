@@ -20,6 +20,7 @@ import (
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/meshctl"
 	"meridian/trellis/internal/meshd"
+	"meridian/trellis/internal/pcie"
 	"meridian/trellis/internal/webd"
 )
 
@@ -53,6 +54,8 @@ func run(argv []string) int {
 		return runWebd(args)
 	case "crda":
 		return runCRDA(args)
+	case "pcie-watch":
+		return runPCIeWatch(args)
 	case "version", "--version", "-v":
 		fmt.Println("trellis", version)
 		return 0
@@ -94,6 +97,10 @@ func runMeshd(args []string) int {
 	noHostConfig := fs.Bool("no-host-config", false, "don't write NetworkManager or systemd-networkd configuration on the host, or reload them (for labs, where meshd runs in a namespace of a host it doesn't own)")
 	testPortManager := fs.String("test-port-manager", "", "lab only: replace NetworkManager and systemd-networkd with a stand-in driven by files in this directory")
 	testUpgrader := fs.String("test-upgrader", "", "lab only: replace the upgrade a mesh-wide rollout makes with a stand-in driven by files in this directory")
+	testTrial := fs.String("test-trial", "", "lab only: replace the radios a driver trial is judged by, and the module reload, with a stand-in driven by files in this directory")
+	bootID := fs.String("boot-id", "", "lab only: the ID of this boot of the system (default: the kernel's)")
+	trialHealthy := fs.Duration("trial-healthy-for", 0, "how long a driver or firmware trial must run well before it is kept (default 5m)")
+	trialDeadline := fs.Duration("trial-deadline", 0, "how long a trial has to become healthy before it is undone (default 15m)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -112,6 +119,7 @@ func runMeshd(args []string) int {
 		Version: version, NodePath: *node, ProfilePath: *profile, StateDir: *stateDir, RunDir: *runDir,
 		Socket: *socket, Log: log, Interval: *interval, NoHostConfig: *noHostConfig, VoiceSocket: *voiceSocket,
 		TestPortManagerDir: *testPortManager, TestUpgraderDir: *testUpgrader,
+		TestTrialDir: *testTrial, BootID: *bootID, TrialHealthyFor: *trialHealthy, TrialDeadline: *trialDeadline,
 	})
 	if err != nil {
 		log.Error("meshd cannot start", "err", err)
@@ -194,6 +202,24 @@ func runWebd(args []string) int {
 	defer stop()
 	if err := srv.Run(ctx); err != nil {
 		log.Error("webd exited with error", "err", err)
+		return 1
+	}
+	return 0
+}
+
+// runPCIeWatch samples the error status of PCIe radios' links until it is
+// stopped (trellis-pcie.service; internal/pcie).
+func runPCIeWatch(args []string) int {
+	fs := flag.NewFlagSet("pcie-watch", flag.ContinueOnError)
+	out := fs.String("report", pcie.DefaultReportPath, "where to write the report")
+	interval := fs.Duration("interval", pcie.WatchInterval, "time between samples")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := pcie.Watch(ctx, "/sys", *out, *interval, nil); err != nil {
+		fmt.Fprintln(os.Stderr, "pcie-watch:", err)
 		return 1
 	}
 	return 0

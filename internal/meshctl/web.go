@@ -63,7 +63,7 @@ func webStatus(ctx context.Context, c *api.Client, stdout io.Writer) error {
 	default:
 		fmt.Fprintln(stdout, "  admin password: NOT SET, so nobody can sign in. Set one: sudo meshctl web password")
 	}
-	fmt.Fprintln(stdout, "The certificate is the node's own: a browser warns the first time.")
+	fmt.Fprintln(stdout, "Self-signed certificate: browsers warn on first connection.")
 	return nil
 }
 
@@ -98,7 +98,7 @@ func webPassword(ctx context.Context, c *api.Client, args []string, stdout, stde
 		pw = first
 	}
 	if pw == "" && !*clear {
-		return errors.New("the password is empty; nothing changed (use --clear to remove it)")
+		return errors.New("Empty password: no change (--clear removes the password)")
 	}
 	if err := c.WebSetPassword(ctx, "", "", pw); err != nil {
 		var ae *api.Error
@@ -110,7 +110,7 @@ func webPassword(ctx context.Context, c *api.Client, args []string, stdout, stde
 	if *clear {
 		fmt.Fprintln(stdout, "admin password removed")
 	} else {
-		fmt.Fprintln(stdout, "admin password set; browsers that were signed in must sign in again")
+		fmt.Fprintln(stdout, "Admin password set; existing sessions signed out")
 	}
 	return nil
 }
@@ -120,7 +120,7 @@ func promptHidden(prompt io.Writer, text string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
 	if err != nil {
-		return "", errors.New("standard input is not a terminal: use --stdin to pass the password")
+		return "", errors.New("stdin is not a terminal: use --stdin")
 	}
 	fmt.Fprint(prompt, text)
 	quiet := *old
@@ -154,7 +154,7 @@ func webWANAccess(ctx context.Context, c *api.Client, on bool, stdout io.Writer)
 		fmt.Fprintf(stdout, "web.wan_access is already %v\n", on)
 		return nil
 	}
-	fmt.Fprintf(stdout, "web.wan_access: %v (written to the node config and applied)\n", on)
+	fmt.Fprintf(stdout, "web.wan_access: %v (saved and applied)\n", on)
 	for _, e := range res.Effects {
 		fmt.Fprintf(stdout, "  [%s] %s\n", e.Level, e.Message)
 	}

@@ -320,7 +320,7 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		writeError(w, Invalid("the request body is not the JSON this endpoint takes: %v", err))
+		writeError(w, Invalid("Invalid JSON request body: %v", err))
 		return false
 	}
 	return true

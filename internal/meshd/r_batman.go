@@ -103,12 +103,12 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			d.facts.Update(func(f *Facts) { f.BatPresent = false })
 			return res, fmt.Errorf("batman-adv %s is below the minimum %s required by the mesh profile; install the pinned %s build (sudo meshctl prepare), or set allow_old_batman: true in node.yaml for bench experiments", v, minV, pinV)
 		}
-		warn("warning", "batman-old-allowed", "running batman-adv %s below the minimum %s because allow_old_batman is set; this node forces the whole mesh into multicast flooding", v, minV)
+		warn("warning", "batman-old-allowed", "Legacy batman-adv %s (minimum %s) allowed by allow_old_batman: forces mesh-wide multicast flooding", v, minV)
 	} else if mismatch {
 		if inferred {
-			warn("warning", "batman-version-unknown", "batman-adv reports %q (in-kernel build, release inferred as %s); the pinned release is %s. Install the DKMS build so every node runs identical code", mi.Raw, v, pinV)
+			warn("warning", "batman-version-unknown", "batman-adv %q (in-kernel, inferred %s); pinned release %s. Install the DKMS build on all nodes", mi.Raw, v, pinV)
 		} else {
-			warn("warning", "batman-version-mismatch", "batman-adv %s differs from the pinned release %s; install the pinned build on every node", v, pinV)
+			warn("warning", "batman-version-mismatch", "batman-adv %s differs from pinned release %s. Install the pinned build on all nodes", v, pinV)
 		}
 	}
 
@@ -281,7 +281,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 				// Taken on an earlier pass, and not what the module
 				// reports: asking again changes nothing.
 				told[h.Ifindex] = want
-				warn("warning", "site-link-throughput", "batman-adv did not keep %s's settings (throughput %d.%d Mbit/s, hop penalty %d; it reports %d.%d and %d): paths over the site link may be ranked wrongly; a newer batman-adv is needed (meshctl prepare)",
+				warn("warning", "site-link-throughput", "batman-adv rejected %s settings (throughput %d.%d Mbit/s, hop penalty %d; reports %d.%d and %d). Site link path ranking may be wrong. Update batman-adv (meshctl prepare)",
 					h.Name, siteTP/10, siteTP%10, siteHP, h.ThroughputOverride/10, h.ThroughputOverride%10, h.HopPenalty)
 			} else if err := d.bat.SetHardIf(idx, h.Ifindex, nil, &siteTP, &siteHP); err != nil {
 				warn("warning", "site-link-throughput", "cannot set %s's throughput and hop penalty for batman-adv: %v", h.Name, err)
@@ -303,7 +303,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 	b.siteSet = told
 	if len(desired) == 0 {
-		warn("error", "no-hard-interfaces", "%s has no hard interfaces: no mesh radio and no wired mesh ports", BatIfname)
+		warn("error", "no-hard-interfaces", "%s: no hard interfaces (no mesh radio or wired mesh port)", BatIfname)
 	}
 
 	if ch, err := rtnl.EnsureUp(link); err != nil {
@@ -320,13 +320,13 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 	mtu := link.Attrs().MTU
 	if mtu < 1280 {
-		warn("warning", "bat0-mtu-low", "%s MTU is %d, below the 1280 bytes the multicast packet type needs", BatIfname, mtu)
+		warn("warning", "bat0-mtu-low", "%s MTU %d below 1280 (required for batman-adv multicast)", BatIfname, mtu)
 	}
 	d.facts.Update(func(f *Facts) {
 		f.BatPresent, f.BatIfindex, f.BatAlgo, f.BatMTU, f.BatMAC = true, idx, mesh.AlgoName, mtu, link.Attrs().HardwareAddr.String()
 	})
 	if d.profile.Batman.MulticastFlood {
-		warn("info", "multicast-flood", "multicast floods to every node, listeners or not: batman.multicast_flood is on in the mesh profile")
+		warn("info", "multicast-flood", "Multicast flooding on (batman.multicast_flood in mesh profile)")
 	}
 	if mf, err := d.bat.MulticastFlags(idx); err == nil {
 		wantAll := mf.Own&batadv.McastWantAllIPv4 != 0
@@ -341,7 +341,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			if mf.OwnPriv&batadv.BATADV_MCAST_FLAGS_QUERIER_IPV4_SHADOWING != 0 {
 				why = "an IGMP querier on this node's side of bat0 (a client port or the AP) shadows the mesh's querier"
 			}
-			warn("warning", "multicast-want-all", "this node receives every IPv4 multicast group, listeners or not, because %s: multicast to it is as costly as flooding (architecture §9)", why)
+			warn("warning", "multicast-want-all", "Node requests all IPv4 multicast groups (%s): multicast cost equal to flooding", why)
 		}
 	}
 	return res, nil

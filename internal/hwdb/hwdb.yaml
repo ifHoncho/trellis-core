@@ -9,7 +9,11 @@
 #   match.driver            kernel driver name (used when no id matches)
 #   bands                   the radio's real bands, where the driver reports others
 #   max_power_dbm           per band; power_source says how it was obtained
+#   exclusive_bands         bands one radio has but runs one at a time; a driver
+#                           that offers them all at once leaves it on none
 #   power_source            measured | datasheet | reported
+#   power_by_width_dbm      per band, then per channel width in MHz: the power
+#                           the adapter sends at that width
 #   mesh_point / sae_mesh / mesh_ap_together
 #                           verified | reported | broken | unknown
 #   verified_kernels        kernels on which mesh+SAE was verified
@@ -52,6 +56,14 @@ entries:
       pci: ["14c3:7906", "14c3:790a"]   # the mt7915e device table's MT7916 ids
       driver: mt7915e
     max_power_dbm: {2g: 21, 5g: 20, 6g: 20}
+    # One radio serves 5 and 6 GHz, one of them at a time: mt7915e chooses
+    # (5 GHz, or 6 GHz with its option enable_6ghz=1) from Linux 6.14 on.
+    exclusive_bands: [5g, 6g]
+    # A module maker's figures at each width's highest rate (±1.5 dB).
+    power_by_width_dbm:
+      2g: {20: 20, 40: 17}
+      5g: {20: 20, 40: 17, 80: 13.5, 160: 13.5}
+      6g: {20: 20, 40: 17, 80: 13.5, 160: 13.5}
     power_source: datasheet
     mesh_point: verified
     sae_mesh: verified
@@ -62,6 +74,7 @@ entries:
       - "Up to 160 MHz on 5 GHz"
       - "Needs MediaTek firmware from linux-firmware (package firmware-mediatek on Debian and Raspberry Pi OS)"
       - "Some kernels lack the mt7915e driver (Raspberry Pi OS): scripts/install-mt7915e-dkms.sh builds it from the kernel's own source"
+      - "Its second radio does 5 GHz or 6 GHz, one at a time: 5 GHz unless the driver is loaded with enable_6ghz=1. An mt7915e older than Linux 6.14 offers both and the radio works on neither; meshctl prepare replaces that driver"
       - "Draws several watts with both radios on: give it a supply with headroom, or the host may reset under load"
 
   - id: mm6108

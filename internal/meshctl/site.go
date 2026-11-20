@@ -52,7 +52,7 @@ func printSiteLink(w io.Writer, sl status.SiteLink) {
 	case sl.Member:
 		fmt.Fprintf(w, "site link: member for site %q, tunnel address %s, UDP port %d\n", sl.Site, sl.Address, sl.Port)
 	case sl.Members > 0:
-		fmt.Fprintf(w, "site link: this node is not a member (the profile lists %d)\n", sl.Members)
+		fmt.Fprintf(w, "site link: not a member (%d members in profile)\n", sl.Members)
 	default:
 		fmt.Fprintf(w, "site link: none in the profile\n")
 	}

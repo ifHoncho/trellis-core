@@ -305,6 +305,67 @@ func TestRecordLinks(t *testing.T) {
 	}
 }
 
+// Degraded radios: a bad entry is dropped, the record kept; a healthy
+// node's record carries nothing for them.
+func TestRecordDegraded(t *testing.T) {
+	k, _ := Key("passphrase-1234", "trellis-alpha")
+	plain, _ := Seal(k, rec("ea:67:61:6f:bc:8b", 7, 1))
+	if strings.Contains(string(plain), `"dg"`) {
+		t.Error("a record with no degraded radio has the field")
+	}
+	r := rec("ea:67:61:6f:bc:8b", 7, 1)
+	r.Degraded = []Degraded{{"5g", DegradedThermal}, {"2g+5g", "Bad Code"}, {"", DegradedPCIe}, {"6g", "newer-code"}, {"6g", "a-code-far-too-long"}, {"2g", DegradedPCIe}}
+	pkt, err := Seal(k, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(k, pkt)
+	if err != nil {
+		t.Fatalf("a record with bad degraded entries refused: %v", err)
+	}
+	if fmt.Sprint(got.Degraded) != "[{5g thermal} {6g newer-code} {2g pcie}]" {
+		t.Errorf("degraded = %v", got.Degraded)
+	}
+	r.Degraded = nil
+	for i := 0; i < MaxDegraded+4; i++ {
+		r.Degraded = append(r.Degraded, Degraded{"5g", DegradedPCIe})
+	}
+	pkt, _ = Seal(k, r)
+	if got, err := Open(k, pkt); err != nil || len(got.Degraded) != MaxDegraded {
+		t.Errorf("over the limit: %d, %v", len(got.Degraded), err)
+	}
+
+	// A busy record with every radio degraded: degraded radios are shed
+	// from the end until it fits, and the record still goes out.
+	busy := rec("ea:67:61:6f:bc:8b", 7, 1)
+	busy.Callsign, busy.Version = strings.Repeat("a", 20), "0.3.0-1"
+	busy.Orig = []string{"02:00:00:00:00:02", "02:00:00:00:00:03", "02:00:00:00:00:04"}
+	busy.Radios, busy.Links, busy.Load = []string{"2g", "5g", "s1g", "6g"}, []string{"2g/6/20", "5g/149/80", "s1g/27/2"}, []int{40, 30, 20}
+	busy.ProfileRev, busy.ProfileChange, busy.Regulatory = 1234, strings.Repeat("c", 16), "country:US"
+	busy.SiteKey, busy.Site = strings.Repeat("A", 43)+"=", &SiteState{Site: "alpha-site", Up: 3, Peers: 4, Lost: 1}
+	busy.Pos = NewPosition(51.12345, -1.12345, 120.5, true, 5, 3, 1790000000)
+	busy.Arch, busy.Rollouts, busy.Time, busy.MeshChange = "arm64", true, TimeGNSS, true
+	busy.IDSource, busy.Addr, busy.Boot, busy.Seq = "config", "10.73.200.1", 1<<62, 1<<40
+	busy.GW = &GW{Healthy: true, DownKbps: 100000, UpKbps: 20000, RTTms: 40}
+	busy.Rollout = &RolloutState{ID: strings.Repeat("r", 24), Phase: "failed", Reason: strings.Repeat("x", MaxRolloutReason)}
+	bands := []string{"2g", "2g+5g", "2g+5g+6g", "5g", "5g+6g", "60g", "6g", "s1g"}
+	for i := range MaxDegraded {
+		busy.Degraded = append(busy.Degraded, Degraded{bands[i/2], []string{DegradedPCIe, DegradedThermal}[i%2]})
+	}
+	if _, err := sealRecord(k, busy); err == nil {
+		t.Fatal("the busy record fits whole: the test needs a bigger one")
+	}
+	pkt, err = Seal(k, busy)
+	if err != nil {
+		t.Fatalf("a busy record with degraded radios not sent: %v", err)
+	}
+	got, err = Open(k, pkt)
+	if err != nil || len(got.Degraded) == 0 || len(got.Degraded) >= MaxDegraded || got.Degraded[0] != busy.Degraded[0] {
+		t.Errorf("busy record: %d degraded, %v", len(got.Degraded), err)
+	}
+	t.Logf("busy record: %d bytes, %d of %d degraded radios", len(pkt), len(got.Degraded), MaxDegraded)
+}
+
 // Channel load is a live figure: a change in it alone is not news to send.
 func TestSameIgnoresLoad(t *testing.T) {
 	a, b := rec("ea:67:61:6f:bc:8b", 7, 1), rec("ea:67:61:6f:bc:8b", 7, 1)

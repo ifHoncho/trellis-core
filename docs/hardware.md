@@ -61,7 +61,7 @@ reports and not yet tested here.
 
 | Chipset | Driver | Bus | Bands | Mesh | Client Wi-Fi | Notes |
 |---|---|---|---|---|---|---|
-| MediaTek MT7915 / MT7916 (Wi-Fi 6/6E) | mt7915e | PCIe (M.2) | 2.4 + 5/6 GHz, two radios | Verified | Verified | Carries two mesh links at once (one per band), up to 160 MHz. Needs MediaTek firmware; `scripts/install-mt7915e-dkms.sh` builds the driver where the kernel lacks it |
+| MediaTek MT7915 / MT7916 (Wi-Fi 6/6E) | mt7915e | PCIe (M.2) | 2.4 + 5/6 GHz, two radios | Verified | Verified | Carries two mesh links at once (one per band), up to 160 MHz. Needs MediaTek firmware; `meshctl prepare` builds the driver where the kernel lacks it, and where the kernel's own predates Linux 6.14 (an MT7916's 5/6 GHz radio works on neither band with that one). The second radio runs 5 GHz, or 6 GHz with `options mt7915e enable_6ghz=1` |
 | MediaTek MT7610U | mt76x0u | USB 2 | 2.4 or 5 GHz | Verified | Verified | Single stream; good all-round adapter |
 | MediaTek MT7612U | mt76x2u | USB 3 | 2.4 or 5 GHz | Reported | Reported | |
 | MediaTek MT7921AU | mt7921u | USB 3 | 2.4 or 5/6 GHz | Unchecked | Unchecked | Kernel 5.18 or newer |

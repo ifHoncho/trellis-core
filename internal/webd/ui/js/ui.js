@@ -108,18 +108,28 @@ export function kv(pairs) {
 
 // table({stack: true}, [{title, cls, cell(row)}], rows, emptyText)
 export function table(opts, cols, rows, empty) {
-  if (!rows.length) return h('div.empty', empty || 'Nothing here.');
+  if (!rows.length) return h('div.empty', empty || 'None');
   return h('table.table', { class: opts.stack ? 'stack' : '' },
     h('thead', h('tr', cols.map((c) => h('th', { class: c.cls || '' }, c.title)))),
     h('tbody', rows.map((r) => h('tr', { class: opts.rowClass ? opts.rowClass(r) : '', key: opts.key ? opts.key(r) : null },
       cols.map((c) => h('td', { class: c.cls || '', 'data-label': c.wide ? null : c.title }, c.cell(r)))))));
 }
 
+// asSentence starts a message with a capital and ends it with a stop: the
+// node writes some the way Go writes errors, in lower case.
+// A name at the start ("scout-7 runs…", "mt7915e-power 2 was…") keeps its
+// case: only a plain word is capitalised.
+export function asSentence(m) {
+  if (!m) return m;
+  if (/^[a-z]+(\s|$)/.test(m)) m = m[0].toUpperCase() + m.slice(1);
+  return /[.!?)]$/.test(m) ? m : m + '.';
+}
+
 export function notice(w, extra) {
   const tone = { error: 'bad', warning: 'warn', info: 'info', ok: 'ok' }[w.level] || 'info';
   return h('div.notice', { class: tone },
     dot(tone),
-    h('div', w.code ? h('span.code', [w.source, w.code].filter(Boolean).join(' · ')) : null, w.message, extra || null));
+    h('div', w.code ? h('span.code', [w.source, w.code].filter(Boolean).join(' · ')) : null, asSentence(w.message), extra || null));
 }
 
 export function field(label, control, opts = {}) {

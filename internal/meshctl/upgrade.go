@@ -69,7 +69,7 @@ health; the first that goes back halts the rest.
 	}
 	// Checking a package changes nothing, and needs no root.
 	if os.Geteuid() != 0 && !*check {
-		return errors.New("an upgrade changes the installed system: run it as root (sudo)")
+		return errors.New("Root required: sudo meshctl upgrade")
 	}
 	switch {
 	case *resume && *rollback:
@@ -232,7 +232,7 @@ func resultError(res *upgrade.Result) error {
 		}
 		return fmt.Errorf("the node went back to %s: %s", res.From, res.Reason)
 	}
-	return fmt.Errorf("the upgrade failed and could not be undone: %s. Once the cause is fixed: %s", res.Reason, upgrade.ResumeHint)
+	return fmt.Errorf("Upgrade failed, rollback failed: %s. After fixing the cause: %s", res.Reason, upgrade.ResumeHint)
 }
 
 // upgradeDetached runs the upgrade in a transient systemd unit and prints
@@ -249,7 +249,7 @@ func upgradeDetached(ctx context.Context, sys upgrade.HostSystem, dir string, pk
 	if err := upgrade.StartDetached(ctx, sys, dir, exe, pkg, args, file); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "running as %s.service; this session may be lost without harm (log: %s)\n", upgradeUnit, logPath)
+	fmt.Fprintf(stdout, "Running as %s.service; safe to lose this session (log: %s)\n", upgradeUnit, logPath)
 	var shown int64
 	follow := func() {
 		f, err := os.Open(logPath)
@@ -290,15 +290,15 @@ func upgradeDetached(ctx context.Context, sys upgrade.HostSystem, dir string, pk
 	}
 	// The unit ended without saying how: killed, or a crash.
 	if p, _ := upgrade.ReadPending(dir); p != nil {
-		return fmt.Errorf("the upgrade stopped without finishing (journalctl -u %s); finish it, with the version it started from: %s", upgradeUnit, upgrade.ResumeHint)
+		return fmt.Errorf("Upgrade incomplete (journalctl -u %s). Resume from the starting version: %s", upgradeUnit, upgrade.ResumeHint)
 	}
-	return fmt.Errorf("the upgrade stopped without saying how it ended (journalctl -u %s); sudo meshctl upgrade --status shows the node's state", upgradeUnit)
+	return fmt.Errorf("Upgrade ended without a result (journalctl -u %s). State: sudo meshctl upgrade --status", upgradeUnit)
 }
 
 func upgradeStatus(dir string, stdout io.Writer) error {
 	p, err := upgrade.ReadPending(dir)
 	if errors.Is(err, os.ErrPermission) {
-		return errors.New("the upgrade records are readable by root only: sudo meshctl upgrade --status")
+		return errors.New("Upgrade records require root: sudo meshctl upgrade --status")
 	}
 	if err != nil {
 		return err
@@ -316,7 +316,7 @@ func upgradeStatus(dir string, stdout io.Writer) error {
 		return err
 	}
 	if last == nil {
-		fmt.Fprintln(stdout, "no upgrade has been made on this node with meshctl upgrade")
+		fmt.Fprintln(stdout, "No upgrades recorded")
 		return nil
 	}
 	fmt.Fprintf(stdout, "last: %s -> %s, %s on %s\n", last.From, last.To, last.Result, last.Finished.Local().Format("2006-01-02 15:04:05"))

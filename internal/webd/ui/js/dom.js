@@ -74,8 +74,11 @@ export function morph(from, to) {
   }
   if (from.nodeType !== Node.ELEMENT_NODE) return from;
 
+  // A <details>'s open is the user's: views never set it, and a redraw
+  // must not close one they opened.
+  const userOpen = from.nodeName === 'DETAILS';
   for (const a of [...from.attributes]) {
-    if (a.name !== 'style' && !to.hasAttribute(a.name)) from.removeAttribute(a.name);
+    if (a.name !== 'style' && !(userOpen && a.name === 'open') && !to.hasAttribute(a.name)) from.removeAttribute(a.name);
   }
   for (const a of to.attributes) {
     if (a.name !== 'style' && from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);

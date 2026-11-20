@@ -67,7 +67,7 @@ func (r *dhcpReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 	if r.path == "" {
 		p, err := proc.LookPath("dnsmasq")
 		if err != nil {
-			warn("error", "dhcp-no-dnsmasq", "dnsmasq is not installed, so clients get no address or DNS: apt install dnsmasq-base")
+			warn("error", "dhcp-no-dnsmasq", "dnsmasq not installed: no DHCP or DNS for clients. Install: apt install dnsmasq-base")
 			res.RequeueAfter = 30 * time.Second
 			d.facts.Update(func(f *Facts) { f.DHCP = status.DHCP{} })
 			return res, nil
@@ -158,11 +158,11 @@ func (r *dhcpReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 		h.State = "running"
 	}
 	if h.Restarts > 3 {
-		warn("warning", "dhcp-restarting", "dnsmasq has restarted %d times; another DNS or DHCP server may hold port 53 or 67 (see the journal and meshctl doctor)", h.Restarts)
+		warn("warning", "dhcp-restarting", "dnsmasq restarted %d times; port 53 or 67 may be held by another server (see journal, meshctl doctor)", h.Restarts)
 		res.RequeueAfter = 10 * time.Second
 	}
 	if !anycastPresent {
-		warn("warning", "dhcp-without-anycast", "clients are told to use %s as router and DNS, but that address is not up on this node yet", anycastIP)
+		warn("warning", "dhcp-without-anycast", "Clients assigned %s as router and DNS; address not up on this node", anycastIP)
 	}
 	d.facts.Update(func(f *Facts) { f.DHCP = status.DHCP{Dnsmasq: h, PoolStart: start, PoolEnd: end, Domain: MeshDomain} })
 	return res, nil

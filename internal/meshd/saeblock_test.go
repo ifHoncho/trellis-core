@@ -67,3 +67,20 @@ func TestSAEBlockLifts(t *testing.T) {
 		t.Errorf("due after a reset: %v", got)
 	}
 }
+
+// A peer that connects has its earlier failures and blocks on that link
+// dropped (a restart); another link's, and other peers', stay.
+func TestSAEFailuresClearedOnConnect(t *testing.T) {
+	f := &Facts{}
+	f.AddSAEFailure("mesh0", "a0:b0:c0:00:89:fa", "failure", "SAE authentication failed")
+	f.AddSAEFailure("mesh0", "a0:b0:c0:00:89:fa", "blocked", "SAE blocked for 10 s: repeated failures")
+	f.AddSAEFailure("mesh1", "a0:b0:c0:00:89:fa", "failure", "SAE authentication failed")
+	f.AddSAEFailure("mesh0", "a0:b0:c0:00:12:34", "failure", "SAE authentication failed")
+	f.ClearSAEFailures("mesh0", "A0:B0:C0:00:89:FA")
+	if got := f.saeFailures("mesh0", true); len(got) != 1 || got[0].MAC != "a0:b0:c0:00:12:34" {
+		t.Errorf("mesh0 = %+v", got)
+	}
+	if got := f.saeFailures("mesh1", false); len(got) != 1 {
+		t.Errorf("mesh1 = %+v", got)
+	}
+}

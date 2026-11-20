@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/doctor"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/prepare"
@@ -21,6 +24,7 @@ func cmdPrepare(version, socket string, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("prepare", flag.ContinueOnError)
 	dir := fs.String("dir", prepare.DefaultDir, "where the package put its scripts")
 	noDoctor := fs.Bool("no-doctor", false, "skip the checks at the end")
+	stateDir := fs.String("state-dir", config.DefaultStateDir, "the node's state directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -34,7 +38,12 @@ func cmdPrepare(version, socket string, args []string, stdout io.Writer) error {
 	// The builds take minutes on a small board; the scripts end on their own.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
-	res, err := prepare.Run(ctx, prepare.Options{Dir: *dir, Host: prepare.System{}, Out: stdout, DriverOptions: opts})
+	// Ctrl-C or a stop ends the step under way, and prepare starts meshd
+	// again before it exits. A second one kills it at once.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	context.AfterFunc(ctx, stop)
+	res, err := prepare.Run(ctx, prepare.Options{Dir: *dir, Host: prepare.System{}, Out: stdout, DriverOptions: opts, StateDir: *stateDir})
 	if err != nil {
 		return err
 	}

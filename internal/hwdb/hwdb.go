@@ -5,6 +5,7 @@ package hwdb
 import (
 	_ "embed"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -54,14 +55,23 @@ type Entry struct {
 	// its sub-1 GHz channels with cfg80211 as 5 GHz ones (by design; Morse's
 	// tools map between the two), and the planner must not take it for a
 	// 5 GHz radio.
-	Bands           []string `yaml:"bands"`
-	PowerSource     string   `yaml:"power_source"`
-	MeshPoint       string   `yaml:"mesh_point"`
-	SAEMesh         string   `yaml:"sae_mesh"`
-	MeshAPTogether  string   `yaml:"mesh_ap_together"`
-	VerifiedKernels []string `yaml:"verified_kernels"`
-	Quirks          []string `yaml:"quirks"`
-	Notes           string   `yaml:"notes"`
+	Bands []string `yaml:"bands"`
+	// ExclusiveBands are bands one radio of the adapter has but runs one
+	// at a time, chosen by its driver. A driver that offers them all at
+	// once has not chosen: the radio then works on none of them.
+	ExclusiveBands []string `yaml:"exclusive_bands"`
+	// PowerByWidthDBm is the transmit power per chain at each channel
+	// width, by band and width in MHz, where the adapter's maker says: a
+	// wider channel is sent at higher rates, which need a cleaner signal,
+	// so the amplifiers are backed off.
+	PowerByWidthDBm map[string]map[int]float64 `yaml:"power_by_width_dbm"`
+	PowerSource     string                     `yaml:"power_source"`
+	MeshPoint       string                     `yaml:"mesh_point"`
+	SAEMesh         string                     `yaml:"sae_mesh"`
+	MeshAPTogether  string                     `yaml:"mesh_ap_together"`
+	VerifiedKernels []string                   `yaml:"verified_kernels"`
+	Quirks          []string                   `yaml:"quirks"`
+	Notes           string                     `yaml:"notes"`
 	// ModuleParams are kernel module parameters the driver (Match.Driver)
 	// needs for a working encrypted mesh. The package writes them to
 	// /etc/modprobe.d and meshctl prepare reloads the module; meshd warns
@@ -110,10 +120,23 @@ func Parse(data []byte) (*DB, error) {
 			e.Match.PCI[j] = strings.ToLower(id)
 		}
 		for _, b := range e.Bands {
-			switch b {
-			case "2g", "5g", "6g", "s1g":
-			default:
+			if !knownBand(b) {
 				return nil, fmt.Errorf("hardware database: entry %s: unknown band %q", e.ID, b)
+			}
+		}
+		for _, b := range e.ExclusiveBands {
+			if !knownBand(b) {
+				return nil, fmt.Errorf("hardware database: entry %s: exclusive_bands: unknown band %q", e.ID, b)
+			}
+		}
+		for b, byWidth := range e.PowerByWidthDBm {
+			if !knownBand(b) {
+				return nil, fmt.Errorf("hardware database: entry %s: power_by_width_dbm: unknown band %q", e.ID, b)
+			}
+			for w := range byWidth {
+				if w <= 0 {
+					return nil, fmt.Errorf("hardware database: entry %s: power_by_width_dbm: width %d", e.ID, w)
+				}
 			}
 		}
 		if e.MaxMeshMTU != 0 && e.MaxMeshMTU < 1280 {
@@ -209,4 +232,53 @@ func ParamMatches(have, want string) bool {
 		return strings.TrimSpace(v)
 	}
 	return norm(have) == norm(want)
+}
+
+func knownBand(b string) bool {
+	switch b {
+	case "2g", "5g", "6g", "s1g":
+		return true
+	}
+	return false
+}
+
+// BaseWidthMHz is a band's narrowest channel width: what a link's budget
+// is measured against.
+func BaseWidthMHz(band string) int {
+	if band == "s1g" {
+		return 1
+	}
+	return 20
+}
+
+// WidthCost is the link budget a channel width costs against the band's
+// narrowest: the noise a wider channel takes in, and the transmit power an
+// adapter gives up at it.
+type WidthCost struct {
+	WidthMHz, BaseMHz      int
+	NoiseDB                float64
+	PowerKnown             bool
+	PowerDBm, BasePowerDBm float64
+	PowerDB, TotalDB       float64
+}
+
+// WidthCost works out what a width costs on this adapter. ok is false at
+// the band's narrowest width (and below): nothing is lost there. A nil
+// entry, or one without power per width for the band, gives the noise
+// alone.
+func (e *Entry) WidthCost(band string, width int) (c WidthCost, ok bool) {
+	base := BaseWidthMHz(band)
+	if width <= base {
+		return c, false
+	}
+	c = WidthCost{WidthMHz: width, BaseMHz: base, NoiseDB: 10 * math.Log10(float64(width)/float64(base))}
+	if e != nil {
+		pw, okW := e.PowerByWidthDBm[band][width]
+		pb, okB := e.PowerByWidthDBm[band][base]
+		if okW && okB {
+			c.PowerKnown, c.PowerDBm, c.BasePowerDBm, c.PowerDB = true, pw, pb, pb-pw
+		}
+	}
+	c.TotalDB = c.NoiseDB + c.PowerDB
+	return c, true
 }

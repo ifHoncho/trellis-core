@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **Hardware monitor:** Settings → System → Hardware: CPU temperature,
+  CPU and memory use, storage, supply voltage, radio temperatures, PCIe
+  links. `host` in the status, `host:` in `meshctl status`. Alerts:
+  `host-hot`, `undervoltage`, `disk-full`, `memory-low`. Control loop
+  panel reduced to one line, details on request.
+- Fixed: expanded sections in the web UI collapsed on the next refresh.
+- Fixed: a peer's failed authentications stayed listed after it
+  connected (a node back from a restart).
+- **UI, alert and CLI text** reworded to standard equipment terms across
+  the web UI, alerts, change reviews, API errors, `meshctl`, `meshctl
+  doctor` and the user docs. Renamed: "Client Wi-Fi" → "Client AP",
+  "Every node" → "All nodes", "Share with another node" → "Share
+  profile"; trials report armed, confirmed, reverted, locked out.
+  Overview notices list faults first; Overview uptime is the node's.
+  Style rules: `docs/dev/ui-text.md`.
+- **A radio's hardware says how it is doing.** The Radios page, `meshctl
+  radios` and `meshctl doctor` show, for a PCIe radio, the link it
+  trained at (generation and lanes, against what card and slot can do),
+  the kernel's error counters and what sampling the link's error status
+  found: a link that loses packets and recovers by sending them again
+  carries a radio until traffic pushes it too far, and is now an alert
+  (`pcie-link-marginal`) before that. A small service of its own
+  (`trellis-pcie`) reads those registers, so meshd needs no more
+  privilege. Radios with a temperature sensor show it, with an alert
+  while the driver cuts the radio's transmit time to cool it; every node
+  tells the others which of its radios are degraded (throttling, PCIe
+  fault), with no figures.
+- **Resets have a cause.** At start meshd reads the crash records the
+  kernel kept (pstore), gives each a verdict, and keeps a history: a
+  card that stopped answering on its bus, an interrupt flood on the PCIe
+  port before it, a reset request on a serial console, another kernel
+  panic, or, with nothing recorded, a loss of power. Alerts lists them;
+  `meshctl status` shows the last; doctor says whether the board keeps
+  crash records at all.
+- Fixed: Ctrl-C in `meshctl prepare` left meshd stopped; it now ends the
+  step under way and starts meshd again.
+- **Driver, firmware and board file trials (`meshctl trial`):** new files
+  are put in place with the ones they replace kept, and stay on trial
+  until the node has run well on them for five minutes: the radio
+  present, its mesh started, a peer back if it had one. A node that
+  restarts first gets the old files back at boot, before any driver
+  loads, and that version stays off until it is re-armed. One that never
+  gets healthy is undone after fifteen minutes.
+- **What a link's width costs:** the hardware database holds a radio's
+  transmit power per channel width, and status, `meshctl status`, the
+  Radios page and the profile editor say how much link budget a width
+  gives up against 20 MHz on this node's radio (80 MHz on an MT7916:
+  12.5 dB, half of it transmit power and half noise).
+- **MT7916 on kernels before Linux 6.14:** such a kernel's own mt7915e
+  offers both bands of the card's 5/6 GHz radio at once, and the radio
+  then works on neither while looking normal. `meshctl prepare` now
+  builds an mt7915e with 6.14's fix in its place (5 GHz, or 6 GHz with
+  the module option `enable_6ghz=1`), and until then the radio shows as
+  broken, with why, instead of being given a mesh link it cannot carry.
 - **Site link (preview):** parts of one mesh in different places join
   into one mesh over the internet. Nodes listed in the profile's
   `site_link.members` (by the WireGuard key `meshctl site` prints) link
@@ -56,7 +110,7 @@
   PTT adapters; their PTT silences the microphone while held, so they
   want "press to start, press to stop", which can be chosen; Trellis
   flags the mismatch before anyone talks, stops a talk whose microphone
-  is silent with a warning tone, and has a "Check my PTT" test), a serial line, a GPIO line or the voice
+  is silent with a warning tone, and has a "PTT test"), a serial line, a GPIO line or the voice
   itself (VOX), and a PTT per channel (dual PTT). Priority talk groups
   duck the others and sound an override tone; Opus's redundancy follows
   the loss heard. The adapter's own levels are set at start (some begin
@@ -72,7 +126,7 @@
   API. Not yet tested with a headset on a node.
 - **Upgrading the whole mesh from one node:** `meshctl upgrade --mesh
   FILE.deb…` (one release file per architecture) and Settings → System →
-  Software → "Every node" in the web UI. The plan comes first: the order
+  **Mesh upgrade** in the web UI. The plan comes first: the order
   (farthest node first, this node last) and the nodes left out, with the
   reason. Each node fetches its package over the mesh, checks it against
   its own release keys, waits its turn and upgrades with the usual health

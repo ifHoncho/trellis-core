@@ -6,6 +6,7 @@ package radio
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 
@@ -163,6 +164,11 @@ func Inventory(nl *nl80211.Client, sysRoot string, db *hwdb.DB, cfg config.Radio
 		r.Caps.Bands = realBands(r.Caps.Bands, r.HWDB)
 		if r.HWDB != nil && r.HWDB.MeshPoint == hwdb.Broken {
 			r.Broken = "hardware database marks mesh point as broken for " + r.HWDB.Chipset
+		}
+		// A radio the database marks broken stays broken for that reason:
+		// a driver that chooses its band would not mend it.
+		if why := exclusiveBroken(r.Caps.Bands, r.HWDB); why != "" && r.Broken == "" {
+			r.Broken = why
 		}
 		// Power facts: driver first, database over it.
 		for _, b := range r.Caps.Bands {
@@ -337,12 +343,7 @@ func disambiguate(radios []*Radio) {
 		}
 		byBands := map[string][]*Radio{}
 		for _, r := range g {
-			bands := append([]string{}, r.Caps.Bands...)
-			sort.Strings(bands)
-			key := strings.Join(bands, "+")
-			if key == "" {
-				key = "nobands"
-			}
+			key := bandKey(r)
 			byBands[key] = append(byBands[key], r)
 		}
 		for key, rs := range byBands {
@@ -355,6 +356,33 @@ func disambiguate(radios []*Radio) {
 			}
 		}
 	}
+}
+
+// bandKey names a radio of a multi-radio device by its bands. Bands it
+// runs one at a time (hwdb.Entry.ExclusiveBands) count as the first of
+// them, the driver's default: which one it offers depends on the driver's
+// version and options (an MT7916's 5/6 GHz radio offers 5g+6g on an old
+// mt7915e, 5g on a newer one, 6g with enable_6ghz=1), and the radio, its
+// role and its rules must not change with them.
+func bandKey(r *Radio) string {
+	var excl []string
+	if r.HWDB != nil && len(r.HWDB.ExclusiveBands) > 1 {
+		excl = r.HWDB.ExclusiveBands
+	}
+	var bands []string
+	for _, b := range r.Caps.Bands {
+		if slices.Contains(excl, b) {
+			b = excl[0]
+		}
+		if !slices.Contains(bands, b) {
+			bands = append(bands, b)
+		}
+	}
+	sort.Strings(bands)
+	if len(bands) == 0 {
+		return "nobands"
+	}
+	return strings.Join(bands, "+")
 }
 
 // Find returns the radio with the fingerprint, or nil.
@@ -439,4 +467,30 @@ func LinkAddress(ifindex int) string {
 		}
 	}
 	return ""
+}
+
+// exclusiveBroken says why a radio is unusable when its driver offers, all
+// at once, bands the radio can only run one at a time
+// (hwdb.Entry.ExclusiveBands): the driver has not chosen one, and the
+// radio then hears and sends nothing on any of them, while looking normal.
+// It returns "" for a radio that is fine.
+func exclusiveBroken(bands []string, e *hwdb.Entry) string {
+	if e == nil || len(e.ExclusiveBands) < 2 {
+		return ""
+	}
+	for _, b := range e.ExclusiveBands {
+		found := false
+		for _, have := range bands {
+			found = found || have == b
+		}
+		if !found {
+			return ""
+		}
+	}
+	names := map[string]string{"2g": "2.4 GHz", "5g": "5 GHz", "6g": "6 GHz", "s1g": "HaLow"}
+	var list []string
+	for _, b := range e.ExclusiveBands {
+		list = append(list, names[b])
+	}
+	return "the driver offers " + strings.Join(list, " and ") + " at once on a radio that runs one of them at a time, so it works on neither (a driver too old for this radio): sudo meshctl prepare installs one that chooses"
 }

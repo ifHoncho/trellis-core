@@ -216,7 +216,7 @@ func TestSetMeshProfile(t *testing.T) {
 		t.Errorf("mesh-wide framing: %+v", res.Effects)
 	}
 	// node-2 runs unrestricted; the profile sent is in country mode.
-	if msg := effectText(res.Effects, "mesh-change-regulatory"); !strings.Contains(msg, "node-2 from unrestricted to country mode (US)") {
+	if msg := effectText(res.Effects, "mesh-change-regulatory"); !strings.Contains(msg, "node-2: unrestricted → country mode (US)") {
 		t.Errorf("regulatory change on another node: %q", msg)
 	}
 	if until := time.Until(*res.ApplyAt); until < 55*time.Second || until > 61*time.Second {
@@ -247,7 +247,7 @@ func TestSetMeshProfileSiteLinkOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg := effectText(res.Effects, "mesh-change-voice-old"); !strings.Contains(msg, "node-2 runs a release from before 0.3.0") || !strings.Contains(msg, "a site link") || strings.Contains(msg, "node-3") {
+	if msg := effectText(res.Effects, "mesh-change-voice-old"); !strings.Contains(msg, "node-2: release before 0.3.0") || !strings.Contains(msg, "a site link") || strings.Contains(msg, "node-3") {
 		t.Errorf("old releases: %q", msg)
 	}
 	plain := api.MeshProfileInput{ProfileInput: api.ProfileInput{YAML: profileAt(t, 40, 0, nil)}}

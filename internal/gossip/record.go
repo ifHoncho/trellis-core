@@ -94,6 +94,11 @@ type Record struct {
 	// percent, in the profile's order; -1 for a link it has no radio on or
 	// whose driver does not measure it.
 	Load []int `json:"ld,omitempty"`
+	// Degraded lists the node's radios that run but not as they should,
+	// each with a reason code; absent while every radio is fine. No
+	// figures: those stay on the node's own pages. Sorted; a change is
+	// sent at once.
+	Degraded []Degraded `json:"dg,omitempty"`
 	// Pos is the node's GNSS position while it has a fix and shares it.
 	// It rides on the refresh, not on every move: the node's own ATAK
 	// reports carry the live position; this is what the other nodes keep
@@ -111,6 +116,45 @@ type Record struct {
 	// Rollout is the node's progress in the mesh-wide upgrade under way
 	// (internal/rollout), or nil.
 	Rollout *RolloutState `json:"ro,omitempty"`
+}
+
+// Degraded is one degraded radio of a node: its bands as in Radios
+// ("5g", "2g+5g"), and why. Why is a code, worded by the node that shows
+// it: Thermal, PCIe, or one a newer version adds.
+type Degraded struct {
+	Radio string `json:"r"`
+	Why   string `json:"w"`
+}
+
+// Reasons a radio is degraded.
+const (
+	// DegradedThermal: the radio throttles its transmit time to cool.
+	DegradedThermal = "thermal"
+	// DegradedPCIe: the card's PCIe link loses packets, has uncorrectable
+	// errors, or runs at a speed unstable on the board.
+	DegradedPCIe = "pcie"
+)
+
+// MaxDegraded bounds the degraded radios a record lists: two reasons a
+// radio.
+const MaxDegraded = 2 * MaxRadios
+
+var reWhy = regexp.MustCompile(`^[a-z0-9-]{1,16}$`)
+
+// cleanDegraded keeps the well-formed entries, at most MaxDegraded: a bad
+// one is dropped, not the node's record, since nothing but a display
+// depends on it.
+func cleanDegraded(ds []Degraded) []Degraded {
+	var out []Degraded
+	for _, d := range ds {
+		if len(out) == MaxDegraded {
+			break
+		}
+		if d.Radio != "" && printable(d.Radio, 24) && reWhy.MatchString(d.Why) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // SiteState is a site link member's state: its site's name, the members
@@ -242,8 +286,25 @@ func Key(passphrase, meshID string) ([]byte, error) {
 	return hkdf.Key(sha256.New, []byte(passphrase), []byte(meshID), "trellis gossip v1", 32)
 }
 
-// Seal encodes and authenticates a record.
+// Seal encodes and authenticates a record. A record over the cap sheds
+// degraded radios from the end until it fits: they are for display, and
+// a node that sends no record drops out of the mesh's view.
 func Seal(key []byte, r *Record) ([]byte, error) {
+	pkt, err := sealRecord(key, r)
+	if err == nil || len(r.Degraded) == 0 {
+		return pkt, err
+	}
+	c := *r
+	for n := len(r.Degraded) - 1; n >= 0; n-- {
+		c.Degraded = r.Degraded[:n]
+		if pkt, err := sealRecord(key, &c); err == nil {
+			return pkt, nil
+		}
+	}
+	return nil, err
+}
+
+func sealRecord(key []byte, r *Record) ([]byte, error) {
 	body, err := json.Marshal(r)
 	if err != nil {
 		return nil, err
@@ -285,6 +346,7 @@ func Open(key []byte, pkt []byte) (*Record, error) {
 	if r.MAC == "" || r.Boot == 0 {
 		return nil, fmt.Errorf("%w: no identity or boot id", ErrInvalid)
 	}
+	r.Degraded = cleanDegraded(r.Degraded)
 	if err := r.validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}

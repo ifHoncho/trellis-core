@@ -1,7 +1,12 @@
 #!/bin/sh
 # Install mt7915e, the driver for MediaTek MT7915 and MT7916 PCIe Wi-Fi, as a
-# DKMS module on kernels that ship mt76 without it. Raspberry Pi OS is one: its kernel has
-# "# CONFIG_MT7915E is not set". Run as root on a Debian-family system.
+# DKMS module on kernels that ship mt76 without it (Raspberry Pi OS is one:
+# its kernel has "# CONFIG_MT7915E is not set"), and on kernels whose own
+# mt7915e predates Linux 6.14: that driver registers both bands of an
+# MT7916's 5/6 GHz radio at once, and the radio then works on neither. The
+# build carries 6.14's fix, with its module option (enable_6ghz=1 for
+# 6 GHz; 5 GHz otherwise). A kernel whose own driver has the fix is left
+# alone. Run as root on a Debian-family system.
 #
 #   scripts/install-mt7915e-dkms.sh               Pi 4/CM4: PCIe link at Gen1
 #   scripts/install-mt7915e-dkms.sh --pcie-gen2   Pi 4/CM4: keep Gen2
@@ -19,7 +24,7 @@
 # /lib/modules/<kernel>/updates/dkms/.
 set -eu
 
-PKG_VERSION=1   # bump when packaging/dkms-mt7915e changes
+PKG_VERSION=2   # bump when packaging/dkms-mt7915e changes
 PCIE_GEN=1
 for arg in "$@"; do
   case "$arg" in
@@ -57,9 +62,24 @@ fi
 [ -n "$CFG" ] || { echo "!! cannot read this kernel's configuration" >&2; exit 1; }
 has() { echo "$CFG" | grep -qE "^$1=[ym]"; }
 
+# A kernel with an mt7915e of its own: fine when that one selects the band
+# of a 5/6 GHz radio (Linux 6.14 on), replaced by this build when not.
 if has CONFIG_MT7915E; then
-  echo "-- this kernel already has mt7915e; nothing to do"
-  exit 0
+  if echo "$CFG" | grep -q '^CONFIG_MT7915E=y'; then
+    if [ -e /sys/module/mt7915e/parameters/enable_6ghz ]; then
+      echo "-- this kernel has mt7915e built in, with band selection; nothing to do"
+      exit 0
+    fi
+    echo "!! This kernel has an mt7915e older than Linux 6.14 built in: it cannot be replaced." >&2
+    echo "   An MT7916 radio with 5 and 6 GHz works on neither with it; use a kernel that builds mt7915e as a module, or 6.14 or newer." >&2
+    exit 1
+  fi
+  OWN="$(find "/lib/modules/${KREL}/kernel" -name 'mt7915e.ko*' 2>/dev/null | head -n 1)"
+  if [ -n "$OWN" ] && modinfo -F parm "$OWN" 2>/dev/null | grep -q '^enable_6ghz:'; then
+    echo "-- this kernel's mt7915e selects the band of a 5/6 GHz radio already; nothing to do"
+    exit 0
+  fi
+  echo "-- this kernel's mt7915e predates Linux 6.14's band selection; building one with it, loaded in its place"
 fi
 missing=""
 for opt in CONFIG_PCI CONFIG_MAC80211 CONFIG_MT76_CORE CONFIG_MT76_CONNAC_LIB CONFIG_RELAY; do
@@ -100,6 +120,7 @@ rm -rf "$SRC"
 install -d "$SRC"
 sed "s/@VERSION@/${PKG_VERSION}/" "$HERE/../packaging/dkms-mt7915e/dkms.conf" > "$SRC/dkms.conf"
 install -m 0755 "$HERE/../packaging/dkms-mt7915e/build-mt7915e.sh" "$SRC/build-mt7915e.sh"
+install -m 0755 "$HERE/../packaging/dkms-mt7915e/band-select.sh" "$SRC/band-select.sh"
 install -m 0755 "$HERE/../packaging/dkms/trellis-build.sh" "$SRC/trellis-build.sh"
 
 # Remove other versions of this package (see install-batman-adv-dkms.sh for
@@ -179,6 +200,19 @@ if [ -n "$cards" ] && tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null | 
   fi
 fi
 
+# An mt7915e already loaded is another build (the kernel's own, or an
+# earlier one of this package): it gives way to the new one.
+if [ -d /sys/module/mt7915e ]; then
+  NEW="$(modinfo -F srcversion mt7915e 2>/dev/null || true)"
+  CUR="$(cat /sys/module/mt7915e/srcversion 2>/dev/null || true)"
+  if [ -n "$NEW" ] && [ "$NEW" != "$CUR" ]; then
+    echo "-- unloading the mt7915e in use, to load the new build"
+    if ! modprobe -r mt7915e 2>/dev/null; then
+      echo "== REBOOT NEEDED: the new mt7915e is installed; the one in use could not be unloaded, so it loads at the next boot"
+      exit 0
+    fi
+  fi
+fi
 echo "-- loading mt7915e"
 modprobe mt7915e
 echo "-- module file: $(modinfo -n mt7915e)"

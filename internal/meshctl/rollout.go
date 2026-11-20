@@ -24,7 +24,7 @@ func cmdUpgradeMesh(client *api.Client, files []string, yes, follow, cancel bool
 		if err := client.CancelRollout(ctx); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, "cancelled: nodes that have not begun upgrading stop; one upgrading now finishes")
+		fmt.Fprintln(stdout, "Cancelled: pending nodes stop; the node upgrading now finishes")
 		return nil
 	}
 	if len(files) == 0 {
@@ -173,7 +173,7 @@ func followRollout(ctx context.Context, client *api.Client, stdout io.Writer) er
 		if err == nil {
 			r := st.Rollout
 			if r == nil {
-				fmt.Fprintln(stdout, "the mesh-wide upgrade is no longer shown on this node")
+				fmt.Fprintln(stdout, "Mesh upgrade record cleared on this node")
 				return nil
 			}
 			for _, n := range r.Nodes {

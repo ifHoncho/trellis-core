@@ -228,6 +228,8 @@ func cmdTrellis(args []string) error {
 	}
 	for _, f := range [][2]string{
 		{"packaging/systemd/trellis-meshd.service", "/usr/lib/systemd/system/trellis-meshd.service"},
+		{"packaging/systemd/trellis-pcie.service", "/usr/lib/systemd/system/trellis-pcie.service"},
+		{"packaging/systemd/trellis-trial.service", "/usr/lib/systemd/system/trellis-trial.service"},
 		{"packaging/systemd/trellis-webd.service", "/usr/lib/systemd/system/trellis-webd.service"},
 		{"packaging/systemd/trellis-webd.socket", "/usr/lib/systemd/system/trellis-webd.socket"},
 		{"packaging/udev/70-trellis-names.rules", "/usr/lib/udev/rules.d/70-trellis-names.rules"},

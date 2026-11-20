@@ -341,6 +341,27 @@ func TestFingerprintDualBandCard(t *testing.T) {
 			t.Errorf("probe order changed %v's fingerprint to %q", r.Caps.Bands, r.Fingerprint)
 		}
 	}
+	// A radio that runs 5 or 6 GHz, one at a time (the hardware
+	// database's MT7916): one fingerprint whichever its driver offers, an
+	// old one (both), a newer one (5 GHz), or one set to 6 GHz.
+	db, err := hwdb.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bands := range [][]string{{"5g", "6g"}, {"5g"}, {"6g"}} {
+		g, a := mkRadio(dbdcG), mkRadio(dbdcA)
+		a.PhyIndex, a.Caps.Bands = 1, bands
+		for _, r := range []*Radio{g, a} {
+			r.HWDB = db.Lookup(r.Device.Bus, r.Device.DeviceID(), "mt7915e")
+		}
+		if a.HWDB == nil || a.HWDB.ID != "mt7916" {
+			t.Fatalf("hardware database lookup: %+v", a.HWDB)
+		}
+		AssignFingerprints([]*Radio{g, a})
+		if g.Fingerprint != "pci:0000:01:00.0#2g" || a.Fingerprint != "pci:0000:01:00.0#5g" {
+			t.Errorf("driver offering %v: fingerprints %q and %q", bands, g.Fingerprint, a.Fingerprint)
+		}
+	}
 	// Two radios with the same bands on one device still differ.
 	twin := dbdcA
 	twin.phy, twin.mac = "phy2", "02:0c:43:26:60:02"
@@ -707,11 +728,39 @@ func TestPlanNoticesNameLinks(t *testing.T) {
 		return strings.Join(all, "\n")
 	}
 	in.LinkNames = []string{"5 GHz · ch 149", "HaLow · ch 26"}
-	if got := text(MakePlan(in)); !strings.Contains(got, "no radio for the HaLow · ch 26 link: this node meshes over the 5 GHz · ch 149 link") {
+	if got := text(MakePlan(in)); !strings.Contains(got, "No radio for the HaLow · ch 26 link: meshing on the 5 GHz · ch 149 link only") {
 		t.Errorf("named links:\n%s", got)
 	}
 	in.LinkNames = nil
-	if got := text(MakePlan(in)); !strings.Contains(got, "no radio for mesh link 2 (s1g)") {
+	if got := text(MakePlan(in)); !strings.Contains(got, "No radio for mesh link 2 (s1g)") {
 		t.Errorf("unnamed links:\n%s", got)
+	}
+}
+
+// A radio whose driver has not chosen between bands it can only run one
+// at a time is broken; one whose driver has, or another adapter, is not.
+func TestExclusiveBandsAtOnce(t *testing.T) {
+	db, err := hwdb.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt := db.Lookup("pci", "14c3:7906", "mt7915e")
+	if mt == nil || len(mt.ExclusiveBands) != 2 {
+		t.Fatalf("MT7916 entry: %+v", mt)
+	}
+	if why := exclusiveBroken([]string{"5g", "6g"}, mt); !strings.Contains(why, "5 GHz and 6 GHz at once") || !strings.Contains(why, "meshctl prepare") {
+		t.Errorf("both bands: %q", why)
+	}
+	for _, bands := range [][]string{{"5g"}, {"6g"}, {"2g"}, nil} {
+		if why := exclusiveBroken(bands, mt); why != "" {
+			t.Errorf("%v: %q", bands, why)
+		}
+	}
+	// A dual-band adapter that does run either band, and no entry at all.
+	if why := exclusiveBroken([]string{"2g", "5g"}, db.Lookup("usb", "0e8d:7612", "mt76x2u")); why != "" {
+		t.Errorf("MT7612U: %q", why)
+	}
+	if why := exclusiveBroken([]string{"5g", "6g"}, nil); why != "" {
+		t.Errorf("no entry: %q", why)
 	}
 }

@@ -95,7 +95,7 @@ func (r *radioReconciler) meshLinkSetup(rd *radio.Radio, ifname string, rp confi
 			want := rd.HWDB.MeshMTU(cfg.MeshMTU)
 			if link.Attrs().MTU != want {
 				if err := netlink.LinkSetMTU(link, want); err != nil {
-					warn("warning", "mesh-mtu", "cannot set %s MTU to %d (%v); keeping %d, batman-adv fragmentation covers the difference", ifname, want, err, link.Attrs().MTU)
+					warn("warning", "mesh-mtu", "Cannot set %s MTU to %d (%v); keeping %d (batman-adv fragmentation compensates)", ifname, want, err, link.Attrs().MTU)
 				} else if want != cfg.MeshMTU {
 					d.log.Info("set underlay MTU to the radio's limit; batman-adv fragments larger packets", "interface", ifname, "mtu", want, "mesh_mtu", cfg.MeshMTU)
 					changed = true
@@ -118,7 +118,7 @@ func (r *radioReconciler) meshLinkSetup(rd *radio.Radio, ifname string, rp confi
 		want := d.profile.Regulatory.Country
 		if have, err := os.ReadFile(filepath.Join(d.opts.SysRoot, "module", "morse", "parameters", "country")); err == nil {
 			if got := strings.TrimSpace(string(have)); got != "" && !strings.EqualFold(got, want) {
-				warn("error", "halow-country", "the HaLow driver on %s is loaded for country %s, but the mesh profile says %s: its channels will not match the mesh's. "+
+				warn("error", "halow-country", "HaLow driver on %s loaded for country %s; mesh profile: %s. Channel plans differ. "+
 					"Rerun sudo /usr/share/trellis/scripts/install-wm6108-halow.sh --country %s on this node and reboot it", rd.Phy, got, want, want)
 			}
 		}
@@ -138,17 +138,17 @@ func checkMeshChannel(rd *radio.Radio, rp config.RadioPlan, alpha2 string, warn 
 	f := rd.Wiphy.Frequency(uint32(freq))
 	switch {
 	case f == nil:
-		warn("error", "channel-unsupported", "%s has no channel %d (%d MHz): %s cannot start on it", rd.Name(), rp.Channel, freq, link)
+		warn("error", "channel-unsupported", "%s: channel %d (%d MHz) unsupported; %s cannot start", rd.Name(), rp.Channel, freq, link)
 		return
 	case f.Disabled:
-		warn("error", "channel-disabled", "regulatory domain %s disables channel %d (%d MHz) on %s: %s cannot transmit there", alpha2, rp.Channel, freq, rd.Name(), link)
+		warn("error", "channel-disabled", "Regulatory domain %s disables channel %d (%d MHz) on %s: %s cannot transmit", alpha2, rp.Channel, freq, rd.Name(), link)
 		return
 	case f.Radar:
-		warn("warning", "channel-dfs", "channel %d (%d MHz) for %s needs radar detection (DFS) under regulatory domain %s: the link starts after a channel availability check "+
+		warn("warning", "channel-dfs", "Channel %d (%d MHz) for %s is DFS under %s: link starts after CAC "+
 			"(a minute or more), where the driver supports radar detection on a mesh point, and stops if radar is heard",
 			rp.Channel, freq, link, alpha2)
 	case f.NoIR:
-		warn("error", "channel-no-ir", "regulatory domain %s makes channel %d (%d MHz) passive-only (no-IR) on %s: the kernel does not let %s start there", alpha2, rp.Channel, freq, rd.Name(), link)
+		warn("error", "channel-no-ir", "Regulatory domain %s: channel %d (%d MHz) no-IR on %s; %s cannot start", alpha2, rp.Channel, freq, rd.Name(), link)
 	}
 	if !f.Radar {
 		var radar []int
@@ -158,18 +158,18 @@ func checkMeshChannel(rd *radio.Radio, rp config.RadioPlan, alpha2 string, warn 
 			}
 		}
 		if len(radar) > 0 {
-			warn("warning", "channel-dfs", "the %d MHz channel around channel %d for %s includes channels that need radar detection (DFS) under regulatory domain %s (%s): "+
+			warn("warning", "channel-dfs", "%d MHz channel around ch %d for %s includes DFS channels under %s (%s): "+
 				"the link starts after a channel availability check (a minute or more), where the driver supports radar detection on a mesh point, and stops if radar is heard",
 				rp.Width, rp.Channel, link, alpha2, config.JoinInts(radar))
 		}
 	}
 	switch {
 	case rp.Width >= 160 && f.No160MHz:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 160 MHz channel around channel %d: %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
+		warn("warning", "channel-width", "%s or regulatory domain %s: no 160 MHz channel around ch %d; %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
 	case rp.Width >= 80 && f.No80MHz:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 80 MHz channel around channel %d: %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
+		warn("warning", "channel-width", "%s or regulatory domain %s: no 80 MHz channel around ch %d; %s runs narrower", rd.Name(), alpha2, rp.Channel, link)
 	case rp.Width == 40 && f.NoHT40Minus && f.NoHT40Plus:
-		warn("warning", "channel-width", "%s, or regulatory domain %s, allows no 40 MHz channel around channel %d: %s runs at 20 MHz", rd.Name(), alpha2, rp.Channel, link)
+		warn("warning", "channel-width", "%s or regulatory domain %s: no 40 MHz channel around ch %d; %s runs at 20 MHz", rd.Name(), alpha2, rp.Channel, link)
 	}
 }
 
@@ -382,7 +382,7 @@ func (r *radioReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 			r.foreign[in.Name]++
 			d.log.Warn("removed an interface something else added to the mesh radio", "name", in.Name, "type", in.TypeName(), "phy", meshRadio.Phy, "times", r.foreign[in.Name])
 			if r.foreign[in.Name] >= 3 {
-				warn("warning", "foreign-interface", "%s keeps being added to the mesh radio %s (%d times); a udev rule or service on this node creates it. "+
+				warn("warning", "foreign-interface", "%s repeatedly added to mesh radio %s (%d times): created by a udev rule or service. "+
 					"Look for it with: grep -rl '%s\\|interface add' /etc/udev/rules.d /lib/udev/rules.d /etc/systemd/system", in.Name, meshRadio.Phy, r.foreign[in.Name], strings.TrimRight(in.Name, "0123456789"))
 			}
 		}
@@ -397,7 +397,7 @@ func (r *radioReconciler) Reconcile(ctx context.Context) (reconcile.Result, erro
 			if err != nil || hwdb.ParamMatches(string(have), want) {
 				continue
 			}
-			warn("error", "driver-params", "%s needs the %s module loaded with %s=%s (it has %s): without it, unicast over the mesh fails. "+
+			warn("error", "driver-params", "%s requires module %s with %s=%s (current: %s); otherwise mesh unicast fails. "+
 				"make deploy sets it; by hand: echo 'options %s %s=%s' | sudo tee /etc/modprobe.d/trellis.conf, then unplug and replug the adapter",
 				rd.Describe(), rd.Device.Driver, k, want, strings.TrimSpace(string(have)), rd.Device.Driver, k, want)
 		}

@@ -24,9 +24,11 @@ import (
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/batadv"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/crashlog"
 	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/gnss"
 	"meridian/trellis/internal/gossip"
+	"meridian/trellis/internal/hoststat"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/nft"
 	"meridian/trellis/internal/nl80211"
@@ -72,6 +74,18 @@ type Options struct {
 	// stand-in driven by files in this directory (rollout_upgrader.go,
 	// labUpgrader), so the namespace lab can test rollouts.
 	TestUpgraderDir string
+	// BootID names this boot of the system; default the kernel's. A lab
+	// sets it to stand for a reboot.
+	BootID string
+	// TrialHealthyFor is how long a driver or firmware trial must run
+	// well before it is kept, TrialDeadline how long it has to get there;
+	// 0 for the defaults (r_trial.go).
+	TrialHealthyFor time.Duration
+	TrialDeadline   time.Duration
+	// TestTrialDir replaces the radios a trial is judged by, and the
+	// module reload, with a stand-in driven by files in this directory
+	// (r_trial.go), so the namespace lab can test trials.
+	TestTrialDir string
 }
 
 // Daemon is one meshd instance.
@@ -89,6 +103,15 @@ type Daemon struct {
 	identGen uint64              // bumped when the node ID or MAC changes while running
 	radioMem *nodestate.Radios
 	hw       *hwdb.DB
+	// crashes is the node's reset history, brought up to this boot at
+	// start (resets.go); read-only after.
+	crashes *crashlog.Log
+	// crashClosed: the stop is recorded once, at the signal or on the
+	// way out.
+	crashClosed sync.Once
+	// host samples the computer meshd runs on (status.Host); nil in
+	// tests that do not need it.
+	host *hoststat.Reader
 
 	pendingMu sync.Mutex
 	// confMu guards d.cfg and d.profile for readers outside the reconcile
@@ -167,7 +190,11 @@ func New(opts Options) (*Daemon, error) {
 	if opts.Interval == 0 {
 		opts.Interval = 15 * time.Second
 	}
+	if opts.BootID == "" {
+		opts.BootID = crashlog.BootID()
+	}
 	d := &Daemon{opts: opts, log: opts.Log, facts: &Facts{Roles: map[string]radio.Role{}}}
+	d.host = hoststat.New("/proc", opts.SysRoot)
 	d.facts.Hostname, _ = os.Hostname()
 	if err := d.loadConfig(); err != nil {
 		return nil, err
@@ -399,6 +426,11 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.identMu.Lock()
 	d.ident = ident
 	d.identMu.Unlock()
+	d.openCrashLog()
+	// On every way out: a meshd that stops, even before its loop, is not
+	// a reset at the next boot. A stop signal records it at once
+	// (handleSignals), before the teardown.
+	defer d.closeCrashLog()
 	if d.radioMem, err = nodestate.LoadRadios(d.opts.StateDir); err != nil {
 		if d.radioMem == nil {
 			return err
@@ -435,7 +467,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.Extra = d.siteTunnelMACs
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d})
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d}, newHardwareReconciler(d), newTrialReconciler(d))
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 
@@ -494,6 +526,10 @@ func (d *Daemon) handleSignals(ctx context.Context, cancel context.CancelFunc) {
 			default:
 				d.log.Info("signal received, shutting down", "signal", sig.String())
 				cancel()
+				// Recorded now, not after the teardown: a teardown that
+				// outlasts systemd's stop timeout is killed, and the next
+				// boot would read a power loss.
+				d.closeCrashLog()
 				return
 			}
 		}
@@ -568,7 +604,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	node, profile := d.conf()
 	if st.Setup.Needed {
 		st.Warnings = append(st.Warnings, status.Warning{Level: "info", Code: "setup-needed",
-			Message: "this node has no mesh profile yet: it runs alone until it is set up (web UI, or meshctl profile install)"})
+			Message: "No mesh profile: node standalone. Provision via web UI or meshctl profile install."})
 	}
 	country := profile.Regulatory.Country
 	st.Profile = status.Profile{
@@ -589,7 +625,9 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	var roles map[string]radio.Role
 	var radios []*radio.Radio
 	var plan *radio.Plan
+	var hw hardwareFacts
 	d.facts.Read(func(f *Facts) {
+		hw = f.Hardware
 		st.Node.Address = f.BridgeAddress
 		st.Regulatory = f.Regulatory
 		st.Regulatory.RequestedMode, st.Regulatory.Country = profile.Regulatory.Mode, profile.Regulatory.Country
@@ -635,6 +673,8 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	}
 	st.GNSS = gnssStatus(d.gnss, time.Now())
 	st.Positions = d.positions.status()
+	st.Resets = d.resetsStatus()
+	st.Trials = d.trialsStatus()
 	st.MeshChange = d.meshChangeStatus()
 	st.Rollout = d.rolloutStatus()
 	for i := range 1 + len(st.MoreLinks) {
@@ -681,17 +721,25 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 			MeshPoint: r.Caps.MeshPoint, AP: r.Caps.AP, MeshAndAP: r.Caps.MeshAndAP, Power: map[string]status.PowerFact{},
 			Role: string(radio.RoleUnused), Recommended: string(radio.RoleUnused), Interfaces: []string{}, Ignored: r.Ignored,
 			Broken: r.Broken, HardBlocked: r.HardBlocked, InUse: r.InUse,
-			LED: len(radioLEDs(d.opts.SysRoot, r.Phy)) > 0,
+			LED:  len(radioLEDs(d.opts.SysRoot, r.Phy)) > 0,
+			PCIe: hw.PCIe[r.Fingerprint], Thermal: hw.Thermal[r.Fingerprint],
 		}
 		if r.HWDB != nil {
 			sr.Chipset = r.HWDB.Chipset
 			sr.Quirks = r.HWDB.Quirks
+			sr.PowerByWidth = r.HWDB.PowerByWidthDBm
 		}
 		for b, p := range r.Power {
 			sr.Power[b] = status.PowerFact{DBm: p.DBm, Source: p.Source}
 		}
 		if role, ok := roles[r.Fingerprint]; ok {
 			sr.Role = string(role)
+			// What the width of the link this radio carries costs on it.
+			if n := role.Link(); n == 0 {
+				st.MeshLink.WidthCost = widthCost(r, st.MeshLink)
+			} else if n > 0 && n <= len(st.MoreLinks) {
+				st.MoreLinks[n-1].WidthCost = widthCost(r, st.MoreLinks[n-1])
+			}
 		}
 		if plan != nil {
 			if rec, ok := plan.Recommended[r.Fingerprint]; ok {
@@ -789,7 +837,15 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	}
 	if st.Process.OpenFiles > 256 || st.Process.Goroutines > 500 {
 		st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Code: "resource-growth",
-			Message: fmt.Sprintf("meshd has %d open files and %d goroutines; that is unusually many (please report with meshctl doctor)", st.Process.OpenFiles, st.Process.Goroutines)})
+			Message: fmt.Sprintf("meshd resource usage high: %d open files, %d goroutines. Report with meshctl doctor output.", st.Process.OpenFiles, st.Process.Goroutines)})
+	}
+
+	// The computer the node runs on. Its alerts come from the hardware
+	// reconciler, with the radios'.
+	if d.host != nil {
+		st.Host = d.host.Sample(time.Now())
+	} else {
+		st.Host = status.Host{CPUPct: -1, Temps: []status.HostTemp{}, Filesystems: []status.Filesystem{}}
 	}
 
 	// Loop and warnings.
@@ -1085,7 +1141,7 @@ func linkFreqMHz(rp config.RadioPlan, country string, supplicantMHz int) float64
 func firstLinkTransport(node string, hasRadio bool) string {
 	switch {
 	case node == "":
-		return "not yet determined"
+		return "undetermined"
 	case hasRadio:
 		return node
 	case node == "wifi":

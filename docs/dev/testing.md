@@ -344,6 +344,26 @@ The air side's veth ends are set to MTU 1600: meshd raises a mesh port's
 MTU for batman-adv's header, and full-size frames (a package over HTTP)
 would otherwise be dropped there.
 
+### Trials (`make lab-trial`)
+
+`lab/trial.sh`: one node with `meshd --test-trial` (a stand-in driver: a
+file that plays the module, and files that say whether its radio is
+present, its link up and a peer back), `--boot-id` standing for a boot
+and `kill -9` for a crash; the healthy period and the deadline are
+shortened. About 2 min.
+
+- T1 a trial begins (pending, counting down), meshd confirms it, and a
+  revert by hand puts back the version it replaced;
+- T2 the node goes down on a trial: the boot hook puts the old file back
+  before meshd runs, status says undone and latched, the reset is in the
+  node's reset history, the same version is refused, and re-armed it is
+  tried again and kept;
+- T3 a trial whose link never comes up is undone by meshd at the
+  deadline;
+- T4 a trial armed for the next boot is kept after it, and a stop and a
+  new boot is not a reset;
+- T5 a boot where the hook did not run: meshd undoes the trial itself.
+
 ### Site link (`make lab-sites`)
 
 `lab/sites.sh`: two sites of three nodes, each on its own air bridge, and

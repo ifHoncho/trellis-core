@@ -79,12 +79,12 @@ node, shows the plan and asks to proceed, then asks for the sudo password
 (if any node needs one) and a web UI admin password for the new nodes.
 Nodes are installed a few at a time, rebooted, and waited for. The
 summary lists each node's result, any `meshctl doctor` findings, and each
-new node's Wi-Fi SSID and passphrase.
+new node's client AP SSID and passphrase.
 
 ## 6. Join the mesh
 
-Connect a phone or laptop to any node's Wi-Fi (SSID and passphrase from the
-summary), open **https://10.73.0.1**, accept the node's self-signed
+Connect a phone or laptop to any node's client AP (SSID and passphrase
+from the summary), open **https://10.73.0.1**, accept the node's self-signed
 certificate, and sign in with the admin password. The **Mesh** page shows
 every node and link.
 
@@ -99,10 +99,10 @@ and use whichever node has an internet uplink. For ATAK, see
 - **Upgrade:** run step 5 again when a new release is out. Nodes are
   upgraded one at a time; each checks itself and rolls back on its own if
   it is not healthy, and the first rollback stops the rest. From one node
-  instead: Settings → System → **Every node** sends a release through
+  instead: Settings → System → **Mesh upgrade** sends a release through
   the mesh the same way ([reference.md](reference.md#upgrading-the-whole-mesh-from-one-node)).
 - **Change the mesh** (channels, bands, links): web UI, Settings → Mesh
-  profile → **Every node**. Make changes while every node is up.
+  profile → **All nodes**. Make changes while every node is up.
 - **Firewall:** from your LAN, new nodes answer only SSH and ping (the
   mesh side is not filtered); Settings → Access opens more.
 - **Link sites:** parts of the mesh in different places join over the

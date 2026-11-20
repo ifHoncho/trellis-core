@@ -143,7 +143,7 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		pending = nil
 	}
 	if pending != nil && !in.Replace && (in.Base != "" || !dryRun) {
-		return nil, api.Conflict("a mesh-wide change from %s is on its way (every node switches at %s): sending this now would replace it and drop what it changes. Wait for the switch, or replace it on purpose (Replace it in the web UI; meshctl profile push --replace)", pending.From, pending.ApplyAt.Format("15:04:05"))
+		return nil, api.Conflict("Mesh change from %s pending (switchover at %s): sending now supersedes it. Wait for switchover, or replace explicitly (web UI: Replace; meshctl profile push --replace)", pending.From, pending.ApplyAt.Format("15:04:05"))
 	}
 	p, err := d.profileFrom(in.ProfileInput, curProfile, false)
 	if err != nil {
@@ -180,7 +180,7 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	}
 	slices.Sort(res.Nodes)
 	slices.Sort(behind)
-	res.Effects = append(res.Effects, effect("info", "mesh-change", "Every node switches at %s (in %s): this one and %s.",
+	res.Effects = append(res.Effects, effect("info", "mesh-change", "Switchover at %s (in %s): this node and %s.",
 		at.Format("15:04:05"), delay.Round(time.Second), map[bool]string{true: "no other node known yet", false: listAnd(res.Nodes)}[len(res.Nodes) == 0]))
 	// The regulatory setting goes to every node with the profile: name the
 	// nodes whose setting this changes, so it is never changed unseen.
@@ -195,12 +195,12 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	for _, from := range slices.Sorted(maps.Keys(regChange)) {
 		names := regChange[from]
 		slices.Sort(names)
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-regulatory", "This changes the regulatory mode of %s from %s to %s.",
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-regulatory", "Regulatory mode on %s: %s → %s.",
 			listAnd(names), regWords(from), regWords(want)))
 	}
 	if len(behind) > 0 {
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s %s a version that cannot follow a mesh-wide change: install the profile there by hand, or %s keep the old one.",
-			listAnd(behind), map[bool]string{true: "runs", false: "run"}[len(behind) == 1], map[bool]string{true: "it will", false: "they will"}[len(behind) == 1]))
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-old", "%s: version cannot follow mesh changes. Install the profile manually, or the old one stays.",
+			listAnd(behind)))
 	}
 	// A profile with talk groups or a site link is not one a release
 	// before them reads (profiles are read strictly): those nodes refuse
@@ -221,8 +221,8 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 		}
 		if len(old) > 0 {
 			slices.Sort(old)
-			res.Effects = append(res.Effects, effect("warning", "mesh-change-voice-old", "%s %s a release from before 0.3.0, which cannot read a profile with %s: %s this change and keep the old profile. Upgrade every node first.",
-				listAnd(old), map[bool]string{true: "runs", false: "run"}[len(old) == 1], listAnd(newer), map[bool]string{true: "it will refuse", false: "they will refuse"}[len(old) == 1]))
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-voice-old", "%s: release before 0.3.0, cannot read a profile with %s; change refused there. Upgrade all nodes first.",
+				listAnd(old), listAnd(newer)))
 		}
 	}
 	// Nodes heard in the last day but not now (roster.go) will miss it.
@@ -238,12 +238,11 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	}
 	if len(away) > 0 {
 		slices.Sort(away)
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-away", "%s %s heard in the last day but %s not in reach now: %s miss this change, and look for the mesh when %s back. Sending it when every node is on and in reach is safer.",
-			listAnd(away), map[bool]string{true: "was", false: "were"}[len(away) == 1], map[bool]string{true: "is", false: "are"}[len(away) == 1],
-			map[bool]string{true: "it will", false: "they will"}[len(away) == 1], map[bool]string{true: "it is", false: "they are"}[len(away) == 1]))
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-away", "%s: heard in the last day, not in range now. Will miss this change and search for the mesh on return. Send with all nodes up and in range.",
+			listAnd(away)))
 	}
 	if c := d.time.Clock(); !c.Synced {
-		res.Effects = append(res.Effects, effect("warning", "mesh-change-clock", "This node's clock is not synchronised (%s): nodes switch when their own clocks reach the moment, so they may switch apart.", c.Note))
+		res.Effects = append(res.Effects, effect("warning", "mesh-change-clock", "Clock not synced (%s). Nodes switch over by local clock; switchover may be staggered.", c.Note))
 	}
 	// cancels: the profile in force, sent in the place of a change on its
 	// way.
@@ -254,17 +253,17 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 			what = " (" + st.Summary + ")"
 		}
 		if cancels {
-			res.Effects = append(res.Effects, effect("warning", "mesh-change-cancelled", "This cancels the change from %s due at %s%s: every node keeps the profile it runs now, as a new revision.", pending.From, pending.ApplyAt.Format("15:04:05"), what))
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-cancelled", "Cancels the change from %s due at %s%s. All nodes keep the current profile (new revision).", pending.From, pending.ApplyAt.Format("15:04:05"), what))
 		} else {
-			res.Effects = append(res.Effects, effect("warning", "mesh-change-replaced", "This replaces the change from %s due at %s%s: what that change sets and this profile does not is dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what))
+			res.Effects = append(res.Effects, effect("warning", "mesh-change-replaced", "Supersedes the change from %s due at %s%s; its settings not in this profile are dropped.", pending.From, pending.ApplyAt.Format("15:04:05"), what))
 		}
 	}
 	if in.New == nil && res.Changed {
 		switch {
 		case given.Revision > 0 && given.Revision < curProfile.Revision:
-			res.Effects = append(res.Effects, effect("warning", "profile-older", "This profile is revision %d, and the mesh runs revision %d: sent, it undoes what the mesh-wide changes since then set. Start from the profile the mesh runs (meshctl profile show) unless that is meant.", given.Revision, curProfile.Revision))
+			res.Effects = append(res.Effects, effect("warning", "profile-older", "Profile rev %d; mesh runs rev %d. Sending reverts later mesh changes. Start from the current profile (meshctl profile show) unless intended.", given.Revision, curProfile.Revision))
 		case given.Revision == curProfile.Revision && given.ChangeID() != "" && curProfile.ChangeID() != "" && given.ChangeID() != curProfile.ChangeID():
-			res.Effects = append(res.Effects, effect("warning", "profile-older", "This profile comes from another change than the one the mesh runs (both revision %d): sent, it undoes what that one set.", given.Revision))
+			res.Effects = append(res.Effects, effect("warning", "profile-older", "Profile from a different change than the mesh runs (both rev %d). Sending reverts that change.", given.Revision))
 		}
 	}
 	sortEffects(res.Effects)
@@ -285,7 +284,7 @@ func (d *Daemon) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dr
 	}
 	me := d.identity()
 	if me == nil || d.gossip == nil || d.gossip.currentKey() == nil {
-		return nil, errors.New("gossip has not started: try again in a moment")
+		return nil, errors.New("Gossip not started; retry shortly")
 	}
 	c := &meshChange{Rev: p.Revision, ApplyAt: at, From: cur.Callsign, Sender: true, YAML: string(data), State: "pending"}
 	if err := d.acceptMeshChange(c); err != nil {
@@ -828,9 +827,8 @@ func meshWideEffects(es []status.Warning, cur, p *config.Profile) []status.Warni
 		}
 	}
 	if len(restart) > 0 {
-		es = append(es, effect("warning", "mesh-change-restart", "At the switch, every node restarts %s: a few seconds without %s, longer where a radar channel needs its check first. Traffic goes over the other links meanwhile.",
-			map[bool]string{true: "the " + restart[0] + " link", false: "the " + listAnd(restart) + " links"}[len(restart) == 1],
-			map[bool]string{true: "it", false: "them"}[len(restart) == 1]))
+		es = append(es, effect("warning", "mesh-change-restart", "At switchover all nodes restart %s: down a few seconds, longer on DFS channels (CAC). Traffic uses other links meanwhile.",
+			map[bool]string{true: "the " + restart[0] + " link", false: "the " + listAnd(restart) + " links"}[len(restart) == 1]))
 	}
 	return es
 }

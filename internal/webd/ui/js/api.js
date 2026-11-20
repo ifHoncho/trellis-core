@@ -27,7 +27,7 @@ export async function api(method, path, body) {
   try {
     res = await fetch(BASE + path, init);
   } catch (e) {
-    throw new ApiError(0, { error: 'The node did not answer. Check that you are still connected to it.' });
+    throw new ApiError(0, { error: 'No response from node. Check the connection.' });
   }
   let data = null;
   try { data = await res.json(); } catch (e) { /* no body */ }
@@ -47,7 +47,7 @@ export async function upload(path, file) {
       headers: { 'X-Trellis-Request': '1', 'Content-Type': 'application/vnd.debian.binary-package' },
     });
   } catch (e) {
-    throw new ApiError(0, { error: 'The node did not answer. Check that you are still connected to it.' });
+    throw new ApiError(0, { error: 'No response from node. Check the connection.' });
   }
   let data = null;
   try { data = await res.json(); } catch (e) { /* no body */ }

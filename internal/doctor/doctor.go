@@ -24,8 +24,10 @@ import (
 
 	"meridian/trellis/internal/batadv"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/crashlog"
 	"meridian/trellis/internal/hwdb"
 	"meridian/trellis/internal/nl80211"
+	"meridian/trellis/internal/pcie"
 	"meridian/trellis/internal/proc"
 	"meridian/trellis/internal/radio"
 	"meridian/trellis/internal/regdb"
@@ -74,6 +76,7 @@ type Options struct {
 	Socket      string // meshd API socket
 	MinBatman   string
 	PinBatman   string
+	StateDir    string // meshd's state directory
 }
 
 func (r *Report) add(st, name, detail, fix string) {
@@ -92,6 +95,9 @@ func (r *Report) add(st, name, detail, fix string) {
 func Run(opts Options) *Report {
 	if opts.SysRoot == "" {
 		opts.SysRoot = sysfs.DefaultRoot
+	}
+	if opts.StateDir == "" {
+		opts.StateDir = config.DefaultStateDir
 	}
 	if opts.MinBatman == "" {
 		opts.MinBatman = "2024.0"
@@ -113,6 +119,8 @@ func Run(opts Options) *Report {
 	checkTools(r)
 	checkListeners(r)
 	checkRadios(r, opts)
+	checkPCIe(r, opts)
+	checkResets(r, opts)
 	checkRegulatory(r)
 	checkTime(r)
 	checkNetworkManagers(r)
@@ -144,7 +152,7 @@ func osRelease() string {
 
 func checkPlatform(r *Report) {
 	if _, err := os.Stat("/etc/openwrt_release"); err == nil {
-		r.add(Fail, "operating system", "OpenWrt (for example FriendlyWrt) is not supported for self-install yet",
+		r.add(Fail, "operating system", "OpenWrt (e.g. FriendlyWrt): self-install not supported",
 			"use the board vendor's Debian or Ubuntu image (FriendlyElec: Debian Core or Ubuntu Core)")
 	}
 	if b, err := os.ReadFile("/proc/device-tree/model"); err == nil {
@@ -259,7 +267,7 @@ func checkKernelConfig(r *Report) {
 	case "m":
 		r.add(Pass, "CONFIG_BATMAN_ADV", "=m", "")
 	default:
-		r.add(Pass, "CONFIG_BATMAN_ADV", "unset (the DKMS module will provide it)", "")
+		r.add(Pass, "CONFIG_BATMAN_ADV", "unset (provided by the DKMS module)", "")
 	}
 	if v := cfg["CONFIG_BRIDGE"]; v == "y" || v == "m" {
 		r.add(Pass, "CONFIG_BRIDGE", "="+v, "")
@@ -289,7 +297,7 @@ func checkKernelConfig(r *Report) {
 	if cfg["CONFIG_CFG80211_CRDA_SUPPORT"] == "y" {
 		r.add(Pass, "CONFIG_CFG80211_CRDA_SUPPORT", "=y: trellis crda can answer the kernel's regulatory requests (unrestricted mode possible)", "")
 	} else {
-		r.add(Warn, "CONFIG_CFG80211_CRDA_SUPPORT", "missing: the kernel takes its rules only from its own regulatory.db, so unrestricted mode is unavailable", "a kernel with CFG80211_CRDA_SUPPORT, or without CFG80211_REQUIRE_SIGNED_REGDB")
+		r.add(Warn, "CONFIG_CFG80211_CRDA_SUPPORT", "missing: kernel uses its own regulatory.db only; unrestricted mode unavailable", "a kernel with CFG80211_CRDA_SUPPORT, or without CFG80211_REQUIRE_SIGNED_REGDB")
 	}
 	if v := cfg["CONFIG_MAC80211_HWSIM"]; v == "m" || v == "y" {
 		r.add(Info, "CONFIG_MAC80211_HWSIM", "="+v+" (virtual radios available for lab tests)", "")
@@ -350,7 +358,7 @@ func checkBatman(r *Report, opts Options) {
 	case v.Less(minV):
 		r.add(Fail, "batman-adv module", desc+fmt.Sprintf("; below the minimum %s", minV), "build and load the pinned release: sudo meshctl prepare")
 	case v != pinV || inferred:
-		r.add(Warn, "batman-adv module", desc+fmt.Sprintf("; differs from the pinned release %s", pinV), "install the pinned DKMS build so every node runs identical code")
+		r.add(Warn, "batman-adv module", desc+fmt.Sprintf("; differs from the pinned release %s", pinV), "install the pinned DKMS build on all nodes")
 	default:
 		r.add(Pass, "batman-adv module", desc, "")
 	}
@@ -430,7 +438,7 @@ func aptName(tool string) string {
 func checkListeners(r *Report) {
 	wild := wildcardUDPListeners()
 	if wild[53] {
-		r.add(Warn, "port 53", "another DNS server listens on all addresses (a system dnsmasq or similar); Trellis's dnsmasq cannot bind the mesh addresses",
+		r.add(Warn, "port 53", "another DNS server bound to all addresses (system dnsmasq or similar); Trellis dnsmasq cannot bind mesh addresses",
 			"disable it: systemctl disable --now dnsmasq (install dnsmasq-base, not dnsmasq); systemd-resolved on 127.0.0.53 is fine")
 	} else {
 		r.add(Pass, "port 53", "no wildcard DNS listener", "")
@@ -601,7 +609,7 @@ func checkRegulatory(r *Report) {
 	}
 	switch {
 	case strings.Contains(string(out), "regulatory.db is malformed or signature is missing/invalid"):
-		r.add(Fail, "regulatory.db", "the kernel rejected /lib/firmware/regulatory.db (malformed or signed by a key it does not trust), so it stays in the world domain", "sudo meshctl prepare, then reboot")
+		r.add(Fail, "regulatory.db", "kernel rejected /lib/firmware/regulatory.db (malformed or untrusted signature); world domain in effect", "sudo meshctl prepare, then reboot")
 	case strings.Contains(string(out), "failed to load regulatory.db"):
 		r.add(Fail, "regulatory.db", "the kernel could not load /lib/firmware/regulatory.db", "apt install --reinstall wireless-regdb")
 	default:
@@ -710,7 +718,7 @@ func checkMeshd(r *Report, opts Options) {
 	}}, Timeout: 3 * time.Second}
 	resp, err := client.Get("http://meshd/v1/status")
 	if err != nil && errors.Is(err, os.ErrPermission) {
-		r.add(Info, "meshd", "running; its socket is readable by root and the trellis group only, so its status was not checked", "sudo meshctl doctor")
+		r.add(Info, "meshd", "running; socket restricted to root and the trellis group, status not checked", "sudo meshctl doctor")
 		return
 	}
 	if err != nil {
@@ -828,4 +836,92 @@ func combined(name string, args ...string) ([]byte, error) {
 	cmd, cancel := command(name, args...)
 	defer cancel()
 	return cmd.CombinedOutput()
+}
+
+// pcieReport is where the PCIe link watch leaves its report; a variable
+// for tests.
+var pcieReport = pcie.DefaultReportPath
+
+// checkPCIe reports the link of every PCIe radio: what it trained at, the
+// kernel's error counters and the link's error status. The status comes
+// from the watch's report when there is a fresh one; else it is sampled
+// here, which takes root (the registers are not readable otherwise).
+func checkPCIe(r *Report, opts Options) {
+	report := pcie.ReadReport(pcieReport, time.Now())
+	for _, addr := range pcie.RadioDevices(opts.SysRoot) {
+		pl, err := pcie.ReadLink(opts.SysRoot, addr)
+		if err != nil {
+			continue
+		}
+		var sample *pcie.Health
+		if h, ok := report.Find(addr); ok {
+			sample = &h
+		} else if h := pcie.SampleDevice(opts.SysRoot, addr, pcie.SampleWindows, pcie.SampleWindow); h.Error == "" {
+			sample = &h
+		}
+		l := pcie.Status(pl, sample)
+		st, fix := Pass, ""
+		detail := l.String()
+		switch {
+		case l.Health == pcie.HealthMarginal:
+			st, fix = Warn, "the link loses packets and the card can stop answering under traffic: reseat the card and any adapter, or try another adapter or slot"
+		case pl.Fatal > 0 || pl.NonFatal > 0:
+			st, fix = Warn, "check how the card is seated and powered"
+		case l.Health == pcie.HealthUnknown:
+			st, fix = Info, "sudo meshctl doctor samples the link's error status"
+		}
+		if pl.PortID == "14e4:2711" && l.Gen >= 2 && radioDriver(opts.SysRoot, addr) == "mt7915e" {
+			st = Warn
+			detail += "; Gen2 on this board has made the kernel panic with this card behind an M.2 adapter"
+			fix = "sudo /usr/share/trellis/scripts/install-mt7915e-dkms.sh, then reboot (limits the link to Gen1)"
+		}
+		r.add(st, "PCIe link "+addr, detail, fix)
+	}
+}
+
+// radioDriver is the driver bound to a PCI device.
+func radioDriver(sysRoot, addr string) string {
+	d, err := os.Readlink(filepath.Join(sysRoot, "bus", "pci", "devices", addr, "driver"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(d)
+}
+
+// checkResets reports whether the kernel can keep a crash record on this
+// board, and the last times the node went down other than by a shutdown
+// (meshd's log of them).
+func checkResets(r *Report, opts Options) {
+	if crashlog.Backend(opts.SysRoot) {
+		r.add(Pass, "crash records", "the kernel keeps a record of a panic across the reset (pstore)", "")
+	} else {
+		r.add(Info, "crash records", "no pstore backend: panics not recorded; reset cause indistinguishable from power loss",
+			"on a Raspberry Pi 4 or CM4: dtoverlay=ramoops-pi4 in config.txt")
+	}
+	l, err := crashlog.Load(opts.StateDir)
+	if err != nil {
+		return
+	}
+	recent := l.Recent(time.Now(), 7*24*time.Hour)
+	if len(recent) == 0 {
+		if l.BootID != "" {
+			r.add(Pass, "resets", "none in the last week", "")
+		}
+		return
+	}
+	for i, e := range recent {
+		if i == 5 {
+			r.add(Info, "resets", fmt.Sprintf("%d more in the last week", len(recent)-i), "meshctl status --json")
+			break
+		}
+		at := e.Time.Local().Format("2006-01-02 15:04")
+		if e.TimePending || e.TimeUnknown {
+			at = "time unknown"
+		}
+		detail := at + ": " + e.Summary
+		if e.UptimeS > 0 {
+			detail += fmt.Sprintf(" (up %s)", (time.Duration(e.UptimeS) * time.Second).String())
+		}
+		r.add(Warn, "reset", detail, "")
+	}
 }

@@ -181,3 +181,67 @@ func readTrim(dir, file string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// Thermal is what a radio's driver says about its temperature and about
+// the transmit throttling that protects it.
+type Thermal struct {
+	// TempC is the chip's temperature; MaxC the temperature at which the
+	// driver starts to throttle and CritC the one it stops again at, 0
+	// when the driver does not say.
+	TempC float64
+	MaxC  float64
+	CritC float64
+	// DutyPct is the share of time the radio may transmit, in percent: 100
+	// when nothing holds it back, -1 when the driver does not say.
+	DutyPct int
+}
+
+// Throttling reports whether the radio's transmit time is cut.
+func (t Thermal) Throttling() bool { return t.DutyPct >= 0 && t.DutyPct < 100 }
+
+// RadioThermal reads a radio's temperature sensor (hwmon) and throttle
+// state. ok is false for a radio without a sensor.
+//
+// The duty comes from two places, and the lower counts: the driver's own
+// throttle (mt76's throttle1: the duty its firmware runs at) and the
+// kernel's cooling device on the radio, whose state counts up from 0 (no
+// cooling) to max_state. A throttle1 of 0 is not a duty: mt7915e leaves
+// it at 0 until the radio first starts, and never throttles to 0.
+func RadioThermal(root, phy string) (t Thermal, ok bool) {
+	base := filepath.Join(root, "class", "ieee80211", phy)
+	var hw string
+	for _, pat := range []string{"hwmon*", filepath.Join("device", "hwmon", "hwmon*")} {
+		m, _ := filepath.Glob(filepath.Join(base, pat, "temp1_input"))
+		if len(m) > 0 {
+			hw = filepath.Dir(m[0])
+			break
+		}
+	}
+	if hw == "" {
+		return Thermal{}, false
+	}
+	milli, err := strconv.ParseFloat(readTrim(hw, "temp1_input"), 64)
+	if err != nil {
+		return Thermal{}, false
+	}
+	t = Thermal{TempC: milli / 1000, DutyPct: -1}
+	if v, err := strconv.ParseFloat(readTrim(hw, "temp1_max"), 64); err == nil {
+		t.MaxC = v / 1000
+	}
+	if v, err := strconv.ParseFloat(readTrim(hw, "temp1_crit"), 64); err == nil {
+		t.CritC = v / 1000
+	}
+	if v, err := strconv.Atoi(readTrim(hw, "throttle1")); err == nil && v > 0 && v <= 100 {
+		t.DutyPct = v
+	}
+	cd := filepath.Join(base, "cooling_device")
+	cur, err1 := strconv.Atoi(readTrim(cd, "cur_state"))
+	maxState, err2 := strconv.Atoi(readTrim(cd, "max_state"))
+	if err1 == nil && err2 == nil && maxState > 0 && cur >= 0 {
+		duty := 100 - cur*100/(maxState+1)
+		if t.DutyPct < 0 || duty < t.DutyPct {
+			t.DutyPct = duty
+		}
+	}
+	return t, true
+}
