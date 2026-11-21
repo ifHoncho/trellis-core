@@ -247,3 +247,53 @@ func TestHTOverridesProbe(t *testing.T) {
 	}
 	t.Logf("%s HT overrides: %v", path, ok)
 }
+
+// TestCtrlLateReply: a reply that arrives after its request timed out
+// must not be taken for the reply to the next request (wpa_supplicant's
+// replies carry no sequence).
+func TestCtrlLateReply(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "mesh0")
+	srv, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sock, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, from, err := srv.ReadFromUnix(buf)
+			if err != nil {
+				return
+			}
+			cmd := string(buf[:n])
+			reply := "OK\n"
+			if cmd == "STATUS" {
+				reply = "wpa_state=COMPLETED\nfreq=5745\n"
+			}
+			if strings.HasPrefix(cmd, "SLOW") {
+				time.Sleep(150 * time.Millisecond)
+			}
+			srv.WriteToUnix([]byte(reply), from)
+		}
+	}()
+	c, err := DialCtrl(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	if _, err := c.Request(ctx, "SLOW MESH_PEER_REMOVE 02:00:00:00:00:01"); err == nil {
+		t.Fatal("slow request: no timeout")
+	}
+	cancel()
+	time.Sleep(200 * time.Millisecond) // the late "OK" is now queued
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		st, err := c.GetStatus(ctx)
+		cancel()
+		if err != nil || !st.Joined() {
+			t.Fatalf("status %d after a timed-out request: %v %v", i, st, err)
+		}
+	}
+}

@@ -203,7 +203,7 @@ func TestLogAcrossBoots(t *testing.T) {
 	// meshd is stopped by hand and the node rebooted: no verdict, nobody
 	// knows how that boot ended.
 	_ = l.Stopped(false)
-	l, added, _ = Open(opts("boot-5", t0.Add(40*time.Minute)))
+	_, added, _ = Open(opts("boot-5", t0.Add(40*time.Minute)))
 	if len(added) != 0 {
 		t.Fatalf("after a stop by hand: %+v", added)
 	}
@@ -219,7 +219,7 @@ func TestLogAcrossBoots(t *testing.T) {
 	// A clean shutdown leaves a console log too: no verdict.
 	_ = l.Stopped(true)
 	write(t, pstore, "console-ramoops-0", cleanConsole, t0.Add(50*time.Minute))
-	l, added, _ = Open(opts("boot-7", t0.Add(51*time.Minute)))
+	_, added, _ = Open(opts("boot-7", t0.Add(51*time.Minute)))
 	if len(added) != 0 {
 		t.Fatalf("after a clean shutdown: %+v", added)
 	}
@@ -309,7 +309,7 @@ func TestNoRTC(t *testing.T) {
 	// Boot-1 crashes 163.86 s in. Boot-2 starts at the stale time again; the
 	// record file has the stale time too.
 	write(t, pstore, "dmesg-ramoops-0", serrorDmesg, stale.Add(3*time.Second))
-	l, added, _ := Open(opts("boot-2", 9*time.Second))
+	_, added, _ := Open(opts("boot-2", 9*time.Second))
 	want := real.Add(163856978 * time.Microsecond)
 	if len(added) != 1 || !added[0].Time.Equal(want) || added[0].TimePending {
 		t.Fatalf("crash dated %+v, want %s", added, want)

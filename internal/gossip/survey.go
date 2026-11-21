@@ -59,6 +59,10 @@ func SealSurveyReply(key []byte, r *SurveyReply) ([]byte, error) {
 	return seal(key, SurveyReplyMagic, r, MaxOfferPacket)
 }
 
+// MaxSurveyChannelNumber is the highest channel number of any band a survey
+// covers: 6 GHz channel 233.
+const MaxSurveyChannelNumber = 233
+
 // OpenSurveyQuery verifies and decodes a query.
 func OpenSurveyQuery(key, pkt []byte) (*SurveyQuery, error) {
 	var q SurveyQuery
@@ -87,15 +91,25 @@ func OpenSurveyReply(key, pkt []byte) (*SurveyReply, error) {
 	case !plainText(r.Err, 300) || len(r.Links) > MaxLinkEntries:
 		return nil, fmt.Errorf("%w: bad survey", ErrInvalid)
 	}
-	for _, l := range r.Links {
+	for i, l := range r.Links {
 		if !printable(l.Band, 8) || !plainText(l.Err, 300) || len(l.Channels) > MaxSurveyChannels {
 			return nil, fmt.Errorf("%w: bad survey link", ErrInvalid)
 		}
+		kept := l.Channels[:0]
 		for _, c := range l.Channels {
 			if c.Busy < -1 || c.Busy > 100 || c.Ch <= 0 || c.Nets < 0 {
 				return nil, fmt.Errorf("%w: bad survey channel", ErrInvalid)
 			}
+			// A channel number no band has: a release whose survey
+			// numbered 4.9 GHz and 6 GHz channel 2 wrongly (in the
+			// hundreds of millions). Left out; the rest of its survey
+			// stands.
+			if c.Ch > MaxSurveyChannelNumber {
+				continue
+			}
+			kept = append(kept, c)
 		}
+		r.Links[i].Channels = kept
 	}
 	r.MAC = canonMAC(r.MAC)
 	return &r, nil

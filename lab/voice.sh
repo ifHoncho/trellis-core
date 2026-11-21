@@ -140,7 +140,7 @@ done
 
 # ---------------------------------------------------------------- tests
 say "== tests"
-mac4="02:00:00:00:01:04"; mac2="02:00:00:00:01:02"
+mac4="02:00:00:00:01:04"
 deadline=$((SECONDS + 90)); hops=""
 while [ $SECONDS -lt $deadline ]; do
   hops=$(NS node1 batctl meshif bat0 traceroute -n "$mac4" 2>/dev/null | grep -cE '^ *[0-9]+: ')
@@ -289,7 +289,7 @@ while [ $SECONDS -lt $deadline ]; do
   g2=$(vq 2 "s['channels'][0]['group']"); [ "$g2" = 1 ] && break; sleep 0.5
 done
 vctl 4 ptt a down >/dev/null; sleep 1.5
-mv=$(ctl 1 voice 2>&1); mv2=$(ctl 2 voice 2>&1)
+mv=$(ctl 1 voice 2>&1)
 vctl 4 ptt a up >/dev/null; sleep 0.5
 rx2=$(vq 2 "s['groups'][0]['received']")
 dbg "meshctl voice on node 1: $mv"

@@ -186,7 +186,9 @@ if [ -n "$cards" ] && tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null | 
       sed -i 's/^#dtoverlay=trellis-pcie-gen1$/dtoverlay=trellis-pcie-gen1/' "$CONFIG_TXT"
       echo "-- re-enabled dtoverlay=trellis-pcie-gen1 in $CONFIG_TXT"
     elif ! grep -q '^dtoverlay=trellis-pcie-gen1$' "$CONFIG_TXT"; then
-      printf '# Trellis: PCIe at Gen1; MT7915/MT7916 cards can make the kernel panic at Gen2 behind M.2 adapters (install-mt7915e-dkms.sh --pcie-gen2 to undo)\ndtoverlay=trellis-pcie-gen1\n' >> "$CONFIG_TXT"
+      # Under [all]: config.txt may end inside a section for another
+      # board ([cm5], [pi5]), where the line would not apply.
+      printf '\n[all]\n# Trellis: PCIe at Gen1; MT7915/MT7916 cards can make the kernel panic at Gen2 behind M.2 adapters (install-mt7915e-dkms.sh --pcie-gen2 to undo)\ndtoverlay=trellis-pcie-gen1\n' >> "$CONFIG_TXT"
       echo "-- added dtoverlay=trellis-pcie-gen1 to $CONFIG_TXT"
     fi
     if [ "$LIVE_GEN" != 1 ]; then

@@ -150,6 +150,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("channels.%s.volume: %d is not 0–100", name, ch.Volume)
 		}
 	}
+	if c.Volume < 0 || c.Volume > 100 {
+		return fmt.Errorf("listen_volume: %d is not 0–100", c.Volume)
+	}
 	if c.Channels[0].Group != 0 && c.Channels[0].Group == c.Channels[1].Group {
 		return fmt.Errorf("channels: a and b are both on group %d", c.Channels[0].Group)
 	}

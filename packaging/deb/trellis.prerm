@@ -19,6 +19,15 @@ case "$1" in
     # meshd leaves its firewall in place when it stops; removing Trellis
     # removes it.
     nft delete table inet trellis_fw 2>/dev/null || true
+    # hostapd's own service, if Trellis masked it.
+    if [ -f /var/lib/trellis/hostapd-masked ]; then
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl unmask hostapd.service >/dev/null 2>&1 || true
+      elif [ "$(readlink /etc/systemd/system/hostapd.service 2>/dev/null)" = /dev/null ]; then
+        rm -f /etc/systemd/system/hostapd.service
+      fi
+      rm -f /var/lib/trellis/hostapd-masked
+    fi
     # The kernel reads its own regulatory database again.
     /usr/share/trellis/scripts/install-regulatory.sh --undo 2>&1 | sed 's/^/trellis: /' || true
     ;;

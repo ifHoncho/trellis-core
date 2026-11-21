@@ -162,20 +162,35 @@ func (d *Daemon) gossipLoads(links int) []int {
 	return out
 }
 
-// channelOf turns a frequency into its channel number in a band.
+// channelOf turns a frequency into its channel number in a band, as
+// config.ChannelFrequencyMHz numbers them (4.9 GHz as 5 GHz channels 182–196,
+// 6 GHz channel 2 at 5935 MHz), or 0 for a frequency that numbering has no
+// channel for. The frequency is unsigned: computed blindly, one below a
+// band's base would wrap round to a channel in the hundreds of millions.
 func channelOf(band string, mhz uint32) int {
+	f := int(mhz)
+	ch := 0
 	switch band {
 	case config.Band2G:
-		if mhz == 2484 {
-			return 14
+		ch = (f - 2407) / 5
+		if f == 2484 {
+			ch = 14
 		}
-		return int(mhz-2407) / 5
 	case config.Band5G:
-		return int(mhz-5000) / 5
+		ch = (f - 5000) / 5
+		if f >= 4910 && f <= 4980 {
+			ch = (f - 4000) / 5
+		}
 	case config.Band6G:
-		return int(mhz-5950) / 5
+		ch = (f - 5950) / 5
+		if f == 5935 {
+			ch = 2
+		}
 	}
-	return 0
+	if back, err := config.ChannelFrequencyMHz(band, ch); ch <= 0 || err != nil || back != f {
+		return 0
+	}
+	return ch
 }
 
 // surveyLocal scans the band of each of this node's mesh links once, or

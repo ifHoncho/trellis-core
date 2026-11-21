@@ -193,6 +193,7 @@ for i in 1 2 4; do
   eval "key$i=\$(ctl $i site --json | python3 -I -c 'import json,sys; print(json.load(sys.stdin)[\"public_key\"])')"
 done
 hint=$(ctl 1 site 2>&1)
+# shellcheck disable=SC2154 # key1, key2, key4 are set by the eval above
 if [ ${#key1} = 44 ] && [ ${#key2} = 44 ] && [ ${#key4} = 44 ] && echo "$hint" | grep -q "public_key: \"$key1\""; then
   pass "S1.1 meshctl site gives each node's key, and the line to add it to the profile"
 else

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // serve starts Handler on a test server, returning its address (host only:
@@ -82,4 +83,32 @@ type failing struct{}
 
 func (failing) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("no request expected")
+}
+
+// TestPruneLeftovers: a fetch or keep cut short by a power loss leaves its
+// temporary file; Prune removes it once it is old, not while a transfer
+// may still be writing it.
+func TestPruneLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, ".fetch-123")
+	fresh := filepath.Join(dir, ".fetch-456")
+	keep := filepath.Join(dir, ".keep-789")
+	for _, p := range []string{old, fresh, keep} {
+		if err := os.WriteFile(p, []byte("part of a package"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(keep, past, past); err != nil {
+		t.Fatal(err)
+	}
+	Prune(dir, func(string) bool { return true })
+	for p, want := range map[string]bool{old: false, keep: false, fresh: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: present %v, want %v", filepath.Base(p), err == nil, want)
+		}
+	}
 }

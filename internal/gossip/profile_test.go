@@ -77,6 +77,14 @@ func TestSurveyMessages(t *testing.T) {
 	if _, err := OpenSurveyReply(k, pkt); !errors.Is(err, ErrInvalid) {
 		t.Errorf("busy 140%% accepted: %v", err)
 	}
+	// A release that numbered 4.9 GHz channels wrongly: those channels go,
+	// the rest of its survey stays.
+	old := *r
+	old.Links = []SurveyLink{{Link: 1, Band: "5g", Channels: []SurveyCh{{Ch: 858993443, Busy: 5}, {Ch: 36, Busy: 10}}}}
+	pkt, _ = SealSurveyReply(k, &old)
+	if got, err := OpenSurveyReply(k, pkt); err != nil || len(got.Links[0].Channels) != 1 || got.Links[0].Channels[0].Ch != 36 {
+		t.Errorf("impossible channel: %+v %v", got, err)
+	}
 	q, _ := SealMessage(k, SurveyQueryMagic, &SurveyQuery{V: 1, MAC: "02:00:00:00:00:01", Nonce: 9})
 	if got, err := OpenSurveyQuery(k, q); err != nil || got.Nonce != 9 || Kind(q) != SurveyQueryMagic {
 		t.Errorf("query: %+v %v", got, err)

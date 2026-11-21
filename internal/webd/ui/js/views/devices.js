@@ -24,11 +24,13 @@ const ROLE_TEXT = {
 
 export function devices() {
   const st = state.status;
-  const ui = (state.ui.devices ||= { join: null, loading: false, reveal: false, ssid: null });
-  // The join code is fetched once, and again when the Wi-Fi's name changes.
-  if (st.ap.enabled && !ui.loading && (!ui.join || ui.ssid !== st.ap.ssid)) {
+  const ui = (state.ui.devices ||= { join: null, loading: false, reveal: false, joinFor: null });
+  // The join code is fetched once, and again when the Wi-Fi's name or the
+  // node's configuration changes (a new passphrase leaves the name as is).
+  const joinFor = `${st.ap.ssid}|${st.node.config_digest || ''}`;
+  if (st.ap.enabled && !ui.loading && (!ui.join || ui.joinFor !== joinFor)) {
     ui.loading = true;
-    ui.ssid = st.ap.ssid;
+    ui.joinFor = joinFor;
     loadJoin();
   }
   const clients = st.ap.clients || [];
@@ -62,7 +64,7 @@ export function devices() {
       panel('Wi-Fi', { class: 'c7', flush: true, meta: st.ap.hostapd.state ? `access point ${st.ap.hostapd.state.toLowerCase()}` : '' },
         table({ stack: true, key: (c) => c.mac }, [
           { title: 'Device', cls: 'wide', wide: true, cell: (c) => h('div', h('div.primary', c.hostname || 'unnamed'), h('div.secondary', `${c.ip || 'no address'} · ${c.mac}`)) },
-          { title: 'Signal', cell: (c) => h('span.nowrap', bars(c.signal_dbm), ' ', h('span.mono.dim', `${c.signal_dbm} dBm`)) },
+          { title: 'Signal', cell: (c) => h('span.nowrap', bars(c.signal_dbm), ' ', h('span.mono.dim', c.signal_dbm ? `${c.signal_dbm} dBm` : '–')) },
           { title: 'Rate', cls: 'num', cell: (c) => h('span', mbps(c.tx_mbps), h('span.faint', ' Mbit/s')) },
           { title: 'Joined', cls: 'num', cell: (c) => duration(c.connected_s) },
         ], clients, st.ap.enabled ? 'No clients.' : 'Client AP off.'))),

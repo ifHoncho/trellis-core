@@ -112,8 +112,11 @@ func TestProfileBandSwitch(t *testing.T) {
 		t.Errorf("after a band switch with a second link: %+v links %+v, %v", p.Radio, p.Links, err)
 	}
 	// Three links survive it too.
-	data, _ = os.ReadFile(prof)
-	if err := os.WriteFile(prof, []byte(strings.Replace(string(data), "  - {band: s1g, channel: 26, width: 2}\n", "  - {band: s1g, channel: 26, width: 2}\n  - {band: 5g, channel: 36, width: 40}\n", 1)), 0o600); err != nil {
+	p.Links = append(p.Links, config.RadioPlan{Band: "5g", Channel: 36, Width: 40})
+	if data, err = p.YAML(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prof, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if rc := Main("test", []string{"profile", "band", "2g", "--channel", "11", prof}, &out, &errb); rc != 0 {

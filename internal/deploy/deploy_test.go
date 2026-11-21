@@ -49,6 +49,10 @@ pi@192.0.2.12  callsign=alpha-2 id=12   # with settings
 		"a@192.0.2.1 colour=red",
 		"a@192.0.2.1 mesh=x@y",
 		"a;rm@192.0.2.1",
+		"-v",
+		"u@-L1234:localhost:22",
+		"-oBatchMode@192.0.2.1",
+		"a@192.0.2.1 mesh=-N",
 		"# nothing",
 	} {
 		if _, err := ParseHosts(strings.NewReader(bad)); err == nil {

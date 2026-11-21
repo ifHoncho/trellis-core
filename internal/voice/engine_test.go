@@ -294,6 +294,7 @@ func TestConfigValidate(t *testing.T) {
 		"unknown listen":    func(c *Config) { c.Listen = []int{7} },
 		"bitrate too low":   func(c *Config) { c.Bitrate = 1000 },
 		"group number zero": func(c *Config) { c.Groups[0].Number = 0 },
+		"listen volume":     func(c *Config) { c.Volume = 300 },
 	} {
 		c := ok
 		c.Groups = append([]Group(nil), ok.Groups...)

@@ -784,7 +784,7 @@ func (f *fake) StartSurvey(ctx context.Context) (*status.Survey, error) {
 // networks around it, channel 1 clear; 5 GHz channel 149's block clear.
 func (f *fake) Survey() *status.Survey {
 	f.mu.Lock()
-	at, p := f.surveyAt, f.profile
+	at, p, self := f.surveyAt, f.profile, f.node.Callsign
 	f.mu.Unlock()
 	if at.IsZero() {
 		return nil
@@ -792,7 +792,7 @@ func (f *fake) Survey() *status.Survey {
 	since := time.Since(at)
 	sv := &status.Survey{Started: at, Done: since > 6*time.Second, Nodes: []status.SurveyNode{}, Suggestions: []status.ChannelSuggestion{}}
 	busy24 := map[string]map[int]int{"truck-3": {5: 30, 6: 34, 7: 31, 11: 9}, "ridge-2": {6: 18}}
-	names := []string{f.node.Callsign, "ridge-2", "truck-3", "alpha-4", "bravo-5", "ops-6", "scout-7"}
+	names := []string{self, "ridge-2", "truck-3", "alpha-4", "bravo-5", "ops-6", "scout-7"}
 	for i, name := range names {
 		n := status.SurveyNode{Callsign: name, State: "asked"}
 		switch {

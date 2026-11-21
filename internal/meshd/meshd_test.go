@@ -49,7 +49,7 @@ func TestChurnGuard(t *testing.T) {
 	}
 	// Old creations age out of the window.
 	old := time.Now().Add(-churnWindow - time.Second)
-	r.created["mesh0"] = churn{radio: "radio-a", times: []time.Time{old, old, old}}
+	r.created["mesh0"] = []churn{{old, "radio-a"}, {old, "radio-a"}, {old, "radio-a"}}
 	if err := r.checkChurn("mesh0", "radio-a"); err != nil {
 		t.Fatalf("aged-out creations must not count: %v", err)
 	}
@@ -57,21 +57,42 @@ func TestChurnGuard(t *testing.T) {
 
 // A role that moves from radio to radio (radios unplugged and plugged in)
 // recreates its interface each time; that is meshd's doing, not churn
-// (lab/hwsim-roles.sh O4).
+// (lab/hwsim-roles.sh O4). A role moving back and forth without end (a
+// radio dropping off its bus and back) is stopped, as is one moving too
+// often in all.
 func TestChurnGuardRoleMoves(t *testing.T) {
-	r := &radioReconciler{d: &Daemon{log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+	newR := func() *radioReconciler {
+		return &radioReconciler{d: &Daemon{log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+	}
+	r := newR()
 	for i, fp := range []string{"radio-a", "radio-b", "radio-c", "radio-d", "radio-e"} {
 		if err := r.checkChurn("ap0", fp); err != nil {
 			t.Fatalf("move %d to %s refused: %v", i+1, fp, err)
 		}
 	}
-	// Back and forth between two radios is still a move each time.
+	// Back and forth between two radios: allowed until one of them has
+	// had it churnLimit times.
+	r = newR()
 	for i := 0; i < 2*churnLimit; i++ {
 		if err := r.checkChurn("ap0", []string{"radio-a", "radio-b"}[i%2]); err != nil {
 			t.Fatalf("alternation %d refused: %v", i+1, err)
 		}
 	}
+	if err := r.checkChurn("ap0", "radio-a"); err == nil {
+		t.Fatal("endless back and forth between two radios must be refused")
+	}
+	// Moving among many radios: refused at churnMoveLimit.
+	r = newR()
+	for i := 0; i < churnMoveLimit; i++ {
+		if err := r.checkChurn("ap0", fmt.Sprintf("radio-%d", i)); err != nil {
+			t.Fatalf("move %d refused: %v", i+1, err)
+		}
+	}
+	if err := r.checkChurn("ap0", "radio-x"); err == nil || !strings.Contains(err.Error(), "moved between radios") {
+		t.Fatalf("move %d: want refused, got %v", churnMoveLimit+1, err)
+	}
 	// On one radio, the guard still trips.
+	r = newR()
 	for i := 0; i < churnLimit; i++ {
 		if err := r.checkChurn("ap0", "radio-c"); err != nil {
 			t.Fatalf("creation %d on radio-c refused: %v", i+1, err)
@@ -145,5 +166,42 @@ func TestInputPolicy(t *testing.T) {
 	// A site link member: its port, and site0 inside.
 	if in := inputPolicy(n, 51873); fmt.Sprint(in.UDP) != "[51873]" || !slices.Contains(in.Inside, SiteIfname) {
 		t.Fatalf("site link member: %+v", in)
+	}
+}
+
+// channelOf is config.ChannelFrequencyMHz backwards, and names no channel
+// for a frequency that numbering has none for (a 4.9 GHz one used to wrap
+// round to a channel in the hundreds of millions).
+func TestChannelOf(t *testing.T) {
+	for _, c := range []struct {
+		band string
+		lo   int
+		hi   int
+	}{{config.Band2G, 1, 14}, {config.Band5G, 1, 196}, {config.Band6G, 1, 233}} {
+		for ch := c.lo; ch <= c.hi; ch++ {
+			// Every channel config can name comes back: 5 GHz 182–196
+			// from their 4.9 GHz frequencies.
+			f, err := config.ChannelFrequencyMHz(c.band, ch)
+			if err != nil {
+				continue
+			}
+			if got := channelOf(c.band, uint32(f)); got != ch {
+				t.Errorf("channelOf(%s, %d) = %d, want %d", c.band, f, got, ch)
+			}
+		}
+	}
+	for _, c := range []struct {
+		band string
+		mhz  uint32
+		want int
+	}{
+		{config.Band5G, 4920, 184}, {config.Band5G, 4940, 188}, {config.Band5G, 5180, 36}, {config.Band5G, 5885, 177},
+		{config.Band5G, 4900, 0}, {config.Band5G, 5000, 0}, {config.Band5G, 5915, 0},
+		{config.Band6G, 5935, 2}, {config.Band6G, 5955, 1}, {config.Band6G, 5940, 0},
+		{config.Band2G, 2412, 1}, {config.Band2G, 2484, 14}, {config.Band2G, 2400, 0},
+	} {
+		if got := channelOf(c.band, c.mhz); got != c.want {
+			t.Errorf("channelOf(%s, %d) = %d, want %d", c.band, c.mhz, got, c.want)
+		}
 	}
 }

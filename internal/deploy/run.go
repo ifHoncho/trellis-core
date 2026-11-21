@@ -191,11 +191,14 @@ func (m *markers) has(word string) bool {
 // sudo runs a command as root on the node: without a password where sudo
 // takes none, else with the run's password on its standard input (never
 // on a command line). more follows on standard input, for the command.
+// -k: sudo always reads the password, also where it has credentials
+// cached (timestamp_type=global); otherwise the command would read the
+// password as the first line of more.
 func (r *Runner) sudo(ctx context.Context, s Step, cmd string, more string, out io.Writer) error {
 	var in io.Reader
 	full := "sudo -n " + cmd
 	if !s.State.NoPass {
-		full = "sudo -S -p '' " + cmd
+		full = "sudo -S -k -p '' " + cmd
 		in = strings.NewReader(r.Passwords[s.Host.Key()] + "\n" + more)
 	} else if more != "" {
 		in = strings.NewReader(more)

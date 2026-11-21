@@ -199,16 +199,18 @@ export async function confirmAndApply(send, opts = {}) {
 
 export async function saveNode() {
   const c = cfg();
-  if (c.busy) return;
+  if (c.busy) return false;
   c.busy = true;
   c.fields = {};
   redraw();
+  let applied = false;
   try {
     const draft = clone(c.draft);
     // The node refuses a save made from a copy it has moved on from.
     const base = encodeURIComponent(state.config.node_digest || '');
     const res = await confirmAndApply((dry) => put(`/config/node?base=${base}` + (dry ? '&dry_run=1' : ''), draft));
     if (res && res.applied) {
+      applied = true;
       toast('Saved. Applying.');
       await loadConfig();
     }
@@ -221,6 +223,7 @@ export async function saveNode() {
   }
   c.busy = false;
   redraw();
+  return applied;
 }
 
 // withBase names the profile a change was made from, so that the node

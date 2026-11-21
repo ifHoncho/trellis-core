@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -377,6 +376,3 @@ func writeAtomic(path string, v any, mode os.FileMode) error {
 	}
 	return fsutil.WriteFile(path, data, mode)
 }
-
-// FormatMAC lower-cases a MAC string.
-func FormatMAC(s string) string { return strings.ToLower(s) }

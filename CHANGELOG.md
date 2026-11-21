@@ -11,6 +11,50 @@
 - Fixed: a node out of reach while a mesh upgrade halted could upgrade
   on its return if it was first in the order; a node restarted during a
   mesh upgrade could halt it before hearing the other nodes.
+- Fixed: a node first in a mesh upgrade's order could still upgrade
+  alone after the upgrade halted, when restarted while waiting or out of
+  reach for over 100 s. It now waits to hear every other node first (up
+  to 45 s for one that is off).
+- Fixed: an interface moving back and forth between two radios was
+  recreated without limit; now stopped and reported.
+- Fixed: the Voice page's Enable could show voice off after the change
+  applied.
+- Fixed: `trellis-deploy` with sudo set to share credentials across
+  sessions could pass the sudo password to the command run.
+- Fixed: removing Trellis from a node whose `regulatory.db` was a plain
+  file (no alternatives, not from a package) left it without one.
+- Fixed: on a Raspberry Pi whose `config.txt` ends in a section for
+  another board, the PCIe Gen1 setting for MT7915/MT7916 cards did not
+  apply.
+- `trellis-deploy` refuses a hosts file entry starting with "-".
+- Fixed: an uplink whose DHCP server sets a late renewal time (T1)
+  went straight to rebinding instead of renewing with its server.
+- Fixed: the Devices page kept showing the old AP passphrase and QR
+  code after the passphrase was changed, until the page was reloaded.
+- Fixed: a mesh peer with no signal reading showed the radio's signal
+  as unknown on the Overview page, and as "0 dBm" in tables.
+- Port names and `gateway.wan` take letters, digits and `. _ - @ +`
+  only: a quote in one stopped the firewall and NAT rules from applying.
+- Fixed: the channel survey could list 4.9 GHz channels (unrestricted
+  mode) under channel numbers in the hundreds of millions, and suggest
+  them, also from nodes still on an older release; a mesh found on a
+  4.9 GHz channel was not recognised.
+- Fixed: meshd stopped reacting at once to radios plugged in or out
+  after a burst of kernel events, until it restarted.
+- Fixed: removing Trellis left the system's `hostapd.service` masked
+  when Trellis had masked it.
+- Fixed: after one slow answer from wpa_supplicant or hostapd, meshd
+  read every later answer one request late (a joined mesh link could
+  show as not joined).
+- Fixed: `meshctl profile band` (and `make band`) dropped the profile's
+  talk groups, site link, position settings and batman options.
+- Fixed: `meshctl status --watch` stopped after 30 seconds;
+  `meshctl survey --start` gave up before a slow survey ended, and
+  crashed when meshd restarted during one.
+- Fixed: a package transfer cut by a power loss left its partial file
+  on the node for good.
+- NetworkManager's and systemd-networkd's Trellis files survive a power
+  cut while they are written.
 - **Hardware monitor:** Settings → System → Hardware: CPU temperature,
   CPU and memory use, storage, supply voltage, radio temperatures, PCIe
   links. `host` in the status, `host:` in `meshctl status`. Alerts:

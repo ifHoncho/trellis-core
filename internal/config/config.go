@@ -875,8 +875,11 @@ func (n *Node) ApplyDefaults() {
 var (
 	reCountry  = regexp.MustCompile(`^[A-Z]{2}$`)
 	reCallsign = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	reIfname   = regexp.MustCompile(`^[^/\s:]{1,15}$`)
-	reVersion  = regexp.MustCompile(`^\d{4}\.\d+$`)
+	// Interface names: the characters real ones use. The kernel takes
+	// more (quotes, braces, semicolons), but these names go into nft
+	// scripts and helpers' configuration, where a quote ends a string.
+	reIfname  = regexp.MustCompile(`^[A-Za-z0-9_.@+-]{1,15}$`)
+	reVersion = regexp.MustCompile(`^\d{4}\.\d+$`)
 )
 
 // Validate checks the profile. The returned error, if any, is an Errors list.

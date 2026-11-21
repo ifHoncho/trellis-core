@@ -69,6 +69,10 @@ grep -q '^SupplementaryGroups=trellis trellis-voice$' /usr/lib/systemd/system/tr
 [ -L /etc/systemd/system/sockets.target.wants/trellis-webd.socket ] || fail "web socket not enabled"
 [ "$(readlink /etc/systemd/system/hostapd.service)" = /dev/null ] || fail "hostapd.service not masked"
 ok "group, units enabled, hostapd masked"
+# Masked by Trellis (the image's hostapd package did not): unmasked again
+# at removal.
+masked_by_trellis=no
+[ -f /var/lib/trellis/hostapd-masked ] && masked_by_trellis=yes
 dpkg-deb --fsys-tarfile "$old" | tar -xO ./etc/chrony/conf.d/trellis.conf > /tmp/dropin
 cmp -s /tmp/dropin /etc/chrony/conf.d/trellis.conf || fail "the script install's chrony drop-in was kept instead of the package's"
 grep -q "script install's copy" /etc/chrony/conf.d/trellis.conf.script-install || fail "the script install's drop-in was not kept aside"
@@ -81,8 +85,13 @@ ok "only the node's scripts are packaged"
 grep -q 'trellis crda' /etc/udev/rules.d/85-trellis-regulatory.rules || fail "regulatory udev rule missing"
 /usr/share/trellis/scripts/install-regulatory.sh --status | grep -q 'set aside' || fail "regulatory.db not set aside: $(/usr/share/trellis/scripts/install-regulatory.sh --status)"
 ok "regulatory rules in Trellis's hands"
-[ -f /usr/src/trellis-batman-adv-2026.3-*/net/batman-adv/main.c ] && [ -f /usr/src/trellis-batman-adv-2026.3-*/dkms.conf ] || fail "batman-adv source missing"
-grep -q '^PATCH\[0\]="0001-' /usr/src/trellis-batman-adv-2026.3-*/dkms.conf && [ -f /usr/src/trellis-batman-adv-2026.3-*/patches/0001-set-priority-of-forwarded-multicast-packets.patch ] || fail "Trellis's batman-adv patch is not packaged"
+# One source tree, named by version: a glob inside [ -f ] would test
+# the pattern itself if it matched none, and fail on two.
+set -- /usr/src/trellis-batman-adv-2026.3-*
+[ $# = 1 ] || fail "batman-adv source: want one tree, found: $*"
+bsrc=$1
+[ -f "$bsrc/net/batman-adv/main.c" ] && [ -f "$bsrc/dkms.conf" ] || fail "batman-adv source missing"
+grep -q '^PATCH\[0\]="0001-' "$bsrc/dkms.conf" && [ -f "$bsrc/patches/0001-set-priority-of-forwarded-multicast-packets.patch" ] || fail "Trellis's batman-adv patch is not packaged"
 ok "batman-adv source with Trellis's patch: $(ls -d /usr/src/trellis-batman-adv-*)"
 dkms status 2>/dev/null | grep -q '^trellis-batman-adv' && ok "dkms knows trellis-batman-adv: $(dkms status | head -1)" || ok "dkms: nothing added (no headers for the host's kernel here; reported, not fatal)"
 # meshctl prepare runs every step and reports the ones a container cannot
@@ -145,7 +154,12 @@ apt-get remove -y trellis trellis-batman-adv-dkms > /tmp/remove.log 2>&1 || { ta
 [ ! -e /etc/udev/rules.d/85-trellis-regulatory.rules ] || fail "regulatory udev rule left after remove"
 /usr/share/trellis/scripts/install-regulatory.sh --status 2>/dev/null | grep -q 'set aside' && fail "regulatory.db still set aside after remove"
 [ -e /lib/firmware/regulatory.db ] || [ -L /lib/firmware/regulatory.db ] || fail "the distribution's regulatory.db is not back"
-[ ! -d /usr/src/trellis-batman-adv-2026.3-*/net ] || fail "batman-adv source left after remove"
+[ ! -d "$bsrc/net" ] || fail "batman-adv source left after remove"
+if [ "$masked_by_trellis" = yes ]; then
+  [ "$(readlink /etc/systemd/system/hostapd.service 2>/dev/null)" != /dev/null ] || fail "hostapd.service still masked after remove (Trellis masked it)"
+  [ ! -e /var/lib/trellis/hostapd-masked ] || fail "hostapd mask note left after remove"
+fi
+echo "-- hostapd masked by Trellis: $masked_by_trellis"
 ok "remove keeps configuration and gives the regulatory rules back"
 
 echo "== purge"

@@ -20,7 +20,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/status"
 )
 
@@ -398,9 +397,4 @@ func writeError(w http.ResponseWriter, e *Error) {
 		w.Header().Set("Retry-After", strconv.Itoa(e.RetryAfter))
 	}
 	writeJSON(w, e.Status, e)
-}
-
-// Redact blanks the secrets in a configuration for API output.
-func Redact(node config.Node, profile config.Profile) (config.Node, config.Profile) {
-	return node.Redacted(), profile.Redacted()
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var ctrlSeq atomic.Uint64
@@ -56,6 +58,7 @@ func (c *Ctrl) Request(ctx context.Context, cmd string) (string, error) {
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		return "", err
 	}
+	c.drain()
 	if _, err := c.conn.Write([]byte(cmd)); err != nil {
 		return "", fmt.Errorf("wpa ctrl %q: %w", cmd, err)
 	}
@@ -71,6 +74,25 @@ func (c *Ctrl) Request(ctx context.Context, cmd string) (string, error) {
 		}
 		return strings.TrimRight(reply, "\n"), nil
 	}
+}
+
+// drain discards datagrams already queued: replies carry no sequence, so
+// one to an earlier request that timed out would otherwise be read as the
+// reply to this one, and every reply after it one request late.
+func (c *Ctrl) drain() {
+	rc, err := c.conn.SyscallConn()
+	if err != nil {
+		return
+	}
+	// A datagram read short is discarded whole: one byte is enough.
+	var buf [1]byte
+	_ = rc.Read(func(fd uintptr) bool {
+		for {
+			if _, _, err := unix.Recvfrom(int(fd), buf[:], unix.MSG_DONTWAIT); err != nil {
+				return true
+			}
+		}
+	})
 }
 
 // Ping checks the daemon answers.

@@ -3,7 +3,6 @@
 package sysfs
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,31 +113,6 @@ func PhyDevice(root, phy string) (Device, error) {
 	// Fall back to the raw path so the radio is still identifiable.
 	d.Port = "path:" + strings.TrimPrefix(path, root)
 	return d, nil
-}
-
-// Phys lists the wiphy names under /sys/class/ieee80211.
-func Phys(root string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(root, "class", "ieee80211"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var out []string
-	for _, e := range entries {
-		out = append(out, e.Name())
-	}
-	return out, nil
-}
-
-// PhyIndex reads /sys/class/ieee80211/<phy>/index.
-func PhyIndex(root, phy string) (int, error) {
-	s := readTrim(filepath.Join(root, "class", "ieee80211", phy), "index")
-	if s == "" {
-		return 0, fmt.Errorf("no index for %s", phy)
-	}
-	return strconv.Atoi(s)
 }
 
 // RFKillUnblock clears the soft rfkill block on a wiphy, if it has one.

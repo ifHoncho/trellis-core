@@ -145,6 +145,7 @@ func TestRolloutNodeTurn(t *testing.T) {
 		t.Fatal("started while the node before it upgrades")
 	}
 	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "done"})
+	peerSays(d, macOrigin, "origin", 3, &gossip.RolloutState{ID: r.ID, Phase: "ready"})
 	if c := step(d); c.Phase != rollout.Upgrading || len(up.started) != 1 {
 		t.Fatalf("its turn: %+v, started %v", c, up.started)
 	}
@@ -249,6 +250,7 @@ func TestRolloutAcrossRestart(t *testing.T) {
 	step(d)
 	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
 	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "done"})
+	peerSays(d, macOrigin, "origin", 3, &gossip.RolloutState{ID: r.ID, Phase: "ready"})
 	step(d)
 	if phase(d) != rollout.Upgrading {
 		t.Fatal("did not start")
@@ -376,7 +378,7 @@ func TestRolloutRestartNoFalseStall(t *testing.T) {
 	}
 	d.rollouts.mu.Unlock()
 
-	d2, _, _, _ := rolloutDaemon(t)
+	d2, _, _, up2 := rolloutDaemon(t)
 	d2.opts.StateDir = d.opts.StateDir
 	d2.loadRollout()
 	if c := step(d2); c.Phase != rollout.Ready {
@@ -389,7 +391,58 @@ func TestRolloutRestartNoFalseStall(t *testing.T) {
 	if c := step(d2); c.Phase != rollout.Halted {
 		t.Fatalf("silent the stall time since the restart: %+v", c)
 	}
-	if len(up.started) != 0 {
-		t.Fatalf("started: %v", up.started)
+	if len(up.started) != 0 || len(up2.started) != 0 {
+		t.Fatalf("started: %v, after the restart %v", up.started, up2.started)
+	}
+}
+
+// Restarted while ready, first in the order, while the rollout halted
+// elsewhere: the gossip table starts empty, so nothing says the rollout
+// halted. The node waits to hear the others, and halts when it does.
+func TestRolloutRestartEmptyTable(t *testing.T) {
+	d, _, key, _ := rolloutDaemon(t)
+	r := testRollout(t, d)
+	r.Order = []string{macMe, macFirst, macOrigin} // this node first
+	sendRolloutMsg(t, d, key, r)
+	step(d)
+	step(d)
+	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
+
+	d2, _, _, up2 := rolloutDaemon(t)
+	d2.opts.StateDir = d.opts.StateDir
+	d2.loadRollout()
+	if c := step(d2); c.Phase != rollout.Ready || len(up2.started) != 0 {
+		t.Fatalf("restarted with no one heard: %+v, started %v", c, up2.started)
+	}
+	if w := d2.rollouts.wait; !strings.HasPrefix(w, "Awaiting current state from ") {
+		t.Fatalf("wait = %q", w)
+	}
+	peerSays(d2, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "halted", Reason: "cancelled elsewhere"})
+	if c := step(d2); c.Phase != rollout.Halted || len(up2.started) != 0 {
+		t.Fatalf("after hearing the halt: %+v, started %v", c, up2.started)
+	}
+}
+
+// A node in the order that is never heard (switched off) holds the start
+// for rolloutHearWithin only: then it is taken as away.
+func TestRolloutUnheardNodeAway(t *testing.T) {
+	d, _, key, up := rolloutDaemon(t)
+	r := testRollout(t, d)
+	r.Order = []string{macMe, macFirst, macOrigin}
+	sendRolloutMsg(t, d, key, r)
+	peerSays(d, macFirst, "first", 2, &gossip.RolloutState{ID: r.ID, Phase: "ready"})
+	step(d)
+	step(d)
+	waitFor(t, "ready", func() bool { return phase(d) == rollout.Ready })
+	step(d)
+	if len(up.started) != 0 || !strings.Contains(d.rollouts.wait, macOrigin) && !strings.Contains(d.rollouts.wait, "origin") {
+		t.Fatalf("started with the origin never heard: %v, wait %q", up.started, d.rollouts.wait)
+	}
+	d.rollouts.mu.Lock()
+	d.rollouts.cur.Received = time.Now().Add(-rolloutHearWithin - time.Second)
+	d.rollouts.mu.Unlock()
+	step(d)
+	if len(up.started) != 1 {
+		t.Fatalf("the unheard node kept it waiting past rolloutHearWithin: phase %s, wait %q", phase(d), d.rollouts.wait)
 	}
 }

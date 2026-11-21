@@ -27,7 +27,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 BIN="${TRELLIS_BIN:-$ROOT/bin/trellis}"
 RUN="${LAB_RUN:-$ROOT/lab/run}/rollout"
-PASS=0; FAIL=0; SKIP=0; RESULTS=()
+PASS=0; FAIL=0; RESULTS=()
 say()  { printf '%s\n' "$*"; }
 dbg()  { [ "$VERBOSE" = 1 ] && printf '    %s\n' "$*" >&2; return 0; }
 pass() { PASS=$((PASS+1)); RESULTS+=("PASS $1"); say "  PASS  $1"; }

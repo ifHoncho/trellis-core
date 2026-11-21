@@ -104,8 +104,10 @@ Commands:
 		fs.Usage()
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// No deadline for the whole command: each API request has the
+	// client's own (30 s), and some commands wait on the operator (a
+	// password typed twice) or run until stopped (status --watch).
+	ctx := context.Background()
 	client := api.NewClient(*socket)
 	var err error
 	switch rest[0] {
@@ -116,7 +118,6 @@ Commands:
 	case "doctor":
 		err = cmdDoctor(version, client.Socket, rest[1:], stdout)
 	case "prepare":
-		cancel() // it runs far longer than an API call
 		err = cmdPrepare(version, client.Socket, rest[1:], stdout)
 	case "config":
 		err = cmdConfig(rest[1:], stdout)
@@ -702,13 +703,6 @@ firewall:
 	return emit(stdout, *out, *force, 0o644, buf.String())
 }
 
-// PrintJSON is a helper for the main package.
-func PrintJSON(w io.Writer, v any) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
-}
-
 // cmdProfileSame compares two profile files by what they say, not byte for
 // byte: comments, spelling (radio2 or links), defaults written out or left
 // to be filled in, and key order do not count.
@@ -811,7 +805,13 @@ func cmdProfileBand(args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "%s already uses %s channel %d (%d MHz wide)\n", path, band, p.Radio.Channel, p.Radio.Width)
 		return nil
 	}
-	if err := emit(io.Discard, path, true, 0o600, renderProfile(p)); err != nil {
+	// Every setting of the file kept (talk groups, site link, batman
+	// options), not only those of a new profile.
+	data, err := p.YAML("Trellis mesh profile. Share it with every node in the mesh.\nIt holds the mesh secret: keep it private.")
+	if err != nil {
+		return err
+	}
+	if err := emit(io.Discard, path, true, 0o600, string(data)); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s: %s ch %d (%d MHz) -> %s ch %d (%d MHz)\n", path, old.Band, old.Channel, old.Width, p.Radio.Band, p.Radio.Channel, p.Radio.Width)
@@ -1813,6 +1813,9 @@ func meshChangeLine(mc *status.MeshChange, now time.Time) string {
 	return line
 }
 
+// surveyWait bounds survey --start's wait for the round to end.
+var surveyWait = 2 * time.Minute
+
 // cmdSurvey shows the last mesh-wide channel survey, or runs one.
 func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("survey", flag.ContinueOnError)
@@ -1827,13 +1830,20 @@ func cmdSurvey(ctx context.Context, client *api.Client, args []string, stdout io
 			return err
 		}
 		fmt.Fprintln(stdout, "Surveying: all nodes scanning their link bands…")
-		for !sv.Done {
+		// meshd ends a round within a minute (45 s for answers, asking
+		// again every 5 s); a meshd restarted meanwhile has none (nil).
+		ctx, cancel := context.WithTimeout(ctx, surveyWait)
+		defer cancel()
+		for sv != nil && !sv.Done {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return fmt.Errorf("the survey did not finish in %v", surveyWait)
 			case <-time.After(2 * time.Second):
 			}
 			if sv, err = client.Survey(ctx); err != nil {
+				if ctx.Err() != nil {
+					return fmt.Errorf("the survey did not finish in %v", surveyWait)
+				}
 				return err
 			}
 		}

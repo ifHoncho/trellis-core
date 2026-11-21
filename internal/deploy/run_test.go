@@ -229,6 +229,11 @@ func TestRunInstalls(t *testing.T) {
 			if strings.Contains(c, "pw") && !strings.Contains(c, "web password") || strings.Contains(c, "secret-not-for-logs") {
 				t.Errorf("a secret on a command line: %s", c)
 			}
+			// Cached credentials must not leave the password on the
+			// command's input.
+			if strings.HasPrefix(c, "sudo -S") && !strings.Contains(c, " -k ") {
+				t.Errorf("sudo reading a password without -k: %s", c)
+			}
 		}
 	}
 	if !strings.Contains(console.String(), "[c] !! the packages did not install") {

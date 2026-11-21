@@ -160,15 +160,28 @@ func Keep(dir, arch string, pkg []byte) (Package, error) {
 	return p, os.Rename(tmp.Name(), File(dir, p.SHA256))
 }
 
-// Prune removes every package in dir that keep does not name.
+// leftoverAge is how long a temporary file of Fetch or Keep goes unwritten
+// before Prune takes it for one a power loss left behind. A transfer still
+// running writes to it all the time, and none runs past the server's
+// 10 min write timeout.
+const leftoverAge = time.Hour
+
+// Prune removes every package in dir that keep does not name, and the
+// temporary files of transfers cut short.
 func Prune(dir string, keep func(sha string) bool) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		sha, ok := strings.CutSuffix(e.Name(), ".deb")
-		if strings.HasPrefix(e.Name(), ".") || (ok && keep(sha)) {
+		p := filepath.Join(dir, e.Name())
+		if strings.HasPrefix(e.Name(), ".") {
+			if fi, err := e.Info(); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > leftoverAge {
+				_ = os.Remove(p)
+			}
 			continue
 		}
-		_ = os.Remove(filepath.Join(dir, e.Name()))
+		if sha, ok := strings.CutSuffix(e.Name(), ".deb"); ok && keep(sha) {
+			continue
+		}
+		_ = os.Remove(p)
 	}
 }
 

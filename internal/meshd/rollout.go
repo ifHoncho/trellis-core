@@ -433,10 +433,10 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 		}
 		// Start only on what the others say now. A node back in reach can
 		// get the rollout (a resend held while it was away) before it hears
-		// the others again; its records of them then predate the rollout
-		// and cannot show that it halted, and, first in the order, it would
-		// upgrade by itself (lab R6.2).
-		if who := d.rolloutUnheard(c, me); who != "" {
+		// the others again, and a node restarted while ready has heard no
+		// one: its view then cannot show that the rollout halted, and,
+		// first in the order, it would upgrade by itself (lab R6.2).
+		if who := d.rolloutUnheard(c, me, now); who != "" {
 			s.wait = "Awaiting current state from " + who
 			return
 		}
@@ -476,15 +476,35 @@ func (d *Daemon) rolloutStep(ctx context.Context, c *rolloutRecord, me string, n
 	}
 }
 
-// rolloutUnheard names a node in the rollout's order whose gossip record
-// this node last heard before it got the rollout, or "". Such a record
-// either comes again within a refresh, with the node's progress, or
-// expires (gossip.Expiry) and no longer counts. (s.mu held.)
-func (d *Daemon) rolloutUnheard(c *rolloutRecord, me string) string {
-	got := c.received()
+// rolloutHearWithin is how long after its view starts (viewFrom) a node
+// waits to hear each other node in the order before it starts its own
+// upgrade: every node in reach sends its record within a refresh. One not
+// heard by then is taken as away.
+const rolloutHearWithin = gossipRefresh + gossipJitter + 10*time.Second
+
+// rolloutUnheard names a node in the rollout's order, other than this one,
+// not heard since this node's view of the rollout began (viewFrom), or "".
+// A node missing from the gossip table counts as not heard: the table is
+// empty after a restart, and a node away longer than gossip.Expiry has
+// forgotten everyone. Each blocks for rolloutHearWithin at most; a node
+// whose old record is still in the table blocks until it is heard again
+// or its record expires. (s.mu held.)
+func (d *Daemon) rolloutUnheard(c *rolloutRecord, me string, now time.Time) string {
+	from := d.rollouts.viewFrom(c)
+	heard := map[string]time.Time{}
 	for _, p := range d.peers.Peers() {
-		m := strings.ToLower(p.Record.MAC)
-		if m != me && slices.Contains(c.Rollout.Order, m) && p.LastHeard.Before(got) {
+		heard[strings.ToLower(p.Record.MAC)] = p.LastHeard
+	}
+	waiting := now.Sub(from) < rolloutHearWithin
+	for _, m := range c.Rollout.Order {
+		if m == me {
+			continue
+		}
+		at, inTable := heard[m]
+		switch {
+		case inTable && at.Before(from):
+			return d.rolloutName(m)
+		case !inTable && waiting:
 			return d.rolloutName(m)
 		}
 	}

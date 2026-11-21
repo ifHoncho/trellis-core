@@ -544,3 +544,27 @@ func TestBLAOn(t *testing.T) {
 		}
 	}
 }
+
+// Interface names go into nft scripts as quoted strings: a quote, brace or
+// semicolon in one would end the string and break the script.
+func TestInterfaceNames(t *testing.T) {
+	n := Node{Schema: SchemaVersion, Callsign: "relay-1"}
+	n.ApplyDefaults()
+	for _, good := range []string{"eth0", "enp1s0", "eth0.100", "br-lan", "wwan0", "enx00e04c680001", "lan_1", "usb0@x", "veth+1"} {
+		m := n
+		m.Gateway.WAN = good
+		if err := m.Validate(); err != nil {
+			t.Errorf("gateway.wan %q refused: %v", good, err)
+		}
+	}
+	for _, bad := range []string{`";flush ruleset`, "eth{0}", "eth0;x", "a$b", "eth 0", "a/b", "a:b", "sixteen-chars-xx", ""} {
+		m := n
+		m.Gateway.WAN = bad
+		if bad == "" {
+			m.Ports = []Port{{Name: "eth\"1", Role: "client"}}
+		}
+		if err := m.Validate(); err == nil {
+			t.Errorf("interface name %q accepted", bad)
+		}
+	}
+}

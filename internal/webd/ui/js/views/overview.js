@@ -160,8 +160,9 @@ export function overview() {
             pill(roleKind(r.role), r.role === 'unused' ? 'plain' : r.role.includes('mesh') ? 'solid' : 'accent'),
             h('div', h('div', { style: { fontSize: '14px' } }, r.label || r.chipset || r.driver), h('div.faint.mono', { style: { fontSize: '12px' } }, [on, r.phy, r.thermal ? `${Math.round(r.thermal.temp_c)} °C` : null].filter(Boolean).join(' · '),
               r.thermal && r.thermal.throttling ? h('span.warn', ' · Throttling') : null)),
-            // The best signal on this radio's own link: each link has its own peers.
-            link && (link.peers || []).length ? bars(Math.max(...link.peers.map((p) => p.signal_dbm))) : null);
+            // The best signal on this radio's own link: each link has its own
+            // peers. A peer with no signal reading (0) does not count.
+            link && (link.peers || []).length ? bars(bestSignal(link.peers)) : null);
         }) : h('div.faint', st.mesh_link.transport === 'wired' ? 'No radios: the mesh runs over wired ports.' : 'No radios found.')),
 
       panel('Multicast', { class: 'c4', meta: h('a', { href: '#/multicast' }, 'Counters →') },
@@ -170,6 +171,13 @@ export function overview() {
         h('div', { style: { marginTop: '12px' } }, spark(rates(history('mcast')))))),
 
     notes.length ? panel('Notices', { meta: h('a', { href: '#/alerts' }, 'All →') }, h('div.notices', notes.map((w) => notice(w)))) : null);
+}
+
+// bestSignal is the strongest signal among peers that report one, or 0
+// (unknown) when none does.
+export function bestSignal(peers) {
+  const known = peers.map((p) => p.signal_dbm).filter((d) => d < 0);
+  return known.length ? Math.max(...known) : 0;
 }
 
 // rates turns a history of counters into per-sample differences.

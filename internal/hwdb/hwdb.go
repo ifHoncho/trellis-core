@@ -108,10 +108,21 @@ func Parse(data []byte) (*DB, error) {
 	if err := yaml.Unmarshal(data, &db); err != nil {
 		return nil, fmt.Errorf("hardware database: %w", err)
 	}
+	// One value per module parameter: ModprobeOptions merges the entries
+	// of a driver, and a conflict would come out in map order.
+	type param struct{ value, entry string }
+	params := map[string]param{} // "driver parameter" -> its value, and the entry that set it
 	for i := range db.Entries {
 		e := &db.Entries[i]
 		if e.ID == "" {
 			return nil, fmt.Errorf("hardware database: entry %d has no id", i)
+		}
+		for k, v := range e.ModuleParams {
+			key := e.Match.Driver + " " + k
+			if prev, ok := params[key]; ok && prev.value != v {
+				return nil, fmt.Errorf("hardware database: entry %s: module parameter %s=%s conflicts with %s=%s (entry %s)", e.ID, key, v, key, prev.value, prev.entry)
+			}
+			params[key] = param{v, e.ID}
 		}
 		for j, id := range e.Match.USB {
 			e.Match.USB[j] = strings.ToLower(id)

@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok   $*"; }
 export DEBIAN_FRONTEND=noninteractive
 . /etc/os-release
-echo "== $PRETTY_NAME, apt $(apt-get --version | sed -n '1s/^apt \([^ ]*\).*/\1/p')"
+echo "== $PRETTY_NAME ($arch), apt $(apt-get --version | sed -n '1s/^apt \([^ ]*\).*/\1/p')"
 
 install -m 644 /srv/keyring.gpg /usr/share/keyrings/trellis-archive-keyring.gpg
 use() { echo "deb [signed-by=/usr/share/keyrings/trellis-archive-keyring.gpg] file:/srv/$1 stable main" > /etc/apt/sources.list.d/trellis.list; }

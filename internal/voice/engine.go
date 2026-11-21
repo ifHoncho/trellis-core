@@ -465,12 +465,6 @@ func (e *Engine) deliverRTCP(g *groupState, b []byte, now time.Time) {
 	_ = now
 }
 
-// Run runs the engine on one audio device until ctx ends or the audio
-// fails.
-func (e *Engine) Run(ctx context.Context, in Capture, out Playback) error {
-	return e.RunDevices(ctx, [2]Capture{in}, [2]Playback{out})
-}
-
 // RunDevices runs the engine with a device per channel: channel A's on
 // in[0] and out[0], channel B's on in[1] and out[1] (two headsets, each
 // with its PTT: dual PTT). With in[1] nil, both channels share the first

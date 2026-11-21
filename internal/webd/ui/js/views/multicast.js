@@ -16,6 +16,7 @@ const RULES = {
   'ipv6-ra': 'IPv6 router advertisements', dhcpv6: 'DHCPv6', chatter: 'Discovery protocols (SSDP, LLMNR, NetBIOS)', 'link-local-multicast': 'Link-local multicast over rate limit (mDNS bursts)',
   'ipv4-broadcast': 'Other IPv4 broadcasts', 'rogue-dhcp-server': 'DHCP servers on client ports', 'rogue-ipv6-ra': 'Router advertisements from clients',
   'rogue-multicast-querier': 'Multicast queriers on client ports', 'gossip-to-from-clients': 'Node control traffic to/from clients',
+  'broadcast-warm-up': 'Mesh broadcast warm-up frames (after a node restart)',
 };
 
 export function multicast() {

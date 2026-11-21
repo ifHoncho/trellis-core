@@ -174,3 +174,27 @@ func TestWidthCost(t *testing.T) {
 		t.Error("an unknown band in power_by_width_dbm was taken")
 	}
 }
+
+// Two entries of one driver may not ask for different values of the same
+// module parameter: the modprobe line would depend on map order.
+func TestParseModuleParamConflict(t *testing.T) {
+	db := []byte(`schema: 1
+entries:
+  - id: a
+    match: {driver: drv, usb: ["1234:0001"]}
+    module_params: {nohwcrypt: "1"}
+  - id: b
+    match: {driver: drv, usb: ["1234:0002"]}
+    module_params: {nohwcrypt: "1"}
+`)
+	if _, err := Parse(db); err != nil {
+		t.Fatalf("the same value twice: %v", err)
+	}
+	bad := []byte(string(db) + `  - id: c
+    match: {driver: drv, usb: ["1234:0003"]}
+    module_params: {nohwcrypt: "0"}
+`)
+	if _, err := Parse(bad); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("conflicting values: %v", err)
+	}
+}

@@ -109,7 +109,7 @@ export function mesh() {
         table({ stack: true, key: (n) => n.mac + n.via }, [
           { title: 'Node', cls: 'wide', wide: true, cell: (n) => label(n.mac) },
           { title: 'Link', cell: (n) => h('span.mono.nowrap', onLink(n)) },
-          { title: 'Signal', cell: (n) => { const p = peers.get(`${n.via}|${n.mac}`); return p ? h('span.nowrap', bars(p.signal_dbm), ' ', h('span.mono.dim', `${p.signal_dbm} dBm`)) : h('span.faint', (n.via || '').startsWith('site-') ? 'over the internet' : '–'); } },
+          { title: 'Signal', cell: (n) => { const p = peers.get(`${n.via}|${n.mac}`); return p ? h('span.nowrap', bars(p.signal_dbm), ' ', h('span.mono.dim', p.signal_dbm ? `${p.signal_dbm} dBm` : '–')) : h('span.faint', (n.via || '').startsWith('site-') ? 'over the internet' : '–'); } },
           { title: 'Throughput', cls: 'num', cell: (n) => (tunnel(n.via) ? notMeasured('not measured', 'Neighbour over') : h('span', h('b', mbps(n.throughput_mbps)), h('span.faint', ' Mbit/s'))) },
           { title: 'Last 3 min', cell: (n) => (tunnel(n.via) ? h('span.faint', '–') : h('div', { style: { width: '110px' } }, spark(history('nbr:' + n.mac)))) },
           { title: 'Heard', cls: 'num', cell: (n) => ago(n.last_seen_ms) },

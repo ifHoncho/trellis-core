@@ -232,6 +232,11 @@ func leaseFrom(ack *Packet, from net.HardwareAddr, now time.Time) (*Lease, error
 	}
 	if l.T2 <= l.T1 || l.T2 >= l.Duration {
 		l.T2 = l.Duration - l.Duration/8 // 7/8, without overflowing
+		// A server's T1 past 7/8 of the lease: rebind halfway between
+		// it and the expiry, so renewing still comes first.
+		if l.T2 <= l.T1 {
+			l.T2 = l.T1 + (l.Duration-l.T1)/2
+		}
 	}
 	return l, nil
 }

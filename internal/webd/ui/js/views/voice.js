@@ -359,16 +359,23 @@ function consolePanel(vstate) {
 // enableNow is the notice's Enable: voice on in the draft, then the same
 // review as the save bar's, so nothing is applied unseen. Cancelled or
 // refused, the draft goes back and the notice returns; with marked fields
-// it stays, so the marks show.
+// it stays, so the marks show. Applied, the draft keeps voice on, also
+// when the reload after the save failed. The notice stays while the save
+// is checked (enabling), so its button can say so.
+let enabling = false;
 async function enableNow(d) {
   const before = d.voice.enable;
   d.voice.enable = true;
-  await saveNode();
-  const c = cfg();
-  if (c.draft === d && !Object.keys(c.fields || {}).length) {
-    d.voice.enable = before;
-    redraw();
+  enabling = true;
+  let applied = false;
+  try {
+    applied = await saveNode();
+  } finally {
+    enabling = false;
   }
+  const c = cfg();
+  if (!applied && c.draft === d && !Object.keys(c.fields || {}).length) d.voice.enable = before;
+  redraw();
 }
 
 export function voice() {
@@ -384,7 +391,7 @@ export function voice() {
   const groups = (state.config.profile.voice && state.config.profile.voice.groups) || [];
   let line = null;
   if (vstate && vstate.enabled && !vstate.running) line = notice({ level: 'warning', message: vstate.error || 'Voice service not running.' });
-  if (vstate && !vstate.enabled && !d.voice.enable) line = vstate.installed === false
+  if (vstate && !vstate.enabled && (!d.voice.enable || enabling)) line = vstate.installed === false
     ? notice({ level: 'info', message: 'Voice unavailable on this architecture (arm64 and amd64 only).' })
     : notice({ level: 'info', message: 'Voice off.' },
       button(c.busy ? 'Checking…' : 'Enable', () => enableNow(d), 'small', { disabled: c.busy || c.stale }));

@@ -29,7 +29,8 @@ type Host struct {
 
 var (
 	reCallsign = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	reTarget   = regexp.MustCompile(`^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:_\[\]-]+$`)
+	// Neither part may start with "-": ssh would take it for an option.
+	reTarget = regexp.MustCompile(`^([A-Za-z0-9._][A-Za-z0-9._-]*@)?[A-Za-z0-9.:_\[][A-Za-z0-9.:_\[\]-]*$`)
 )
 
 // ParseHosts reads a hosts file: one node per line, "user@host" and then

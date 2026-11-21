@@ -50,11 +50,16 @@ if [ -e /usr/local/bin/trellis ] || [ -L /usr/local/bin/trellis ]; then
 fi
 
 # hostapd's own service would fight the one meshd runs. Debian installs it
-# masked; make sure.
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl mask hostapd.service >/dev/null 2>&1 || true
-else
-  mkdir -p /etc/systemd/system && ln -sf /dev/null /etc/systemd/system/hostapd.service
+# masked; make sure. Masked here, it is noted, so that removing Trellis
+# unmasks it (prerm); a mask that was there already stays as it was.
+hostapd_mask=/etc/systemd/system/hostapd.service
+if [ "$(readlink "$hostapd_mask" 2>/dev/null)" != /dev/null ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl mask hostapd.service >/dev/null 2>&1 || true
+  else
+    mkdir -p /etc/systemd/system && ln -sf /dev/null "$hostapd_mask"
+  fi
+  [ "$(readlink "$hostapd_mask" 2>/dev/null)" != /dev/null ] || touch /var/lib/trellis/hostapd-masked
 fi
 if running_systemd; then
   systemctl stop hostapd.service >/dev/null 2>&1 || true

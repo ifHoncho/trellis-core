@@ -64,7 +64,8 @@ if [ "$(id -u)" -ne 0 ] && [ -z "${TRELLIS_LAB_UNSHARED:-}" ]; then
 fi
 # Stale meshd or dnsmasq from an interrupted earlier run would keep writing
 # into lab/run from their old namespaces: stop them first.
-stale=$(ps -eo pid=,args= | awk -v run="$RUN/node" -v eud="$HERE/eud.py tcp" 'index($0, "meshd --node " run) || (index($0, "dnsmasq") && index($0, run)) || index($0, eud) || (index($0, "trellis webd --socket " run)) {print $1}')
+# The filter's own command line names eud.py too: awk is left out.
+stale=$(ps -eo pid=,args= | awk -v run="$RUN/node" -v eud="$HERE/eud.py tcp" '$2 !~ /(^|\/)awk$/ && (index($0, "meshd --node " run) || (index($0, "dnsmasq") && index($0, run)) || index($0, eud) || (index($0, "trellis webd --socket " run))) {print $1}')
 if [ -n "$stale" ]; then
   say "== stopping $(echo "$stale" | wc -w) stale lab processes from an earlier run"
   kill $stale 2>/dev/null; sleep 1; kill -9 $stale 2>/dev/null

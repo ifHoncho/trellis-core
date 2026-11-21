@@ -38,7 +38,8 @@ kernel_config() {
 }
 
 # How the distribution installs regulatory.db: alternatives (Debian), dpkg
-# (Ubuntu; "diverted" once moved aside), or none of those.
+# (Ubuntu; "diverted" once moved aside), a plain file ("moved" once moved
+# aside), or none of those.
 layout() {
   if [ -L "$DB" ] && [ "$(readlink "$DB")" = /etc/alternatives/regulatory.db ]; then
     echo alternatives
@@ -48,6 +49,8 @@ layout() {
     echo dpkg
   elif [ -e "$DB" ]; then
     echo file
+  elif [ -e "$DB.distrib" ]; then
+    echo moved
   else
     echo absent
   fi
@@ -66,6 +69,7 @@ status() {
       if [ -e "$DB" ]; then say "regulatory.db: diverted to $DB.distrib, but a file is in its place (the old fallback)"
       else say "regulatory.db: set aside (diverted to $DB.distrib)"; fi ;;
     dpkg|file) say "regulatory.db: the kernel's ($DB)" ;;
+    moved) say "regulatory.db: set aside (moved to $DB.distrib)" ;;
     absent) say "regulatory.db: none" ;;
   esac
   if [ -f "$STATE" ]; then
@@ -92,6 +96,9 @@ if [ "${1:-}" = "--undo" ]; then
       dpkg-divert --local --rename --divert "$SIG.distrib" --remove "$SIG" >/dev/null
       dpkg-divert --local --rename --divert "$DB.distrib" --remove "$DB" >/dev/null
       say "-- regulatory.db: the distribution's restored" ;;
+    moved)
+      mv "$DB.distrib" "$DB"; [ ! -e "$SIG.distrib" ] || mv "$SIG.distrib" "$SIG"
+      say "-- regulatory.db: the one set aside restored" ;;
   esac
   rm -f "$RULE"
   udevadm control --reload 2>/dev/null || true
@@ -147,9 +154,9 @@ case "$(layout)" in
     # Diverted already (the old fallback): remove the copy it put in place.
     if [ -e "$DB" ] || [ -e "$SIG" ]; then rm -f "$DB" "$SIG"; changed=yes; fi ;;
   file)
-    mv "$DB" "$DB.distrib"; [ -e "$SIG" ] && mv "$SIG" "$SIG.distrib"
+    mv "$DB" "$DB.distrib"; [ ! -e "$SIG" ] || mv "$SIG" "$SIG.distrib"
     changed=yes ;;
-  absent) ;;
+  moved|absent) ;;
 esac
 [ "$changed" = yes ] && say "-- regulatory.db set aside: the kernel asks Trellis for its rules"
 

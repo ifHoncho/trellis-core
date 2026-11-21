@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/fsutil"
 	"meridian/trellis/internal/reconcile"
 )
 
@@ -83,7 +84,10 @@ func (h *hostReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 		cur, _ := os.ReadFile(nmConfPath)
 		want := nmConf(1+len(h.d.profile.Links), h.d.siteLinkPort(h.d.profile) != 0, h.d.cfg.OwnedPorts())
 		if string(cur) != want {
-			if err := os.WriteFile(nmConfPath, []byte(want), 0o644); err != nil {
+			// Whole or not at all: an empty file left by a power cut lets
+			// NetworkManager take Trellis's ports at boot, before meshd
+			// writes it again.
+			if err := fsutil.WriteFile(nmConfPath, []byte(want), 0o644); err != nil {
 				res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "nm-conf", Message: "cannot write " + nmConfPath + ": " + err.Error()})
 			} else {
 				res.Changed = true
@@ -99,7 +103,7 @@ func (h *hostReconciler) Reconcile(ctx context.Context) (reconcile.Result, error
 		cur, _ := os.ReadFile(networkdConfPath)
 		want := networkdConf(1+len(h.d.profile.Links), h.d.siteLinkPort(h.d.profile) != 0, h.d.cfg.OwnedPorts())
 		if string(cur) != want {
-			if err := os.WriteFile(networkdConfPath, []byte(want), 0o644); err != nil {
+			if err := fsutil.WriteFile(networkdConfPath, []byte(want), 0o644); err != nil {
 				res.Warnings = append(res.Warnings, reconcile.Warning{Level: "warning", Code: "networkd-conf", Message: "cannot write " + networkdConfPath + ": " + err.Error()})
 			} else {
 				res.Changed = true

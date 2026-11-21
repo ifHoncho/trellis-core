@@ -546,26 +546,8 @@ func (d *Daemon) watchEvents(ctx context.Context) {
 	}
 	var wifiEvents chan []nl80211.Event
 	if d.nl != nil {
-		if ec, err := nl80211.DialEvents(); err == nil {
-			wifiEvents = make(chan []nl80211.Event, 16)
-			go func() {
-				defer ec.Close()
-				for {
-					evs, err := ec.Next()
-					if err != nil {
-						return
-					}
-					select {
-					case wifiEvents <- evs:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}()
-			go func() { <-ctx.Done(); ec.Close() }()
-		} else {
-			d.log.Warn("cannot subscribe to nl80211 events", "err", err)
-		}
+		wifiEvents = make(chan []nl80211.Event, 16)
+		go d.readWifiEvents(ctx, wifiEvents)
 	}
 	for {
 		select {
@@ -587,6 +569,46 @@ func (d *Daemon) watchEvents(ctx context.Context) {
 					d.loop.Kick(fmt.Sprintf("nl80211 cmd %d", ev.Command))
 				}
 			}
+		}
+	}
+}
+
+// readWifiEvents passes nl80211's config and regulatory events on until ctx
+// ends. A socket that fails (a receive buffer that overflowed, ENOBUFS) is
+// opened again after a pause, and said: without the events, radios
+// plugged in or out wait for the loop's slow timer.
+func (d *Daemon) readWifiEvents(ctx context.Context, out chan<- []nl80211.Event) {
+	const again = 5 * time.Second
+	for ctx.Err() == nil {
+		ec, err := nl80211.DialEvents()
+		if err != nil {
+			d.log.Warn("cannot subscribe to nl80211 events; trying again", "err", err, "in", again)
+		} else {
+			stop := context.AfterFunc(ctx, func() { ec.Close() })
+			for {
+				evs, err := ec.Next()
+				if err != nil {
+					if ctx.Err() == nil {
+						d.log.Warn("nl80211 events lost; subscribing again", "err", err, "in", again)
+						// Whatever the lost events said, a pass looks again.
+						d.Kick("nl80211 events lost")
+					}
+					break
+				}
+				select {
+				case out <- evs:
+				case <-ctx.Done():
+				}
+				if ctx.Err() != nil {
+					break
+				}
+			}
+			stop()
+			ec.Close()
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(again):
 		}
 	}
 }
