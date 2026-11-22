@@ -25,7 +25,8 @@ Everything else is under `internal/`, except:
 | `rtnl` | Link helpers and batman-adv link creation with `IFLA_BATADV_ALGO_NAME` | rtnetlink |
 | `sysfs` | Bus, port, USB/PCI ids, serial, USB speed, rfkill for a wiphy | sysfs |
 | `hwdb` | Embedded hardware database (`hwdb.yaml`) | — |
-| `gnss` | Follows a GNSS receiver through gpsd's JSON stream: fix, position, accuracy, satellites, PPS | TCP to gpsd |
+| `gnss` | Follows a GNSS receiver through gpsd's JSON stream: fix, position, accuracy, satellites, PPS; writes a fix as NMEA (GGA, RMC) | TCP to gpsd |
+| `cot` | Cursor on Target: writes a node's position event (XML), and reads a device's own position report from an SA datagram (XML or TAK protocol version 1) | — |
 | `chrony` | Reads chronyd's state through `chronyc` and writes the mesh's time servers for it | exec `chronyc` |
 | `regdb` | Reads wireless-regdb's `regulatory.db`; the permissive rule set; what `trellis crda` answers the kernel (architecture §5.1) | — |
 | `radio` | Inventory with stable fingerprints; role planner (architecture §5.2) | — (pure logic) |
@@ -39,7 +40,7 @@ Everything else is under `internal/`, except:
 | `probe` | WAN health: ICMP rounds out of one interface, healthy/unhealthy hysteresis; the web check that spots a login page | raw ICMP socket, HTTP out of one interface |
 | `dhcpc` | DHCPv4 client over a link-layer socket: probing auto ports, holding an auto WAN's lease (renew, rebind, expiry) | AF_PACKET socket |
 | `reconcile` | The loop: ordered reconcilers, kicks, timer, teardown in reverse | — |
-| `meshd` | The daemon: facts, reconcilers (below), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), mesh-wide profile changes (`meshchange.go`) and settling those made apart (`meshconflict.go`), channel surveys (`survey.go`), finding the mesh again (`findmesh.go`) with the nodes heard lately (`roster.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`), upgrades through the API (`apiupgrade.go`), mixed-release warnings (`releases.go`) | all of the above |
+| `meshd` | The daemon: facts, reconcilers (below), events, status assembly; and behind the API: configuration writes with dry runs (`apiconfig.go`), mesh-wide profile changes (`meshchange.go`) and settling those made apart (`meshconflict.go`), channel surveys (`survey.go`) and the channel busy alert (`congestion.go`), the checks on a mesh link's channel in the kernel (`meshwatch.go`), node positions (`positions.go`) and the node as its devices' GPS (`phonegps.go`), finding the mesh again (`findmesh.go`) with the nodes heard lately (`roster.go`), setup mode (`setup.go`), the admin password (`webauth.go`), topology (`topology.go`), radio identify (`identify.go`), upgrades through the API (`apiupgrade.go`), mixed-release warnings (`releases.go`) | all of the above |
 | `api` | API v1 (docs/api.md): the server meshd runs on its unix socket, the request and answer types, and the client meshctl and webd use | — |
 | `status` | The status JSON types (the contract between meshd, meshctl and webd) | — |
 | `qr` | QR code encoder (byte mode, versions 1–40) for the Wi-Fi join code and the profile code; draws as SVG, as rows for the UI, or in a terminal | — |
@@ -77,7 +78,9 @@ it changed anything.
 4. `meshlink`, `meshlinks`: one per mesh link. Render the wpa_supplicant
    config, supervise it, read its state, record SAE failures; remove a
    peer's leftover entry when it moved to another link, and a peer the
-   kernel does not hold as established.
+   kernel does not hold as established; restart a link the kernel shows
+   out of its mesh or on another channel than the profile's
+   (architecture §13, Channel moves).
 5. `sitelink`: on a member of the profile's site link, `site0` (WireGuard)
    with a peer per member of another site, a gretap to each, the tunnel
    addresses' table, the rules that keep WireGuard's packets off the
@@ -86,7 +89,9 @@ it changed anything.
    node, none of it.
 6. `batman`: module version gate, `bat0` (BATMAN_V, identity MAC), settings
    from architecture §6, hard interfaces (every mesh link and wired `mesh`
-   ports), and the broadcast warm-up after `bat0` is created.
+   ports; one that will not come up is a warning, not the end of the
+   pass), and the broadcast warm-up and the gossip record at `bat0`'s
+   first neighbour.
 7. `ports`: wired ports and their roles (`auto` probes each one).
 8. `bridge`: `br-mesh` with `bat0`, the AP and wired client ports, node
    address `10.73.N.1/16`.
@@ -101,15 +106,17 @@ it changed anything.
    change), policy rules and tables, the `inet trellis` table (pinning marks,
    NAT), IPv4 forwarding, and the DNS upstream for dnsmasq.
 12. `time`: the mesh's time servers for chrony, from gossip.
-13. `survey`: each link's channel load, sampled every 10 s.
+13. `survey`: each link's channel load, sampled every 10 s, and the
+   channel busy alert from every node's.
 14. `findmesh`: a node that hears half or fewer of the nodes it knew
    scans for the rest on other channels and visits where it hears them
    (architecture §12.6); also the alert after a conflict was settled.
 15. `gossip`: the gossip socket on `br-mesh`, this node's record (sent on
    change), expiry, node ID conflict warnings, and asking for a newer mesh
    profile.
-16. `positions`: this node's position on the ATAK map, and the last known
-   positions of nodes that left.
+16. `positions`: this node's position on the ATAK map (its receiver's,
+   else that of a device on its own ports), the last known positions of
+   nodes that left, and NMEA to the devices on its own ports.
 17. `ap`: hostapd (WPA2-PSK, SSID = callsign, generated passphrase kept in
    `identity.yaml`), channel chosen away from the mesh frequency, or the
    mesh link's when they share a radio.

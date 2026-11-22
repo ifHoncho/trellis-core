@@ -224,12 +224,15 @@ func (t *timeReconciler) describeSource(tr chrony.Tracking) (text, kind string) 
 
 // gnssStatus renders the receiver's state for status.
 func gnssStatus(w *gnss.Watcher, now time.Time) status.GNSS {
-	g := status.GNSS{Fix: "none"}
 	if w == nil {
-		g.Note = "not watched"
-		return g
+		return status.GNSS{Fix: "none", Note: "not watched"}
 	}
-	st := w.State()
+	return gnssStatusOf(w.State(), now)
+}
+
+// gnssStatusOf renders a receiver state for status.
+func gnssStatusOf(st gnss.State, now time.Time) status.GNSS {
+	g := status.GNSS{Fix: "none"}
 	switch {
 	case !st.Running:
 		g.Note = "no GNSS receiver (gpsd is not running)"
@@ -256,6 +259,10 @@ func gnssStatus(w *gnss.Watcher, now time.Time) status.GNSS {
 		if st.HasAlt {
 			alt := st.AltM
 			g.AltM, g.VAccM = &alt, st.VAccM
+		} else if st.Mode >= gnss.Mode3D && st.HasMSL {
+			// Sea level only (gpsd before 3.20, or a receiver that reports
+			// no ellipsoid height): none shared.
+			g.Note = "Height not shared: no ellipsoid height from gpsd (sea level only)"
 		}
 	}
 	switch {

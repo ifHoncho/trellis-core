@@ -434,6 +434,42 @@ def cmd_cotwait(iface, uid, seconds):
     return 1
 
 
+def cmd_sasend(iface, uid, lat, lon, seconds):
+    """A phone running ATAK on its own position: its SA, in CoT XML, to the
+    SA group once a second for this long."""
+    from datetime import datetime, timedelta, timezone
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, struct.pack("4s4si", socket.inet_aton("0.0.0.0"), socket.inet_aton("0.0.0.0"), ifindex(iface)))
+    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    end = time.time() + float(seconds)
+    while time.time() < end:
+        now = datetime.now(timezone.utc)
+        t = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        stale = (now + timedelta(minutes=6)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        ev = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><event version="2.0" uid="{uid}" type="a-f-G-U-C" how="m-g" '
+              f'time="{t}" start="{t}" stale="{stale}"><point lat="{float(lat):.7f}" lon="{float(lon):.7f}" hae="12.0" ce="5.0" le="9999999.0"/>'
+              f'<detail><takv device="LAB" platform="ATAK-CIV" os="34" version="5.2"/>'
+              f'<contact endpoint="*:-1:stcp" callsign="{uid}"/></detail></event>')
+        s.sendto(ev.encode(), ("239.2.3.1", 6969))
+        time.sleep(1)
+    return 0
+
+
+def cmd_udpwait(port, seconds):
+    """A phone with ATAK's external GPS on: prints the first datagram that
+    arrives on this UDP port (one line), or "none"."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("0.0.0.0", int(port)))
+    s.settimeout(float(seconds))
+    try:
+        data, src = s.recvfrom(4096)
+    except socket.timeout:
+        print("none", flush=True)
+        return 1
+    print(f"from={src[0]} " + data.decode(errors="replace").replace("\r\n", " "), flush=True)
+    return 0
+
+
 def cmd_gpsd(lat, lon):
     """A GNSS receiver behind gpsd, for a node's namespace: serves gpsd's
     JSON on 127.0.0.1:2947 with a 3D fix at lat, lon, once a second."""
@@ -486,6 +522,10 @@ def main(argv):
         return cmd_tcpclient(argv[1], argv[2], argv[3])
     if len(argv) == 4 and argv[0] == "cotwait":
         return cmd_cotwait(*argv[1:])
+    if len(argv) == 6 and argv[0] == "sasend":
+        return cmd_sasend(*argv[1:])
+    if len(argv) == 3 and argv[0] == "udpwait":
+        return cmd_udpwait(argv[1], argv[2])
     if len(argv) == 3 and argv[0] == "gpsd":
         return cmd_gpsd(argv[1], argv[2])
     if len(argv) == 4 and argv[0] == "webserve":

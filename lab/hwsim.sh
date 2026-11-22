@@ -120,10 +120,16 @@ fi
 # wpa_supplicant reports a failed SAE exchange on the side whose check
 # fails, which is not always the same node (in a VM run node 2 had it, nodes
 # 1 and 3 not): so the mesh must record it on at least one node.
-sae=0; on=""
-for i in $(seq 1 "$NODES"); do
-  n=$(jsonq "$i" "len(s['mesh_link'].get('sae_failures') or [])")
-  [ "${n:-0}" -ge 1 ] && { sae=$((sae+n)); on="$on $i"; }
+# The impostor retries on its own schedule: looked at for up to 30 s, not
+# once (a run once found none after the 15 s above, and 3 on the next).
+for _ in $(seq 1 15); do
+  sae=0; on=""
+  for i in $(seq 1 "$NODES"); do
+    n=$(jsonq "$i" "len(s['mesh_link'].get('sae_failures') or [])")
+    [ "${n:-0}" -ge 1 ] && { sae=$((sae+n)); on="$on $i"; }
+  done
+  [ "$sae" -ge 1 ] && break
+  sleep 2
 done
 if [ "$sae" -ge 1 ]; then pass "H5 SAE failures from the impostor are recorded ($sae, on node$on)"; else fail "H5 SAE failures" "none recorded on any of the $NODES nodes"; fi
 

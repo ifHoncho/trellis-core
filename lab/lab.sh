@@ -181,6 +181,7 @@ ports:
   - {name: eth2, role: client}
   - {name: eth5, role: client}   # R tests: a device plugged in and moved by the test
 $([ "$i" = 3 ] && echo "  - {name: eth3, role: auto}   # T9: created by the test")
+$([ -n "${EXTRA_MESH_PORT:-}" ] && echo "  - {name: $EXTRA_MESH_PORT, role: mesh}   # T4d")
 ap: {enabled: false}
 gateway:
   probe_targets: [198.51.100.1, 198.51.100.2]
@@ -422,6 +423,58 @@ if [ "$warmed" = 1 ] && [ "${maxseq:-0}" -ge 66 ] && [ -n "$t4c" ] && [ "$leaked
 else
   fail "T4c broadcasts after a restart" "warm-ups this start: $warmed; highest broadcast number at node 1: ${maxseq:-none}; ARP answered: ${t4c:-no}; frames at eud1: $leaked"
 fi
+
+# T4d: one hard interface that cannot come up (a radio whose driver is
+# stuck) must not keep bat0 down. node 3 restarts with an extra
+# wired mesh port that refuses to come up (a VLAN over a dummy that is
+# down: ENETDOWN): bat0 must be up and bridged, node 3 reachable, and the
+# port named in a warning.
+NS node3 ip link add t4ddmy type dummy
+NS node3 ip link add link t4ddmy name t4dx type vlan id 5   # up refused while t4ddmy is down
+kill "$(cat "$RUN/node3/pid")"
+for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+EXTRA_MESH_PORT=t4dx start_node 3
+t4d_ok=""; t4d_warn=""; t4d_br=""
+for _ in $(seq 1 30); do
+  t4d_warn=$(jsonq 3 "any(w['code']=='hard-interface-failed' and 't4dx' in w['message'] for w in s['warnings'])")
+  t4d_br=$(NS node3 ip -o link show master br-mesh 2>/dev/null | grep -c ' bat0:')
+  if [ "$t4d_warn" = True ] && [ "$t4d_br" = 1 ] && NS node1 ping -c 1 -W 1 10.73.3.1 >/dev/null 2>&1; then t4d_ok=1; break; fi
+  sleep 1
+done
+if [ -n "$t4d_ok" ]; then
+  pass "T4d a mesh port that cannot come up is a warning: bat0 up and in br-mesh, node 3 reachable"
+else
+  fail "T4d stuck hard interface" "warning=$t4d_warn bat0 in br-mesh=$t4d_br; $(grep -c 'reconcile failed.*batman' "$RUN/node3.log") batman failures logged"
+fi
+kill "$(cat "$RUN/node3/pid")"
+for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+NS node3 ip link del t4dx 2>/dev/null; NS node3 ip link del t4ddmy 2>/dev/null
+start_node 3
+wait_converged 40 || fail "T4d restore" "node 3 did not reconverge"
+
+# T4e: a node whose mesh link comes up after it started (a radio slow to
+# peer) is heard in gossip within seconds of its first neighbour, not at
+# its next refresh (up to 35 s): until then a node ID it shares with
+# another stands unresolved. node 3 restarts with its air port down; 20 s
+# later the port comes up.
+kill "$(cat "$RUN/node3/pid")"
+for _ in $(seq 1 100); do kill -0 "$(cat "$RUN/node3/pid")" 2>/dev/null || break; sleep 0.1; done
+NS air ip link set p3 down
+start_node 3
+sleep 20
+NS air ip link set p3 up
+t4e0=$SECONDS; t4e=""
+for _ in $(seq 1 80); do
+  ago=$(jsonq 1 "min([n['heard_ago_ms'] for n in s['nodes'] if n['callsign']=='lab-node-3'] or [999999])")
+  if [ -n "$ago" ] && [ "$ago" -lt $(( (SECONDS - t4e0) * 1000 )) ] 2>/dev/null; then t4e=$((SECONDS - t4e0)); break; fi
+  sleep 0.5
+done
+if [ -n "$t4e" ] && [ "$t4e" -le 12 ]; then
+  pass "T4e node 3, its mesh link up 20 s after it started, was heard in gossip by node 1 ${t4e} s after the link came up"
+else
+  fail "T4e gossip after a late link" "node 1 heard node 3 after ${t4e:-more than 40} s; announced: $(grep -c 'broadcast warm-up sent' "$RUN/node3.log") warm-ups"
+fi
+wait_converged 40 || fail "T4e restore" "node 3 did not reconverge"
 
 # T5: invalid config is rejected by name and the running state is untouched.
 cp "$RUN/node1/node.yaml" "$RUN/node1/node.yaml.good"
@@ -1612,6 +1665,53 @@ if [ "$NODES" -ge 3 ] && [ -f "$RUN/node1/profile.yaml" ]; then
   esac
   pos=$(jsonq 1 "[n.get('position',{}).get('lat') for n in s['nodes'] if n['callsign']=='lab-node-3']")
   if [ "$pos" = "[52.09]" ]; then pass "L2 node 1 knows node 3's position from gossip"; else fail "L2 position in gossip" "node 1 has $pos"; fi
+
+  # L6: node 3, with its fix, is the GPS of the device on node 3
+  # (NMEA to UDP 4349) and of no other; node 1, with no receiver, takes
+  # its position from the SA of the device on node 1, never from a device
+  # on another node.
+  if [ -n "${eud3_ip:-}" ] && [ -n "${eud1_ip:-}" ]; then
+    # The device on node 3 runs ATAK too (its own SA goes out): the only
+    # kind of device fed NMEA.
+    if ! NS eud2 ip -4 addr show dev eth0 | grep -q 'inet 10\.73\.'; then
+      ip2=$(NS eud2 $EUD dhcp eth0 2>&1 | sed -n 's/^ip=//p')
+      [ -n "$ip2" ] && NS eud2 ip addr add "$ip2/16" dev eth0
+    fi
+    # Meanwhile a device on node 2 reports a position: node 1 must not
+    # take it.
+    sa2start=$(date +%s)
+    NS eud2 $EUD sasend eth0 ANDROID-EUD2 48.0 11.0 40 >/dev/null 2>&1 &
+    sa2=$!
+    NS eud3 $EUD sasend eth0 ANDROID-EUD3 52.1 5.1 40 >/dev/null 2>&1 &
+    sa3=$!
+    nmea3=$(NS eud3 $EUD udpwait 4349 20)
+    devs3=$(jsonq 3 "s['positions'].get('nmea_devices',0)")
+    kill "$sa3" 2>/dev/null; wait "$sa3" 2>/dev/null
+    while [ $(($(date +%s) - sa2start)) -lt 15 ]; do sleep 1; done
+    dev1_other=$(jsonq 1 "s['positions'].get('device','')")
+    kill "$sa2" 2>/dev/null; wait "$sa2" 2>/dev/null
+    # The device on node 1 reports its own.
+    NS eud1 $EUD sasend eth0 ANDROID-EUD1 48.8566 2.3522 90 >/dev/null 2>&1 &
+    sapid=$!
+    # While it runs ATAK (sends SA), the only kind of device fed NMEA: none
+    # may come from node 3 (a device on another node), and node 1 has no
+    # fix of its own to send.
+    nmea1=$(NS eud1 $EUD udpwait 4349 6)
+    dev1=""; for _ in $(seq 1 30); do dev1=$(jsonq 1 "s['positions'].get('device','')"); [ -n "$dev1" ] && break; sleep 1; done
+    shared1=$(jsonq 1 "s['positions']['shared']")
+    pos1=""; for _ in $(seq 1 60); do pos1=$(jsonq 2 "[n.get('position',{}).get('lat') for n in s['nodes'] if n['callsign']=='lab-node-1']"); [ "$pos1" = "[48.8566]" ] && break; sleep 1; done
+    kill "$sapid" 2>/dev/null; wait "$sapid" 2>/dev/null
+    case "$nmea3" in
+      "from=10.73."*" \$GPGGA,"*",5205.4000,N,00507.2000,E,1,09,"*"\$GPRMC,"*) n3=ok ;; *) n3=bad ;;
+    esac
+    if [ "$n3" = ok ] && [ "$nmea1" = none ] && [ "$devs3" -ge 1 ] 2>/dev/null && [ -z "$dev1_other" ] && [ "$dev1" = "$eud1_ip" ] && [ "$shared1" = True ] && [ "$pos1" = "[48.8566]" ]; then
+      pass "L6 node 3 is the external GPS of its own device (NMEA, $devs3 device), none reached the device on node 1; node 1, no receiver, ignored a device on node 2 and took its own device's position ($dev1), which node 2 sees in gossip"
+    else
+      fail "L6 node and device positions" "NMEA at eud3: $nmea3; at eud1: $nmea1; node 3 nmea_devices=$devs3; node 1 from eud2: '$dev1_other', from eud1: '$dev1' (eud1 $eud1_ip) shared=$shared1; node 2 sees node 1 at $pos1"
+    fi
+  else
+    skip "L6 node and device positions" "eud1 or eud3 has no address (T7)"
+  fi
 
   # L3: node 3 leaves. After gossip expiry node 1, the lowest-numbered
   # node, re-announces node 3's last known position, already stale. The

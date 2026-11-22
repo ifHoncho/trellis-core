@@ -101,6 +101,17 @@ func TestSameIgnoresLiveFigures(t *testing.T) {
 	if a.GW.RTTms != 12 {
 		t.Error("Same modified its argument")
 	}
+	// A position that moves is not a change; one whose source changes
+	// (the node's receiver, a device) is.
+	c, e := rec("ea:67:61:6f:bc:8b", 1, 3), rec("ea:67:61:6f:bc:8b", 1, 4)
+	c.Pos, e.Pos = NewPosition(52, 5, 0, false, 3, 3, 1), NewPosition(52.1, 5, 0, false, 3, 3, 2)
+	if !Same(c, e) {
+		t.Error("a moved position counted as a state change")
+	}
+	e.Pos.Device = true
+	if Same(c, e) {
+		t.Error("a change of position source not counted")
+	}
 }
 
 func TestTableClone(t *testing.T) {

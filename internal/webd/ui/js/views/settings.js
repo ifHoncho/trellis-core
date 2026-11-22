@@ -377,10 +377,18 @@ function timePanel(st) {
     rows.push(['Position', h('span.mono', `${g.lat.toFixed(5)}, ${g.lon.toFixed(5)}` + (g.alt_m != null ? ` · ${Math.round(g.alt_m)} m` : ''))]);
   }
   const ps = st.positions || {};
-  if (g.receiver || ps.off) {
+  if (ps.device_note) rows.push(['Device positions', h('span.warn', ps.device_note)]);
+  if (g.receiver || ps.off || ps.device) {
     rows.push(['ATAK PLI', ps.shared
-      ? h('span', h('span.ok', 'On'), h('span.faint', ps.last_sent_ago_ms >= 0 ? `  ·  last sent ${Math.round(ps.last_sent_ago_ms / 1000)} s ago` : ''))
+      ? h('span', h('span.ok', 'On'), h('span.faint', (ps.last_sent_ago_ms >= 0 ? `  ·  last sent ${Math.round(ps.last_sent_ago_ms / 1000)} s ago` : '') + (ps.device ? `  ·  position source: device ${ps.device}` : '')))
       : h('span.faint', ps.note ? `Off · ${ps.note}` : 'Off')]);
+  }
+  if (g.receiver) {
+    // NMEA is held back while positions are not shared or there is no
+    // current fix: meshd says which, not "no devices".
+    rows.push(['External GPS', ps.nmea_devices > 0
+      ? h('span', h('span.ok', 'On'), h('span.faint', `  ·  ${ps.nmea_devices} ${ps.nmea_devices === 1 ? 'device' : 'devices'} · NMEA to UDP 4349`))
+      : h('span.faint', ps.nmea_held ? `Off · ${ps.nmea_held}` : 'No devices on this node')]);
   }
   if ((ps.last_known || []).length) {
     rows.push(['Last known', h('span', ps.last_known.map((k) => `${k.callsign} (${since(k.heard)} ago)`).join(', '),

@@ -39,6 +39,31 @@ func TestApply(t *testing.T) {
 	case !st.Time.Equal(time.Date(2026, 1, 2, 6, 40, 1, 0, time.UTC)) || !st.Heard.Equal(now) || !st.PPS.Equal(now):
 		t.Errorf("times: %+v", st)
 	}
+	if st.HasMSL || st.HasSep {
+		t.Errorf("no sea-level height given, one taken: %+v", st)
+	}
+	// gpsd 3.20 on: height above sea level and the geoid separation.
+	apply(&st, []byte(`{"class":"TPV","mode":3,"lat":52.1,"lon":4.6,"altHAE":180.2,"altMSL":135.0,"geoidSep":45.2}`), now)
+	if !st.HasMSL || st.MSLM != 135.0 || !st.HasSep || st.SepM != 45.2 {
+		t.Errorf("sea level and separation: %+v", st)
+	}
+	// Ellipsoid height and separation, no sea level: sea level follows.
+	apply(&st, []byte(`{"class":"TPV","mode":3,"lat":52.1,"lon":4.6,"altHAE":55.2,"geoidSep":47.0}`), now)
+	if !st.HasMSL || st.MSLM < 8.19 || st.MSLM > 8.21 || !st.HasSep {
+		t.Errorf("ellipsoid height and separation only: %+v", st)
+	}
+	// Sea level and separation, no ellipsoid height: the two added.
+	apply(&st, []byte(`{"class":"TPV","mode":3,"lat":52.1,"lon":4.6,"altMSL":135.0,"geoidSep":45.0}`), now)
+	if !st.HasAlt || st.AltM != 180.0 {
+		t.Errorf("sea level and separation only: %+v", st)
+	}
+	// gpsd before 3.20: "alt" is above sea level, not the ellipsoid
+	// height, and it sends no separation: no ellipsoid height.
+	apply(&st, []byte(`{"class":"TPV","mode":3,"lat":52.1,"lon":4.6,"alt":12.0}`), now)
+	if st.HasAlt || !st.HasMSL || st.MSLM != 12.0 {
+		t.Errorf("old gpsd, sea level only: %+v", st)
+	}
+
 	// Losing the fix clears the position: a stale one is never shown as
 	// current.
 	apply(&st, []byte(noFix), now)

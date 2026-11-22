@@ -193,6 +193,10 @@ type Position struct {
 	// Fix is 2 (2D) or 3 (3D); Time the fix's time, Unix seconds.
 	Fix  int   `json:"f"`
 	Time int64 `json:"t"`
+	// Device: the position is a device's on the node's own ports, the node
+	// having no fix of its own; not its receiver's. Absent from older
+	// versions.
+	Device bool `json:"dv,omitempty"`
 }
 
 // NewPosition rounds a fix for gossip: about a metre, which is finer than
@@ -492,10 +496,10 @@ func Same(a, b *Record) bool {
 	// move: they ride on the refresh. Gaining or losing a fix is a change.
 	x.Load, y.Load = nil, nil
 	if x.Pos != nil {
-		x.Pos = &Position{}
+		x.Pos = &Position{Device: x.Pos.Device} // its source is a change; the figures are not
 	}
 	if y.Pos != nil {
-		y.Pos = &Position{}
+		y.Pos = &Position{Device: y.Pos.Device}
 	}
 	if x.GW != nil {
 		g := *x.GW

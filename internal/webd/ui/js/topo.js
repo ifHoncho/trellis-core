@@ -6,7 +6,7 @@
 // changes) and nodes can be dragged where the operator wants them; those
 // places are remembered in this browser.
 import { h } from './dom.js';
-import { mbps, linkQuality, plural, linkName, linkAt } from './fmt.js';
+import { mbps, linkQuality, plural, linkName, linkAt, bandName, meshLinks } from './fmt.js';
 import { state, redraw, shortMac } from './state.js';
 
 // One coordinate space for every drawing of the mesh, so the overview and
@@ -45,6 +45,55 @@ export function resetLayout() {
 }
 export const hasPins = () => Object.keys(pins).length > 0;
 
+// Views of the map: every link, or only one band's, the site link's or the
+// cables'. Nodes stay where they are; only the links drawn change. The
+// choice is kept in this browser. Each band the profile has a mesh link on
+// is a view even with no link on the map: an empty view says that band is
+// down everywhere.
+const VIEW_KEY = 'trellis.topo.view';
+const KIND_ORDER = ['all', '2g', '5g', '6g', 's1g', 'site', 'wired'];
+let view = (() => { try { return localStorage.getItem(VIEW_KEY) || 'all'; } catch (e) { return 'all'; } })();
+
+// bandOf is a mesh link's band; the first link's is the profile's.
+const bandOf = (st, link) => (link && (link.band || (link.index === 1 && st.profile ? st.profile.band : ''))) || '';
+
+// linkKind is the band of the mesh link an edge is on, or site or wired.
+function linkKind(l) {
+  if (l.medium === 'site') return 'site';
+  if (l.medium === 'wired') return 'wired';
+  const st = state.status;
+  return (st && bandOf(st, linkAt(st, l.mesh_link))) || 'other';
+}
+const viewName = (k) => (k === 'all' ? 'All links' : k === 'site' ? 'Site link' : k === 'wired' ? 'Wired' : bandName(k));
+
+// views are the map's views: all, then each band of the profile's mesh
+// links and each kind of link the map has.
+function views(topo) {
+  const kinds = new Set((topo && topo.links || []).map(linkKind));
+  const st = state.status;
+  if (st) for (const l of meshLinks(st)) { const b = bandOf(st, l); if (b) kinds.add(b); }
+  return KIND_ORDER.filter((k) => k === 'all' || kinds.has(k));
+}
+// currentView is the saved view while the map offers it (a button shows
+// with three views or more), otherwise all links.
+const currentView = (topo) => {
+  const vs = views(topo);
+  return vs.length > 2 && vs.includes(view) ? view : 'all';
+};
+
+// viewButton cycles the views; none when there is one kind of link (a
+// one-band profile, no site link, no cable).
+export function viewButton(topo, button) {
+  const vs = views(topo);
+  if (vs.length <= 2) return null;
+  const cur = currentView(topo);
+  return button(`View: ${viewName(cur)}`, () => {
+    view = vs[(vs.indexOf(cur) + 1) % vs.length];
+    try { localStorage.setItem(VIEW_KEY, view); } catch (e) { /* private mode */ }
+    redraw();
+  }, 'small', { title: 'Cycle link view: ' + vs.map(viewName).join(' · ') });
+}
+
 // rate is the figure a link is judged and labelled by. Each end estimates
 // the throughput it can send to the other, and the two often differ a lot
 // (by a factor of four is common). The slower direction is what
@@ -58,6 +107,71 @@ const rate = (l) => {
   const ab = l.ab_mbps || 0, ba = l.ba_mbps || 0;
   return ab > 0 && ba > 0 ? Math.min(ab, ba) : Math.max(ab, ba);
 };
+
+// widest finds the path from src to dst whose slowest link is fastest
+// (fewer hops on a tie), not through the nodes in banned: how BATMAN_V
+// ranks paths, less its hop penalty. null when there is none.
+function widest(topo, src, dst, banned) {
+  const best = new Map([[src, { cap: Infinity, hops: 0, prev: null, link: null }]]);
+  const done = new Set();
+  for (;;) {
+    let u = null, bu = null;
+    for (const [id, b] of best) {
+      if (!done.has(id) && (!bu || b.cap > bu.cap || (b.cap === bu.cap && b.hops < bu.hops))) { u = id; bu = b; }
+    }
+    if (u === null) return null;
+    if (u === dst) break;
+    done.add(u);
+    for (const l of topo.links) {
+      if (l.a !== u && l.b !== u) continue;
+      const v = l.a === u ? l.b : l.a;
+      if (banned.has(v) || done.has(v)) continue;
+      const cap = Math.min(bu.cap, rate(l) || 0.001);
+      const cur = best.get(v);
+      if (!cur || cap > cur.cap || (cap === cur.cap && bu.hops + 1 < cur.hops)) best.set(v, { cap, hops: bu.hops + 1, prev: u, link: l });
+    }
+  }
+  const out = [];
+  for (let v = dst; v !== src; v = best.get(v).prev) {
+    const b = best.get(v);
+    out.unshift({ from: b.prev, to: v, link: b.link });
+  }
+  return out;
+}
+
+// routeTo is the path from this node to node dest: the first hop is
+// batman-adv's own (this node's next hop towards it), the rest the widest
+// path on the map from there; total is batman-adv's figure for the whole
+// path. { none: true } when batman-adv has no route; { partial: true,
+// total } when it has one the map cannot draw (a node on the way does not
+// report its links).
+function routeTo(topo, dest) {
+  const st = state.status;
+  const self = topo.nodes.find((n) => n.self);
+  if (!self || !st || dest === self.id) return null;
+  // Its originators from gossip; a node not heard in gossip yet by its
+  // own address, which batman-adv may know it by.
+  const node = (st.nodes || []).find((x) => x.mac === dest);
+  const origs = node && (node.originators || []).length ? node.originators : [dest];
+  const o = (st.batman.originators || []).find((r) => r.best && origs.includes(r.mac));
+  if (!o) return { none: true };
+  const partial = { partial: true, total: o.throughput_mbps };
+  // The link batman-adv sends on: to its next hop, and with two links to
+  // that neighbour (dual backhaul), the one on its outgoing interface.
+  const toHop = topo.links.filter((l) => (l.a === self.id && l.b_mac === o.next_hop) || (l.b === self.id && l.a_mac === o.next_hop));
+  // One link to it: that one. Several: the one on the outgoing interface,
+  // and if none is (a wired or site next hop the map shows otherwise), the
+  // route only, not a link batman-adv's figure is not for.
+  const first = toHop.length === 1 ? toHop[0]
+    : toHop.find((l) => { const ml = linkAt(st, l.mesh_link); return ml && ml.interface === o.via; });
+  if (!first) return partial;
+  const n1 = first.a === self.id ? first.b : first.a;
+  const rest = n1 === dest ? [] : widest(topo, n1, dest, new Set([self.id]));
+  if (rest === null) return partial;
+  const hops = [{ from: self.id, to: n1, link: first }, ...rest];
+  return { hops, links: new Set(hops.map((x) => x.link)), nodes: new Set([self.id, ...hops.map((x) => x.to)]),
+    total: o.throughput_mbps, estimated: rest.length > 0 };
+}
 
 function layout(topo, H) {
   const ids = topo.nodes.map((n) => n.id);
@@ -191,10 +305,17 @@ export function topology(topo, opts = {}) {
   layout(topo, H);
   const byId = new Map(topo.nodes.map((n) => [n.id, n]));
   const byNodeId = new Map(topo.nodes.filter((n) => n.node_id).map((n) => [n.node_id, n]));
-  const focus = ui.hover || ui.sel;
+  // The view (Mesh page only): which links are drawn.
+  const shownView = opts.small ? 'all' : currentView(topo);
+  const visible = visibleIn(shownView);
+  // A selected node shows its path from this node; hovering another shows
+  // that one's links.
+  const path = !opts.small && ui.sel && byId.has(ui.sel) ? routeTo(topo, ui.sel) : null;
+  const onPath = path && path.links && (!ui.hover || path.nodes.has(ui.hover));
+  const focus = onPath ? null : ui.hover || ui.sel;
   const touches = (l) => l.a === focus || l.b === focus;
   const near = new Set([focus]);
-  if (focus) for (const l of topo.links) if (touches(l)) { near.add(l.a); near.add(l.b); }
+  if (focus) for (const l of topo.links) if (touches(l) && visible(l)) { near.add(l.a); near.add(l.b); }
 
   // Which links carry a node's traffic to its gateway: the direct link to
   // the gateway where there is one; for this node, otherwise its first hop.
@@ -222,11 +343,13 @@ export function topology(topo, opts = {}) {
   for (const l of topo.links) {
     const a = pos.get(l.a), b = pos.get(l.b);
     if (!a || !b) continue;
+    const inPath = onPath && path.links.has(l);
+    if (!visible(l) && !inPath) continue;
     const site = isSite(l);
     const t = rate(l);
     const q = linkQuality(t, Math.min(l.a_signal_dbm || 0, l.b_signal_dbm || 0));
     const half = !site && !(l.ab_mbps > 0 && l.ba_mbps > 0);
-    const dim = focus && !touches(l);
+    const dim = onPath ? !inPath : focus && !touches(l);
     // A second link between the same two nodes (dual backhaul) bows out.
     const pair = [l.a, l.b].sort().join('|');
     const nth = pairSeen.get(pair) || 0;
@@ -238,10 +361,10 @@ export function topology(topo, opts = {}) {
     const d = `M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
     const width = (site ? 2.4 : 1.6 + 5 * Math.sqrt(Math.min(t, 150) / 150)) * (big > 1 ? 1.25 : 1);
     const key = l.a_mac + l.b_mac;
-    linkEls.push(h('path', { class: `link ${site ? 'site' : 'q' + q}${half ? ' half' : ''}${dim ? ' dimmed' : ''}`, d, 'stroke-width': width.toFixed(1), key: 'l' + key }));
+    linkEls.push(h('path', { class: `link ${site ? 'site' : 'q' + q}${half ? ' half' : ''}${dim ? ' dimmed' : ''}${inPath ? ' path' : ''}`, d, 'stroke-width': width.toFixed(1), key: 'l' + key }));
     const flow = flows.get(l);
     if (flow && !dim) flowEls.push(h('path', { class: 'flow' + (flow === 'rev' ? ' rev' : ''), d, key: 'f' + key }));
-    if (showLabels || (focus && touches(l))) {
+    if (showLabels || (focus && touches(l)) || inPath) {
       labelEls.push(h('text', { class: 'linklabel' + (dim ? ' dimmed' : ''), x: ((mx + cx) / 2).toFixed(1), y: ((my + cy) / 2 + 3.5).toFixed(1), key: 't' + key }, site ? 'internet' : mbps(t)));
     }
   }
@@ -262,7 +385,7 @@ export function topology(topo, opts = {}) {
     const above = (pull.get(n.id) || 0) > 0.35;
     const r = (n.self ? 17 : 13) * big;
     const cls = ['node', n.self ? 'self' : '', n.gateway ? 'gw' : '', !n.reported ? 'silent' : '', !n.callsign ? 'unknown' : '',
-      focus && !near.has(n.id) ? 'dimmed' : '', focus === n.id ? 'hover' : ''].filter(Boolean).join(' ');
+      (onPath ? !path.nodes.has(n.id) : focus && !near.has(n.id)) ? 'dimmed' : '', focus === n.id || (onPath && ui.sel === n.id) ? 'hover' : ''].filter(Boolean).join(' ');
     const leaves = [];
     const shown = Math.min(n.clients || 0, 7);
     for (let i = 0; i < shown; i++) {
@@ -275,7 +398,7 @@ export function topology(topo, opts = {}) {
       const at = svgPoint(svg, e);
       if (!at) return;
       drag = { id: n.id, svg, dx: p.x - at.x, dy: p.y - at.y, moved: false, x0: e.clientX, y0: e.clientY };
-      e.currentTarget.setPointerCapture(e.pointerId);
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* a pointer the browser does not track */ }
     };
     const move = (e) => {
       if (!drag || drag.id !== n.id) return;
@@ -312,36 +435,91 @@ export function topology(topo, opts = {}) {
       opts.small ? null : h('text.sub', { y: above ? -(r + 8 * big) : r + 31 * big }, !n.callsign ? 'unnamed' : !n.reported ? 'no link report' : n.node_id ? `#${n.node_id}` : ''));
   });
 
+  // The node under the pointer, beside it. On the Mesh page the selected
+  // node's card is under the map (selection), not over the path it lists.
   let tip = null;
-  const fn = focus && byId.get(focus);
-  if (fn && !drag && !opts.small) {
+  const tipId = opts.small ? focus : ui.hover && ui.hover !== ui.sel ? ui.hover : null;
+  const fn = tipId && byId.get(tipId);
+  if (fn && !drag) {
     const p = pos.get(fn.id);
-    const gw = byNodeId.get(fn.selected_gateway);
-    const mine = topo.links.filter(touches);
-    tip = h('div.topo-tip', { style: { left: (p.x / W * 100) + '%', top: (p.y / H * 100) + '%' } },
-      h('b', fn.callsign || shortMac(fn.id)), fn.self ? h('span.accent', 'this node') : null,
-      h('div', fn.address || ''),
-      h('div.dim', plural(mine.length, 'link'), fn.reported ? ` · ${plural(fn.clients || 0, 'device')}` : ''),
-      // Each link both ways, as each end measures what it can send.
-      mine.length ? h('div.tip-links', [...mine].sort((x, y) => isSite(x) - isSite(y) || rate(y) - rate(x)).map((l) => {
-        const out = l.a === fn.id ? l.ab_mbps : l.ba_mbps, back = l.a === fn.id ? l.ba_mbps : l.ab_mbps;
-        const other = byId.get(l.a === fn.id ? l.b : l.a);
-        const name = h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a));
-        if (isSite(l)) return h('div', name, h('span.faint', edgeName(l)), h('span.faint.tip-span', 'via internet, not measured'));
-        return h('div', name, h('span.faint', edgeName(l)),
-          h('span.num', out > 0 ? `→ ${mbps(out)}` : '→ –'), h('span.num', back > 0 ? `← ${mbps(back)}` : '← –'));
-      })) : null,
-      fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'gateway' : 'uplink down') : null,
-      fn.reported && gw && gw.id !== fn.id ? h('div.dim', `internet via ${gw.callsign}`) : null,
-      fn.reported && !gw && !fn.gateway ? h('div.dim', 'no internet') : null,
-      fn.version ? h('div.faint', fn.version) : null);
+    // Below a node in the upper part of the map, so it is not cut off.
+    tip = h('div.topo-tip', { class: p.y < H * 0.45 ? 'below' : '', style: { left: (p.x / W * 100) + '%', top: (p.y / H * 100) + '%' } },
+      nodeInfo(topo, fn, byId, visible));
   }
+  // A view with no link drawn says so.
+  const empty = shownView !== 'all' && !topo.links.some((l) => linkKind(l) === shownView)
+    ? h('div.topo-note', `${viewName(shownView)}: no links`) : null;
 
   return h('div.topo', { class: [opts.small ? 'small' : '', big > 1 ? 'big' : ''].join(' ') },
     h('svg', { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': `Mesh topology: ${topo.nodes.length} nodes, ${topo.links.length} links`,
       onpointerdown: (e) => { if (e.target === e.currentTarget && ui.sel) { ui.sel = null; redraw(); } } },
       h('g', linkEls), h('g', flowEls), h('g', labelEls), h('g', nodeEls)),
-    tip);
+    empty, tip);
+}
+
+// visibleIn tells which links a view draws. A link of no known band
+// ('other') shows in every view: hiding it would hide a link the view may
+// be about.
+const visibleIn = (view) => (l) => view === 'all' || linkKind(l) === view || linkKind(l) === 'other';
+
+// nodeInfo is what the map says of a node: its address, its links in the
+// view both ways, its way to the internet.
+function nodeInfo(topo, fn, byId, visible) {
+  const byNodeId = new Map(topo.nodes.filter((n) => n.node_id).map((n) => [n.node_id, n]));
+  const gw = byNodeId.get(fn.selected_gateway);
+  const mine = topo.links.filter((l) => (l.a === fn.id || l.b === fn.id) && visible(l));
+  return [
+    h('b', fn.callsign || shortMac(fn.id)), fn.self ? h('span.accent', 'this node') : null,
+    h('div', fn.address || ''),
+    h('div.dim', plural(mine.length, 'link'), fn.reported ? ` · ${plural(fn.clients || 0, 'device')}` : ''),
+    // Each link both ways, as each end measures what it can send.
+    mine.length ? h('div.tip-links', [...mine].sort((x, y) => isSite(x) - isSite(y) || rate(y) - rate(x)).map((l) => {
+      const out = l.a === fn.id ? l.ab_mbps : l.ba_mbps, back = l.a === fn.id ? l.ba_mbps : l.ab_mbps;
+      const other = byId.get(l.a === fn.id ? l.b : l.a);
+      const name = h('span', (other && other.callsign) || shortMac(l.a === fn.id ? l.b : l.a));
+      if (isSite(l)) return h('div', name, h('span.faint', edgeName(l)), h('span.faint.tip-span', 'via internet, not measured'));
+      return h('div', name, h('span.faint', edgeName(l)),
+        h('span.num', out > 0 ? `→ ${mbps(out)}` : '→ –'), h('span.num', back > 0 ? `← ${mbps(back)}` : '← –'));
+    })) : null,
+    fn.gateway ? h('div', { class: fn.wan_healthy ? 'ok' : 'bad' }, fn.wan_healthy ? 'gateway' : 'uplink down') : null,
+    fn.reported && gw && gw.id !== fn.id ? h('div.dim', `internet via ${gw.callsign}`) : null,
+    fn.reported && !gw && !fn.gateway ? h('div.dim', 'no internet') : null,
+    fn.version ? h('div.faint', fn.version) : null,
+  ];
+}
+
+// selection is the selected node's card, under the map on the Mesh page:
+// the node, and its path from this node. null when none is selected.
+export function selection(topo) {
+  const ui = state.ui.topo;
+  if (!ui || !ui.sel || !topo || !topo.nodes) return null;
+  const byId = new Map(topo.nodes.map((n) => [n.id, n]));
+  const fn = byId.get(ui.sel);
+  if (!fn) return null;
+  const path = routeTo(topo, fn.id);
+  return h('div.topo-sel',
+    h('div.sel-node', nodeInfo(topo, fn, byId, visibleIn(currentView(topo)))),
+    path ? pathTip(path, byId) : null,
+    h('button.btn.small.sel-clear', { type: 'button', title: 'Clear selection', onclick: () => { ui.sel = null; redraw(); } }, 'Clear'));
+}
+
+// pathTip lists a selected node's path from this node, hop by hop.
+function pathTip(path, byId) {
+  const name = (id) => { const n = byId.get(id); return (n && n.callsign) || shortMac(id); };
+  if (path.none) return h('div.tip-path', h('div.dim', 'Path from this node: no route'));
+  if (path.partial) {
+    return h('div.tip-path', h('div.dim', 'Path from this node'),
+      h('div', 'Path: ', h('strong', path.total ? mbps(path.total) : '–'), h('span.faint', ' Mbit/s (batman-adv)')),
+      h('div.faint', 'Hops: not all on the map'));
+  }
+  return h('div.tip-path',
+    h('div.dim', 'Path from this node'),
+    h('div.tip-links', path.hops.map((x) => h('div', h('span', name(x.to)), h('span.faint', edgeName(x.link)),
+      h('span.num', isSite(x.link) ? 'internet' : mbps(rate(x.link)))))),
+    path.hops.some((x) => isSite(x.link))
+      ? h('div', 'Path: ', h('span.faint', 'over the internet, not measured'))
+      : h('div', 'Path: ', h('strong', path.total ? mbps(path.total) : '–'), h('span.faint', ' Mbit/s (batman-adv)')),
+    path.estimated ? h('div.faint', 'Hops after the first: best path by link figures') : null);
 }
 
 // edgeName names the link an edge of the map is on, by its band and

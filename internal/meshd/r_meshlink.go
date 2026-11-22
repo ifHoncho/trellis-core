@@ -50,6 +50,12 @@ type meshLinkReconciler struct {
 	peerTX      map[string]peerTX
 	oneSided    map[string]bool
 	oneSidedMsg map[string]string
+	// kwatch: the kernel's interface out of its mesh while wpa_supplicant
+	// says joined; cwatch: the link on another channel than its plan's
+	// (meshwatch.go). kwWiphy is the radio kwatch follows.
+	kwatch  kernelWatch
+	kwWiphy uint32
+	cwatch  chanWatch
 }
 
 // moreLinksReconciler runs the mesh links after the first (the profile's
@@ -352,6 +358,14 @@ func (m *meshLinkReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		if in.FreqMHz != 0 && !halow {
 			width = nl80211.ChanWidthMHz(in.ChannelWidth)
 		}
+		// HaLow is left out: its driver reports a mapped frequency.
+		if !halow {
+			if stopped := m.watchKernel(in, sup.Joined, meshIfname, meshIfindex, freq, rp, warn); stopped {
+				res.Changed, res.RequeueAfter = true, time.Second
+				m.setFacts(status.Supplicant{State: "restarting"}, 0, 0, 0) // stopped: not joined
+				return res, nil
+			}
+		}
 	}
 	if sup.Joined && width != 0 && width != rp.Width {
 		why := ""
@@ -546,8 +560,60 @@ func (m *meshLinkReconciler) stopEvents() {
 	}
 }
 
+// watchKernel compares the kernel's view of the link's interface with
+// wpa_supplicant's and the plan (meshwatch.go). It reports whether it
+// stopped wpa_supplicant, to be started again on the next pass.
+func (m *meshLinkReconciler) watchKernel(in *nl80211.Interface, joined bool, ifname string, ifindex, planMHz int, rp config.RadioPlan, warn func(level, code, format string, args ...any)) (stopped bool) {
+	d := m.d
+	// Another radio on the link (swapped, or re-enumerated): what the
+	// watch learned of the last one's driver does not hold.
+	if in.Wiphy != m.kwWiphy {
+		m.kwatch, m.kwWiphy = kernelWatch{}, in.Wiphy
+	}
+	now := time.Now()
+	switch m.kwatch.observe(now, joined, int(in.FreqMHz)) {
+	case kernelRestart:
+		d.log.Warn("mesh interface left its mesh in the kernel while wpa_supplicant reports it joined; restarting wpa_supplicant", "interface", ifname)
+		m.stop()
+		return true
+	case kernelRecreate:
+		// Not beside the client AP on the same radio: deleting and making
+		// the mesh interface again next to a running AP fails on drivers
+		// strict about interface combinations. A restart there.
+		var apShared bool
+		d.facts.Read(func(f *Facts) { apShared = f.APIfname != "" && f.APShared && f.APLink == m.link })
+		if apShared {
+			d.log.Warn("mesh interface left its mesh again; restarting wpa_supplicant (the client AP shares the radio, so the interface is not made afresh)", "interface", ifname)
+			m.stop()
+			return true
+		}
+		d.log.Warn("mesh interface left its mesh again; deleting it to be made afresh", "interface", ifname)
+		m.stop()
+		// Through nl80211: a mac80211 interface has no rtnl link ops, so
+		// RTM_DELLINK (ip link del) is refused.
+		if err := d.nl.DelInterface(ifindex); err != nil {
+			d.log.Warn("could not delete the mesh interface", "interface", ifname, "err", err)
+		}
+		return true
+	}
+	radar := radarPlan(rp)
+	off, rejoin := m.cwatch.observe(now, joined, int(in.FreqMHz), planMHz, radar)
+	switch {
+	case rejoin:
+		d.log.Warn("mesh link moved off its channel by a channel switch announcement; restarting it on its own", "interface", ifname, "freq", in.FreqMHz, "plan", planMHz)
+		m.stop()
+		return true
+	case off && radar:
+		warn("warning", "mesh-off-channel", "%s on %d MHz, not the plan's %d MHz: moved by a channel switch announcement. Radar channel: not moved back. To rejoin the plan's channel, restart meshd", ifname, in.FreqMHz, planMHz)
+	case off:
+		warn("warning", "mesh-off-channel", "%s on %d MHz, not the plan's %d MHz: moved by a channel switch announcement; rejoins the plan's channel", ifname, in.FreqMHz, planMHz)
+	}
+	return false
+}
+
 func (m *meshLinkReconciler) stop() {
 	m.stopEvents()
+	m.kwatch.reset() // a loss in progress is the old run's
 	m.blocks.reset()
 	m.peers.reset()
 	if m.ctrl != nil {

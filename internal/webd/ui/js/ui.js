@@ -125,11 +125,20 @@ export function asSentence(m) {
   return /[.!?)]$/.test(m) ? m : m + '.';
 }
 
+// Alerts whose action is on another page: a link to it under the text.
+const ALERT_ACTIONS = {
+  'channel-busy': ['Channel survey', '#/settings/channels'],
+};
+
 export function notice(w, extra) {
   const tone = { error: 'bad', warning: 'warn', info: 'info', ok: 'ok' }[w.level] || 'info';
+  // No link to the page already open.
+  const act = ALERT_ACTIONS[w.code] && ALERT_ACTIONS[w.code][1] !== location.hash ? ALERT_ACTIONS[w.code] : null;
   return h('div.notice', { class: tone },
     dot(tone),
-    h('div', w.code ? h('span.code', [w.source, w.code].filter(Boolean).join(' · ')) : null, asSentence(w.message), extra || null));
+    h('div', w.code ? h('span.code', [w.source, w.code].filter(Boolean).join(' · ')) : null, asSentence(w.message),
+      act ? h('div.notice-action', h('a', { href: act[1] }, act[0], ' →')) : null,
+      extra || null));
 }
 
 export function field(label, control, opts = {}) {

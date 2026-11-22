@@ -54,6 +54,14 @@ func TestLastKnownEvent(t *testing.T) {
 	if _, err := ev.Marshal(); err != nil {
 		t.Error(err)
 	}
+	if !ev.GPS {
+		t.Error("the node's own receiver's position not marked GPS")
+	}
+	// A device's position: not presented as the node's receiver's.
+	k.pos.Device = true
+	if ev := lastKnownEvent("a0:b0:c0:00:00:02", k, now); ev.GPS || ev.How != "m-f" || !strings.Contains(ev.Remarks, "from a device") {
+		t.Errorf("device position: %+v", ev)
+	}
 }
 
 func TestPositionsOff(t *testing.T) {

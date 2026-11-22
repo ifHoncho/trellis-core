@@ -29,6 +29,9 @@ I²C). The node then keeps the whole mesh on GNSS time without internet; a
 receiver whose pulse per second (PPS) reaches a GPIO gives sub-millisecond
 time, one without it about a tenth of a second. Keep a receiver off the
 serial port the kernel uses as its console: `meshctl doctor` checks.
+gpsd 3.20 or later gives the height above the ellipsoid that ATAK uses;
+with an older one (sea level only) nodes report no height rather than
+one tens of metres off.
 
 **Optionally, more radios.** A second Wi-Fi radio serves the client Wi-Fi
 on its own channel, so the phone's traffic doesn't share the mesh's

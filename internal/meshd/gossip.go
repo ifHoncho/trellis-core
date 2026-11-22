@@ -152,7 +152,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		Addr: addr, Version: d.opts.Version, Boot: g.boot, GW: gw, Orig: orig, Radios: d.meshRadioEntries(),
 		Links: profileLinkEntries(d.profile), ProfileRev: d.profile.Revision, ProfileChange: d.profile.ChangeID(), MeshChange: true,
 		Regulatory: gossip.RegulatoryEntry(d.profile.Regulatory.Mode, d.profile.Regulatory.Country),
-		Load:       d.gossipLoads(len(d.profile.AllLinks())),
+		Load:       d.gossipLoads(d.profile.AllLinks()),
 		Degraded:   d.gossipDegraded(),
 		SiteKey:    d.sitePublicKey(),
 		Site:       d.siteLinkGossip(),
@@ -289,6 +289,28 @@ func (g *gossipReconciler) send(r *gossip.Record) error {
 	g.stats.BytesSent += uint64(len(pkt))
 	g.stats.LastRecordBytes = len(pkt)
 	return nil
+}
+
+// announceAt: when a node that has just found its first neighbour sends
+// its record. At once, and twice more: batman-adv sends a multicast
+// datagram only to the listeners it knows, and a new node learns them
+// from the others' translation tables within a few seconds.
+var announceAt = []time.Duration{0, 4 * time.Second, 10 * time.Second}
+
+// announce sends this node's record soon (each within gossipWelcomeMax),
+// as the early reply to a new node does. Called when bat0 first has a
+// neighbour: records sent before reached nobody, and until the others hear
+// one, a node ID this node shares with another (a derived ID's collision,
+// a cloned card) stands unresolved, as long as a refresh period.
+func (g *gossipReconciler) announce() {
+	for _, after := range announceAt {
+		time.AfterFunc(after, func() {
+			select {
+			case g.sendNow <- struct{}{}:
+			default:
+			}
+		})
+	}
 }
 
 // sender refreshes the record periodically and answers new nodes early.

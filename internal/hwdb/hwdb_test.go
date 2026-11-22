@@ -110,6 +110,17 @@ func TestParseRejectsUnknownBand(t *testing.T) {
 	}
 }
 
+func TestParseVerificationStates(t *testing.T) {
+	db, err := Parse([]byte("schema: 0\nentries:\n  - id: x\n    bands: [5g]\n"))
+	if err != nil || db.Entries[0].SAEMesh != Unknown {
+		t.Fatalf("sae_mesh left out: %v, %+v", err, db)
+	}
+	_, err = Parse([]byte("schema: 0\nentries:\n  - id: x\n    bands: [5g]\n    sae_mesh: verifed\n"))
+	if err == nil || !strings.Contains(err.Error(), "sae_mesh") {
+		t.Errorf("want a sae_mesh error, got %v", err)
+	}
+}
+
 func TestMeshMTU(t *testing.T) {
 	db, err := Load()
 	if err != nil {

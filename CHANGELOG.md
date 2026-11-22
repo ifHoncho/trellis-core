@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **Channel busy alert** (`channel-busy`): a link's channel busy 60 % or
+  more at a node for 10 minutes; links to the channel survey.
+- **Mesh page:** View button (all links, or one band, site link, wired;
+  every band of the profile, with or without links); select a node for
+  its details and its path from this node, hop by hop, under the map.
+- **External GPS for ATAK:** a node with a GNSS fix sends NMEA to UDP 4349
+  of the devices on its own ports that run ATAK; a node without one
+  takes its position from such a device's own GPS position report.
+  Settings → System shows how many devices get it, or why none do, and
+  why a device's position is not used.
+- A node's gossip goes out as soon as it has its first mesh neighbour: a
+  duplicate node ID is resolved within seconds, not at the next refresh.
+- Fixed: one mesh radio that failed to come up (a stuck driver) kept the
+  whole node off the mesh; now a warning (`hard-interface-failed`), and
+  the other links carry the mesh.
+- Fixed: a mesh interface that left its mesh in the kernel while
+  wpa_supplicant reported it joined stayed down; meshd now restarts it.
+- A mesh link moved to another channel by a peer's channel switch
+  announcement (a faulty driver can send one that never completes) is
+  flagged (`mesh-off-channel`) and returns to its own channel; on a
+  radar channel plan it is flagged only.
+- Fixed: a channel survey after the first since boot showed busy time
+  for the link's own channel only on MT76 radios (MT7610U, MT7916).
+- Fixed: with gpsd older than 3.20, the node's height went out as the
+  ellipsoid height though it was above sea level (tens of metres off).
+  Such nodes now report no height; gpsd 3.20 or later gives the right
+  one.
 - **Voice page:** Enable button in the "Voice off." notice; opens the
   change review.
 - **Mesh page:** degraded radios shown as "Degraded"; details on hover,

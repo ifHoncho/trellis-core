@@ -40,6 +40,11 @@ type State struct {
 	// where the receiver gives it.
 	Lat, Lon, AltM float64
 	HasAlt         bool
+	// MSLM is height above mean sea level and SepM the geoid separation
+	// (ellipsoid to geoid), where the receiver gives them: what NMEA's GGA
+	// carries.
+	MSLM, SepM     float64
+	HasMSL, HasSep bool
 	// Estimated errors in metres (95%), 0 when unknown.
 	HAccM, VAccM float64
 	// Satellites used in the fix, and seen.
@@ -150,7 +155,9 @@ type report struct {
 	Lat    *float64 `json:"lat"`
 	Lon    *float64 `json:"lon"`
 	AltHAE *float64 `json:"altHAE"`
-	Alt    *float64 `json:"alt"`
+	AltMSL *float64 `json:"altMSL"`
+	Sep    *float64 `json:"geoidSep"`
+	Alt    *float64 `json:"alt"` // gpsd before 3.20: above sea level
 	EPH    float64  `json:"eph"`
 	EPV    float64  `json:"epv"`
 	NSat   *int     `json:"nSat"`
@@ -196,17 +203,36 @@ func apply(st *State, line []byte, now time.Time) {
 			st.Time = t
 		}
 		st.Lat, st.Lon, st.HasAlt, st.AltM, st.HAccM, st.VAccM = 0, 0, false, 0, 0, 0
+		st.MSLM, st.SepM, st.HasMSL, st.HasSep = 0, 0, false, false
 		if r.Mode >= Mode2D && r.Lat != nil && r.Lon != nil {
 			st.Lat, st.Lon, st.HAccM = *r.Lat, *r.Lon, r.EPH
 		}
 		if r.Mode >= Mode3D {
+			// AltM is the ellipsoid height: gpsd's altHAE, or sea level
+			// plus the geoid separation. gpsd before 3.20 gives sea level
+			// alone ("alt"), which is no ellipsoid height (tens of metres
+			// off): no height then (docs/hardware.md).
 			switch {
 			case r.AltHAE != nil:
 				st.AltM, st.HasAlt = *r.AltHAE, true
-			case r.Alt != nil:
-				st.AltM, st.HasAlt = *r.Alt, true
+			case r.AltMSL != nil && r.Sep != nil:
+				st.AltM, st.HasAlt = *r.AltMSL+*r.Sep, true
 			}
 			st.VAccM = r.EPV
+			switch {
+			case r.AltMSL != nil:
+				st.MSLM, st.HasMSL = *r.AltMSL, true
+			case r.Alt != nil:
+				st.MSLM, st.HasMSL = *r.Alt, true
+			case r.AltHAE != nil && r.Sep != nil:
+				st.MSLM, st.HasMSL = *r.AltHAE-*r.Sep, true // for NMEA's GGA
+			}
+			switch {
+			case r.Sep != nil:
+				st.SepM, st.HasSep = *r.Sep, true
+			case r.AltHAE != nil && r.AltMSL != nil:
+				st.SepM, st.HasSep = *r.AltHAE-*r.AltMSL, true
+			}
 		}
 	case "SKY":
 		used, seen := 0, len(r.Sats)

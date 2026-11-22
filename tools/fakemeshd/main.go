@@ -460,7 +460,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		HAccM: 3.2, VAccM: 5.1, SatsUsed: 9, SatsSeen: 14, FixAgeMS: int64(rand.IntN(900))}
 	// On the ATAK map, and keeping one node that left at its last known
 	// position.
-	st.Positions = status.Positions{Shared: true, Sent: 42, LastSentAgoMS: int64(rand.IntN(60000)), Announcing: true,
+	st.Positions = status.Positions{Shared: true, Sent: 42, NMEADevices: 2, NMEASent: 7200, LastSentAgoMS: int64(rand.IntN(60000)), Announcing: true,
 		Note: "on the ATAK map, re-sent every 1m0s while still and at once on a move",
 		LastKnown: []status.LastKnown{{Callsign: "scout-7", MAC: "a0:b0:c0:00:00:07", Heard: time.Now().Add(-17 * time.Minute),
 			Position: status.Position{Lat: 52.0961, Lon: 5.1302, AccM: 6, Fix: "3d", Time: time.Now().Add(-17 * time.Minute)}}}}
@@ -1209,7 +1209,8 @@ func (f *fake) hardware(st *status.Status, now time.Time) {
 			status.Warning{Level: "warning", Code: "pcie-link-marginal", Source: "hardware", Message: "PCIe link to MediaTek MT7915 (0000:01:00.0) marginal: " + link.HealthDetail + ". Risk of card hang and node reset. Reseat card and adapter, or change adapter or slot."},
 			status.Warning{Level: "warning", Code: "radio-throttling", Source: "hardware", Message: "MediaTek MT7915 (5g/6g) thermal throttling: 121 °C, Tx duty 50%. Improve card cooling."},
 			status.Warning{Level: "warning", Code: "node-reset", Source: "hardware", Message: "2 unplanned resets in 24 h, last at " + now.Add(-47*time.Minute).Format("15:04 2 Jan") + ": card hang in mt76, mt7915e (SError): suspect PCIe link or power."},
-			status.Warning{Level: "warning", Code: "trial-reverted", Source: "trials", Message: "Trial mt7915e-power 2 reverted: reboot before confirmation. Locked out; re-arm: sudo meshctl trial rearm mt7915e-power."})
+			status.Warning{Level: "warning", Code: "trial-reverted", Source: "trials", Message: "Trial mt7915e-power 2 reverted: reboot before confirmation. Locked out; re-arm: sudo meshctl trial rearm mt7915e-power."},
+			status.Warning{Level: "warning", Code: "channel-busy", Source: "survey", Message: "Channel busy: 5 GHz · ch 149, 74 % at bravo-5 (mesh traffic included). Run channel survey"})
 		st.Resets = []status.Reset{
 			{Time: now.Add(-47 * time.Minute), Verdict: "card-stopped", UptimeS: 163.9, Detail: "SError Interrupt on CPU2, code 0x00000000bf000002 -- SError",
 				Summary: "card hang in mt76, mt7915e (SError): suspect PCIe link or power"},

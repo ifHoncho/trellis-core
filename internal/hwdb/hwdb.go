@@ -162,6 +162,13 @@ func Parse(data []byte) (*DB, error) {
 		if e.MeshAPTogether == "" {
 			e.MeshAPTogether = Unknown
 		}
+		for _, f := range [][2]string{{"mesh_point", e.MeshPoint}, {"sae_mesh", e.SAEMesh}, {"mesh_ap_together", e.MeshAPTogether}} {
+			switch f[1] {
+			case Verified, Reported, Broken, Unknown:
+			default:
+				return nil, fmt.Errorf("hardware database: entry %s: %s %q is not verified, reported, broken or unknown", e.ID, f[0], f[1])
+			}
+		}
 	}
 	return &db, nil
 }

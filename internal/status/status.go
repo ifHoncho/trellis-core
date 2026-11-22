@@ -1040,6 +1040,18 @@ type Positions struct {
 	// lowest-numbered node on the mesh does).
 	LastKnown  []LastKnown `json:"last_known,omitempty"`
 	Announcing bool        `json:"announcing,omitempty"`
+	// Device: the position shared is an attached device's (this node has
+	// no fix of its own): its address. Empty for the node's own receiver.
+	Device     string `json:"device,omitempty"`
+	DeviceNote string `json:"device_note,omitempty"`
+	// NMEADevices: the attached devices sent this node's fix as NMEA (ATAK
+	// external GPS, UDP 4349) at the last second; NMEASent counts the
+	// datagrams.
+	NMEADevices int `json:"nmea_devices"`
+	// NMEAHeld says why no NMEA goes out to the devices, when that is not
+	// for want of devices: "position sharing off", "no current GNSS fix".
+	NMEAHeld string `json:"nmea_held,omitempty"`
+	NMEASent uint64 `json:"nmea_sent"`
 }
 
 // Position is a GNSS fix.
@@ -1052,6 +1064,9 @@ type Position struct {
 	// Fix: "2d" or "3d"; Time: the fix's time.
 	Fix  string    `json:"fix"`
 	Time time.Time `json:"time"`
+	// Device: a device's position on the node's ports, not the node's own
+	// receiver's.
+	Device bool `json:"device,omitempty"`
 }
 
 // LastKnown is a node no longer on the mesh, where it last was.

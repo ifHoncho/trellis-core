@@ -69,10 +69,19 @@ type xmlDetail struct {
 	Contact *xmlContact `xml:"contact,omitempty"`
 	Precise *xmlPrecise `xml:"precisionlocation,omitempty"`
 	Remarks *xmlRemarks `xml:"remarks,omitempty"`
+	// Read only (ParseSA): a device's own report carries takv; an item
+	// placed on the map links to its creator ("p-p").
+	Takv  *struct{} `xml:"takv,omitempty"`
+	Links []xmlLink `xml:"link,omitempty"`
 }
 
 type xmlContact struct {
 	Callsign string `xml:"callsign,attr"`
+	Endpoint string `xml:"endpoint,attr,omitempty"`
+}
+
+type xmlLink struct {
+	Relation string `xml:"relation,attr"`
 }
 
 type xmlPrecise struct {

@@ -1970,9 +1970,20 @@ func positionsLine(p status.Positions, receiver bool) string {
 		if p.LastSentAgoMS >= 0 {
 			s += fmt.Sprintf(" (last sent %s ago, %d reports)", time.Duration(p.LastSentAgoMS)*time.Millisecond/time.Second*time.Second, p.Sent)
 		}
+		if p.Device != "" {
+			s += ", position from the device at " + p.Device
+		}
 		parts = append(parts, s)
 	case p.Off != "" || receiver:
 		parts = append(parts, "not on the ATAK map: "+p.Note)
+	}
+	if p.NMEADevices > 0 {
+		parts = append(parts, fmt.Sprintf("external GPS for %d device(s) on this node (NMEA, UDP 4349)", p.NMEADevices))
+	} else if strings.HasPrefix(p.NMEAHeld, "cannot send") {
+		parts = append(parts, "external GPS: "+p.NMEAHeld)
+	}
+	if p.DeviceNote != "" {
+		parts = append(parts, "device positions: "+p.DeviceNote)
 	}
 	if n := len(p.LastKnown); n > 0 {
 		var names []string

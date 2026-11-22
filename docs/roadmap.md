@@ -68,6 +68,16 @@ runs and is tested, not a layer of half-built parts.
   more hops, gateways pulled mid-test.
 - **Upgrading a whole mesh from one node:** each node in turn, each
   checking itself, the first one that goes back stopping the rest.
+- **Channel busy alert:** an alert when a link's channel stays busy,
+  with the survey one step away (built and tested in the lab; on radios
+  next).
+- **The node as its phone's GPS:** a node with a GNSS receiver feeds it
+  to ATAK on its own devices as an external GPS; a node without one
+  takes its position from its own phone (built and tested in the lab;
+  phones next).
+- **Push-to-talk voice:** talk groups across the mesh, with a headset
+  and PTT on the node or from the browser (preview: built and tested in
+  the lab; headsets on nodes next).
 - **Linking sites over the internet:** parts of one mesh in different
   places joined into one over WireGuard, with a node behind NAT able to
   hold the link and a second node per site to take over (built and
@@ -95,5 +105,4 @@ runs and is tested, not a layer of half-built parts.
 - **HaLow-only meshes finding a node that missed a change:** today a
   node whose only link is HaLow, off while the mesh moved, needs the
   profile again by hand.
-- Push-to-talk voice.
 - IPv6 for clients.

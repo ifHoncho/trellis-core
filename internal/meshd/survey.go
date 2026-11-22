@@ -54,11 +54,18 @@ type surveyState struct {
 	localAt time.Time
 
 	round *surveyRound
+
+	// congest: the channel-busy alert (congestion.go), and the alerts it
+	// raised at the last sample, shown on every pass.
+	congest     congestion
+	congestOut  []reconcile.Warning
+	congestKeys []string // the profile's links congestOut was judged on
 }
 
 type linkLoad struct {
-	busy  int // percent; -1 unknown
-	noise int // dBm; 0 unknown
+	busy  int    // percent; -1 unknown
+	noise int    // dBm; 0 unknown
+	freq  uint32 // MHz: the channel it was measured on; 0 unknown
 }
 
 type surveyRound struct {
@@ -91,8 +98,19 @@ func (r *surveyReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		s.last = time.Now()
 	}
 	s.mu.Unlock()
-	if !due || d.nl == nil {
-		return reconcile.Result{RequeueAfter: loadEvery}, nil
+	if !due {
+		s.mu.Lock()
+		if d.profile == nil {
+			// No profile, no links: nothing to judge, nothing kept.
+			s.congestOut, s.congest = nil, congestion{}
+		} else if !slices.Equal(s.congestKeys, congestKeysOf(d.profile)) {
+			// The links changed (a move, say): the alerts were about
+			// the old ones. The next sample judges the new.
+			s.congestOut = nil
+		}
+		w := append([]reconcile.Warning(nil), s.congestOut...)
+		s.mu.Unlock()
+		return reconcile.Result{RequeueAfter: loadEvery, Warnings: w}, nil
 	}
 	links := map[int]int{} // link → ifindex
 	d.facts.Read(func(f *Facts) {
@@ -112,6 +130,11 @@ func (r *surveyReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		prev[k] = v
 	}
 	s.mu.Unlock()
+	// Without nl80211 this node measures nothing of its own; the alert is
+	// still judged on the other nodes' figures (below).
+	if d.nl == nil {
+		links = nil
+	}
 	for link, ifindex := range links {
 		l := linkLoad{busy: -1}
 		if infos, err := d.nl.Survey(ifindex); err == nil {
@@ -125,6 +148,7 @@ func (r *surveyReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 				if in.HasNoise {
 					l.noise = int(in.NoiseDBm)
 				}
+				l.freq = in.FreqMHz
 				prev[ifindex] = in
 			}
 		}
@@ -133,7 +157,21 @@ func (r *surveyReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	s.mu.Lock()
 	s.prev, s.load = prev, loads
 	s.mu.Unlock()
-	return reconcile.Result{RequeueAfter: loadEvery}, nil
+	var warns []reconcile.Warning
+	if d.profile != nil {
+		names, keys, samples := d.linkSamples(d.profile)
+		s.mu.Lock()
+		s.congestOut = s.congest.observe(time.Now(), names, keys, samples)
+		s.congestKeys = congestKeysOf(d.profile)
+		warns = append(warns, s.congestOut...)
+		s.mu.Unlock()
+	} else {
+		// No profile, no links: nothing to judge, nothing kept.
+		s.mu.Lock()
+		s.congestOut, s.congest = nil, congestion{}
+		s.mu.Unlock()
+	}
+	return reconcile.Result{RequeueAfter: loadEvery, Warnings: warns}, nil
 }
 
 // linkLoad is the sampled load of link (from 1): busy -1 when unknown.
@@ -148,11 +186,18 @@ func (d *Daemon) linkLoad(link int) linkLoad {
 }
 
 // gossipLoads is the Load field of this node's record, one per profile link.
-func (d *Daemon) gossipLoads(links int) []int {
-	out := make([]int, 0, links)
+func (d *Daemon) gossipLoads(links []config.RadioPlan) []int {
+	out := make([]int, 0, len(links))
 	known := false
-	for i := 1; i <= links && i <= gossip.MaxLinkEntries; i++ {
-		b := d.linkLoad(i).busy
+	for i := 1; i <= len(links) && i <= gossip.MaxLinkEntries; i++ {
+		ll := d.linkLoad(i)
+		b := ll.busy
+		// A figure from another channel than the plan's (a recovery
+		// visit, a peer's switch) is not the link's: the others take Load
+		// as the plan's channel (congestion.go).
+		if !onPlan(links[i-1], ll.freq) {
+			b = -1
+		}
 		known = known || b >= 0
 		out = append(out, b)
 	}
@@ -316,6 +361,7 @@ func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string,
 		now[a.FreqMHz] = a
 	}
 	own := d.linkLoad(link)
+	perVisit := countsPerVisit(was, now)
 	var out []gossip.SurveyCh
 	for _, f := range freqs {
 		c := gossip.SurveyCh{Ch: channelOf(band, f), Busy: -1}
@@ -323,12 +369,14 @@ func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string,
 			continue
 		}
 		if a, ok := now[f]; ok {
-			b := was[f]
-			switch {
-			case a.InUse:
-				c.Busy = own.busy // the scan barely visits its own channel
-			case a.ActiveMS > b.ActiveMS+5 && a.BusyMS >= b.BusyMS:
-				c.Busy = min(100, int((a.BusyMS-b.BusyMS)*100/(a.ActiveMS-b.ActiveMS)))
+			if a.InUse {
+				// The scan barely visits its own channel: the link's
+				// sampled figure, when it was measured on this channel.
+				if own.freq == 0 || own.freq == f {
+					c.Busy = own.busy
+				}
+			} else {
+				c.Busy = visitBusy(was[f], a, perVisit)
 			}
 			if a.HasNoise {
 				c.Noise = int(a.NoiseDBm)
@@ -357,6 +405,56 @@ func (d *Daemon) surveyBand(ctx context.Context, link, ifindex int, band string,
 		return out, errors.New("Radio busy-time data unusable during scan (all channels reported fully busy); networks heard only")
 	}
 	return out, nil
+}
+
+// minVisitMS: a passive scan stays about 110 ms on a channel; a counter
+// that grew by less did not see a visit of its own. maxVisitMS: no scan
+// stays longer than this on one channel.
+const (
+	minVisitMS = 20
+	maxVisitMS = 300
+)
+
+// countsPerVisit reports a radio whose off-channel survey counters hold
+// the last scan visit alone (mt76 zeroes them each time it tunes there)
+// rather than a running total. Either sign says so: some off-channel
+// counter went down across the scan, which a running total never does;
+// or none after the scan is more than one visit long (a running total in
+// its first scans since boot reads the same, and its figure is then near
+// enough the visit's). Judged at each scan, nothing remembered.
+func countsPerVisit(before, after map[uint32]nl80211.SurveyInfo) bool {
+	short, seen := true, false
+	for f, a := range after {
+		if a.InUse {
+			continue
+		}
+		if b, ok := before[f]; ok && !b.InUse && (a.ActiveMS < b.ActiveMS || a.BusyMS < b.BusyMS) {
+			return true
+		}
+		if a.ActiveMS > 0 {
+			seen = true
+			short = short && a.ActiveMS <= maxVisitMS
+		}
+	}
+	return seen && short
+}
+
+// visitBusy is an off-channel's busy share during a scan, in percent, from
+// its counters before (b) and after (a), or -1 unknown. perVisit: a holds
+// the visit alone (countsPerVisit); otherwise the visit is a less b.
+func visitBusy(b, a nl80211.SurveyInfo, perVisit bool) int {
+	switch {
+	case perVisit:
+		// The figures are the last visit's: this scan's, or (counters the
+		// same as before it) the one before, minutes old at most. Equal
+		// figures are common on a quiet channel and prove nothing.
+		if a.ActiveMS >= minVisitMS && a.BusyMS <= a.ActiveMS {
+			return min(100, int(a.BusyMS*100/a.ActiveMS))
+		}
+	case a.ActiveMS >= b.ActiveMS+minVisitMS && a.BusyMS >= b.BusyMS:
+		return min(100, int((a.BusyMS-b.BusyMS)*100/(a.ActiveMS-b.ActiveMS)))
+	}
+	return -1
 }
 
 // saturated reports a radio whose busy times during a scan mean nothing:

@@ -130,7 +130,7 @@ test:
 FUZZTIME ?= 30s
 FUZZERS = gossip:FuzzOpenRecord gossip:FuzzOpenRaw gossip:FuzzOpenMessages gossip:FuzzParseLinkEntry \
 	deb:FuzzRead deb:FuzzParseKeys config:FuzzParseProfile config:FuzzDecodeProfileCode config:FuzzParseNode \
-	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal \
+	regdb:FuzzParse wpa:FuzzParseEvent dnsmasq:FuzzParseLeases version:FuzzVersion cot:FuzzMarshal cot:FuzzParseSA \
 	rollout:FuzzDecodeRollout dhcpc:FuzzParse dhcpc:FuzzUDPPayload \
 	rtp:FuzzParse rtp:FuzzParseCompound voice:FuzzDeliver webd:FuzzWSRead
 fuzz:

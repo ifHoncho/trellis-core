@@ -24,7 +24,7 @@ runs their seed inputs every time; `make fuzz` runs each one for
 | `deb` | `FuzzRead`, `FuzzParseKeys` | release packages (uploaded through the web UI) and key files |
 | `config` | `FuzzParseProfile`, `FuzzDecodeProfileCode`, `FuzzParseNode` | profiles, profile codes from QR codes, node configuration as YAML and JSON; what is accepted must validate |
 | `regdb`, `wpa`, `dnsmasq` | `FuzzParse`, `FuzzParseEvent`, `FuzzParseLeases` | the regulatory database, wpa_supplicant's events, DHCP leases (client hostnames) |
-| `version`, `cot` | `FuzzVersion`, `FuzzMarshal` | versions from gossip and packages (the Debian form must stay valid), callsigns and remarks in the XML phones receive |
+| `version`, `cot` | `FuzzVersion`, `FuzzMarshal`, `FuzzParseSA` | versions from gossip and packages (the Debian form must stay valid), callsigns and remarks in the XML phones receive, position reports from devices on a node's own ports (XML and TAK protocol; an accepted latitude and longitude are in range) |
 | `rollout` | `FuzzDecodeRollout` | rollouts announced by other nodes; what passes `Validate` must be safe to act on |
 | `dhcpc` | `FuzzParse`, `FuzzUDPPayload` | DHCP answers and raw frames from an uplink or client port; a lease that is accepted must stay within bounds (mask /8 or longer, 10 s to a year, T1 < T2 < lease) |
 | `webd` | `FuzzWSRead` | WebSocket frames from any browser that reaches the UI (the voice console); a message stays within 64 KB |
@@ -99,6 +99,13 @@ request from a node restarted soon after an earlier start went unanswered
 until it had sent as many broadcasts as before (10 s in the lab, minutes on
 a quiet node). T4c also checks that the warm-up frames stop at the other
 nodes' bridge.
+
+T4d restarts node 3 with an extra wired mesh port that cannot come up: it
+must be a `hard-interface-failed` warning, with `bat0` up and bridged and
+node 3 reachable. T4e restarts node 3 with its mesh port down and brings
+the port up 20 s later: node 1 must hear node 3 in gossip within 12 s of
+that (the record goes out at the first neighbour, not at the next
+refresh).
 
 ### Client network (T7)
 
@@ -245,7 +252,7 @@ across a restart, settling a profile changed apart and its spreading
 clocks say, and the restart rules (`TestMeshChangeSurvivesRestart`); the
 rest needs radios: mac80211_hwsim in a VM, or the bench.
 
-### Node positions (L1–L5)
+### Node positions (L1–L6)
 
 A stand-in gpsd (`lab/eud.py gpsd`) in node 3's namespace gives it a 3D
 fix; `lab/eud.py cotwait` is a phone waiting for one marker on ATAK's SA
@@ -258,6 +265,7 @@ group.
 | L3 | Node 3 is stopped. Node 1 (the lowest-numbered node) keeps it as last known and re-announces it to a phone on node 2, labelled "(last known)" and with "last known position" in its remarks |
 | L4 | No packet to port 6969 reaches the internet side of either gateway during L1–L5 |
 | L5 | `positions.share: false` sent mesh-wide: node 3 stops reporting, node 1 forgets its last known positions, and a phone hears nothing for 40 s |
+| L6 | Node 3, with a fix, sends NMEA to UDP 4349 of the device on its own port that sends SA (`lab/eud.py sasend`), and to no device on another node. Node 1, with no receiver, takes the position of the device on its own port, never that of a device on node 2; node 2 sees it in gossip |
 
 ### Auto port role (T9)
 
@@ -464,6 +472,16 @@ wrong passphrase never joins and that its failed authentications are
 recorded (on at least one node: wpa_supplicant reports a failed exchange on
 the side whose check fails), that peers are visible through nl80211, and
 that teardown restores the kernel's `wlan` interface.
+
+### Off-channel guard
+
+```sh
+sudo lab/hwsim-offchannel.sh    # inside a virtual machine
+```
+
+Three nodes on 5 GHz channel 36. A channel switch announced with `iw` on
+node 1 (as a peer with a stuck driver does) pulls nodes 1 and 2 to
+channel 44; every node must be back on channel 36 within a minute.
 
 ### Radio roles
 

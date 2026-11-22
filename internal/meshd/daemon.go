@@ -161,6 +161,7 @@ type Daemon struct {
 	findMesh    findMesh       // a node alone looking for its mesh (findmesh.go)
 	roster      roster         // the nodes heard lately, kept across restarts (roster.go)
 	positions   positionsState // node positions on the ATAK map (positions.go)
+	phone       phoneGPS       // the node as its devices' GPS, and theirs as its position (phonegps.go)
 	peers       *gossip.Table
 	rolloutSelf rolloutSelf
 	rollouts    rolloutState // mesh-wide upgrades (rollout.go)
@@ -695,6 +696,7 @@ func (d *Daemon) Status(ctx context.Context) (*status.Status, error) {
 	}
 	st.GNSS = gnssStatus(d.gnss, time.Now())
 	st.Positions = d.positions.status()
+	d.phoneStatus(&st.Positions) // nmeaLoop's figures as of now, not of the last positions pass
 	st.Resets = d.resetsStatus()
 	st.Trials = d.trialsStatus()
 	st.MeshChange = d.meshChangeStatus()

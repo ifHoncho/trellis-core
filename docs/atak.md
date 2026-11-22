@@ -113,9 +113,35 @@ callsign and "(last known)", and with the remarks "last known position: not
 on the mesh since HH:MM UTC". When the node returns, its own reports put
 the plain callsign back within a minute or two.
 
+A node without a receiver takes its position from a device on its own AP
+or Ethernet ports that runs ATAK (its SA, XML or TAK protocol), so it is
+still on the map; the remarks say so. Only the device's own position
+report counts, not a marker it shares, and only a GPS fix (CoT how
+`m-g`): ATAK without a fix reports its last or a hand-set point, which
+is not used. Not used either: a device this node fed its own fix in the
+last two minutes (section 8), and a source that reports several units
+(a TAK gateway passing reports on). Settings → System says which holds a
+device back. Other nodes see such a position marked as a device's.
+Devices on other nodes are never used. A node's own receiver always
+wins.
+
 Nothing needs setting on the phones. Positions stay inside the mesh: they
 are never routed to an uplink. To stop all nodes from appearing (emissions
 control), turn off **Node positions to ATAK** in
 Settings → Mesh profile and send it to every node; one node is turned off
 in its own Settings → Node. Neither affects the phones' own reports, which
 are set in ATAK.
+
+## 8. The node as the phone's GPS
+
+A node with a GNSS fix sends it once a second, as NMEA (GGA and RMC), to
+UDP port 4349 of every device on its own AP or Ethernet ports that runs
+ATAK (it sent its own position report in the last two minutes): ATAK's
+external GPS input. Other devices get nothing, so their radios can
+sleep, and nor does a TAK gateway passing on other units' reports. A
+receiver with a good antenna on the node then stands in for a phone's
+weaker one (inside a vehicle, a phone in a pocket). In ATAK's GPS
+preferences, choose the external GPS (4349 is ATAK's default port for
+it). Nothing goes to devices on other nodes. It stops when node
+positions are off or the node has no current fix. Settings → System
+shows how many devices get it, or why none do.

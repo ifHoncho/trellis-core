@@ -239,6 +239,22 @@ links they share.
   link per node. **Survey channels**: all nodes scan their link bands for
   a few seconds (receive only). Where a channel is clearly better, one
   button moves the link on all nodes (mesh-wide change).
+- **Channel busy alert:** a link whose channel stays at 60 % busy or more
+  at any node for 10 minutes (dips that stay above 50 % do not break the
+  count) raises `channel-busy`, with the node and figure and a link to
+  the survey; it clears after 2 minutes under 50 %, or with no node
+  measuring. The figure includes the mesh's own traffic: a link carrying
+  heavy traffic can raise it on a clean channel (the survey then shows
+  no better one). Nothing moves by itself.
+- **Off-channel guard:** a mesh radio follows a peer's channel switch
+  announcement in the kernel (a peer that hears radar moves the mesh
+  this way; a faulty driver can announce one it never makes). A link
+  left on another channel than the profile's for 30 seconds raises
+  `mesh-off-channel` and is restarted on its own channel, at most once
+  in 10 minutes per link. On a radar (DFS) channel plan it is flagged
+  only, not moved back. Trellis announces no switch itself: a mesh-wide
+  channel change restarts the link on every node at the same moment
+  (seconds without it).
 - Higher bands: more throughput, less range. A link that is established
   but cannot carry traffic (one end too weak) raises an alert: reduce
   distance, use a narrower width, or use a longer-range band.
@@ -475,7 +491,7 @@ Private DNS on phones and secure DNS in browsers if they do not resolve.
 | Page | Content |
 |---|---|
 | Overview | Node state and clock, mesh links, nodes, internet, site link, alerts |
-| Mesh | Live topology with link rates, direct links, routes |
+| Mesh | Live topology with link rates (View: all links, or one band, the site link or wired); select a node for its path from this node; direct links, routes |
 | Internet | Local uplink, gateway in use, all gateways; site link and members |
 | Devices | Clients on the AP and ports; AP QR code |
 | Radios | Radios, capabilities, role assignment |

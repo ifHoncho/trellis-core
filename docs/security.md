@@ -203,9 +203,16 @@ shared. What limits a buggy or hostile member:
   of one hop on the bridge; never through a gateway.
 - One switch in the mesh profile stops every node reporting (emissions
   control), and each node can be stopped on its own.
+- A node with a fix also sends it as NMEA to the devices on its own
+  Wi-Fi and ports that run ATAK (UDP 4349, unicast); a node without a
+  fix takes the position of such a device from its own report. Only
+  devices on the node's own ports count, never one behind another node.
 - **What remains:** anyone on the client network (A2) receives them, as
   ATAK's own reports. GNSS can be spoofed: a node reports where its
-  receiver says it is.
+  receiver says it is. A device on a node's own Wi-Fi or ports can put
+  that node anywhere on the map while the node has no fix of its own
+  (it is marked as a device's position; a receiver on the node always
+  wins).
 
 ## Privileges on a node
 
@@ -235,7 +242,7 @@ is either fixed, or planned with its reason.
 | R4 | Setup mode's Wi-Fi passphrase is public, and the first visitor sets the admin password. | By design for self-installs; images may carry a per-device passphrase. |
 | R5 | The web UI's certificate is trusted on first use. | Accepted for now; a certificate fingerprint in the node's QR code would close it. |
 | R6 | Secrets are not encrypted at rest. | Accepted: a node's own storage; image-level encryption planned. |
-| R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, dnsmasq's lease file, DHCP answers from the uplink, versions, rollouts from other nodes and the CoT writer: parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. Findings fixed: a link entry with a negative channel was accepted; a DHCP lease time near 2³² s overflowed the rebinding time. Leases are also bounded (a mask of /8 or longer, at least 10 s; a short lease is kept as granted, never stretched). |
+| R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, dnsmasq's lease file, DHCP answers from the uplink, versions, rollouts from other nodes, the CoT writer and the reader of devices' position reports (CoT XML and TAK protocol, from any device on a node's own ports): parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. Findings fixed: a link entry with a negative channel was accepted; a DHCP lease time near 2³² s overflowed the rebinding time. Leases are also bounded (a mask of /8 or longer, at least 10 s; a short lease is kept as granted, never stretched). |
 | R8 | A release could be signed with the production key during a trial build, and would then be accepted everywhere. | **Fixed:** development builds are refused a release key unless forced, and trial releases refuse a trusted key. |
 | R9 | Client devices are not isolated from each other. | By design (R2); a per-port option to isolate a client could come later. |
 | R10 | Voice: trellis-voiced parses RTP and RTCP from any device on the mesh's client network and hands the audio to libopus (C), and a client can talk on any group. | It runs without capabilities in a sandbox (devices: ALSA, hidraw, input, USB serial ports and GPIO chips), fuzzed (`rtp`, `voice`); a CNAME is bounded and filtered to printable ASCII. It has no access to meshd's API: it is not in the `trellis` group, and reads its configuration (no secret in it) from a file meshd keeps for it. Its `input` group lets it read every input device of the node, a keyboard included. Talk groups are not authenticated: anyone on the client network can join or talk, as with the ATAK groups, and can also keep a group busy (a few packets a second refuse every PTT on it), end a talk with a forged RTCP BYE, or take every group over by claiming an all-call. The browser console (any signed-in admin) monitors and talks through the node: its WebSocket accepts only this UI's own origin with a session, ends with that session, and its frames are fuzzed (`webd:FuzzWSRead`). |

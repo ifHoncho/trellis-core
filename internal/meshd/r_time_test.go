@@ -123,4 +123,13 @@ func TestGNSSStatus(t *testing.T) {
 	if g := gnssStatus(&gnss.Watcher{}, now); g.Receiver || g.Fix != "none" || !strings.Contains(g.Note, "gpsd is not running") {
 		t.Errorf("no gpsd: %+v", g)
 	}
+	// A 3D fix with sea level only (gpsd before 3.20): no height, and why.
+	st := gnss.State{Running: true, Receiver: true, Mode: gnss.Mode3D, Lat: 52, Lon: 5, Heard: now, MSLM: 12, HasMSL: true}
+	if g := gnssStatusOf(st, now); g.AltM != nil || !strings.Contains(g.Note, "Height not shared") {
+		t.Errorf("sea level only: %+v", g)
+	}
+	st.AltM, st.HasAlt = 59, true
+	if g := gnssStatusOf(st, now); g.AltM == nil || g.Note != "" {
+		t.Errorf("with ellipsoid height: %+v", g)
+	}
 }

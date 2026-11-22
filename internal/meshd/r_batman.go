@@ -34,6 +34,9 @@ type batmanReconciler struct {
 	// warmFailedAt is when the last warm-up failed (unix ns): a new try
 	// waits warmupRetry after it.
 	warmFailedAt atomic.Int64
+	// noneSince: since when no wanted hard interface has been there at all.
+	noneSince time.Time
+
 	// blaIfindex is the bat0 on which bridge loop avoidance was turned on
 	// for a wired client port: it stays on for that bat0's life, so that
 	// plugging a cable in and out does not start its 30 s start-up wait
@@ -52,6 +55,9 @@ const defaultMcastFanout = 16
 // reported: the bridge querier needs a query interval plus its response
 // time to be elected and recognised (architecture §9).
 const mcastGrace = 45 * time.Second
+
+// hardIfRetry is how soon a hard interface that failed is tried again.
+const hardIfRetry = 10 * time.Second
 
 func newBatmanReconciler(d *Daemon) *batmanReconciler { return &batmanReconciler{d: d} }
 
@@ -223,6 +229,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			desired[n] = true
 		}
 	})
+	wired := map[string]bool{}
 	for _, port := range cfg.MeshPorts() {
 		l, err := rtnl.LinkByNameOrNil(port)
 		if err != nil {
@@ -232,7 +239,7 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			warn("warning", "mesh-port-missing", "wired mesh port %s does not exist", port)
 			continue
 		}
-		desired[port] = true
+		desired[port], wired[port] = true, true
 		if l.Attrs().MTU != cfg.MeshMTU {
 			if err := netlink.LinkSetMTU(l, cfg.MeshMTU); err != nil {
 				warn("warning", "mesh-mtu", "cannot set %s MTU to %d (%v); keeping %d", port, cfg.MeshMTU, err, l.Attrs().MTU)
@@ -242,26 +249,42 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			}
 		}
 	}
+	// One hard interface that cannot be attached or brought up (a radio
+	// whose driver is stuck) must not keep bat0 down: the node's other
+	// links still carry the mesh. It is a warning, retried.
+	working, failed, missing := 0, 0, 0 // attached and up; there but not; not there
 	for name := range desired {
 		l, err := netlink.LinkByName(name)
 		if err != nil {
+			missing++ // not made yet (startup, a radio re-enumerating)
 			continue
 		}
 		if ch, err := rtnl.EnsureMaster(l, link); err != nil {
-			return res, fmt.Errorf("attach %s to %s: %w", name, BatIfname, err)
+			warn("warning", "hard-interface-failed", "%s not attached to %s: %v. %s", name, BatIfname, err, portDown(name, wired, sites))
+			res.RequeueAfter = hardIfRetry
+			failed++
+			continue
 		} else if ch {
 			d.log.Info("attached hard interface", "interface", name, "to", BatIfname)
 			res.Changed = true
 		}
 		if ch, err := rtnl.EnsureUp(l); err != nil {
-			return res, fmt.Errorf("bring up %s: %w", name, err)
+			warn("warning", "hard-interface-failed", "%s bring-up failed: %v. %s", name, err, portDown(name, wired, sites))
+			res.RequeueAfter = hardIfRetry
+			failed++
+			continue
 		} else if ch {
 			res.Changed = true
 		}
+		working++
 	}
+	// A failure from here on is a warning too: bat0 still comes up below.
 	hifs, err := d.bat.HardIfs(idx)
-	if err != nil {
-		return res, err
+	listed := err == nil
+	if !listed {
+		warn("warning", "hard-interface-failed", "cannot list %s's hard interfaces: %v", BatIfname, err)
+		res.RequeueAfter = hardIfRetry
+		hifs = nil
 	}
 	// A site link tunnel reports no speed, and BATMAN_V would take it for
 	// 1 Mbit/s: it is told the profile's figure (100 kbit/s units), and a
@@ -295,15 +318,35 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 		}
 		if l, err := netlink.LinkByIndex(h.Ifindex); err == nil {
 			if err := netlink.LinkSetNoMaster(l); err != nil {
-				return res, fmt.Errorf("detach %s from %s: %w", h.Name, BatIfname, err)
+				warn("warning", "hard-interface-failed", "%s not detached from %s: %v", h.Name, BatIfname, err)
+				res.RequeueAfter = hardIfRetry
+				continue
 			}
 			d.log.Info("detached hard interface", "interface", h.Name, "from", BatIfname)
 			res.Changed = true
 		}
 	}
-	b.siteSet = told
-	if len(desired) == 0 {
+	if listed {
+		b.siteSet = told // a failed listing says nothing about what they were told
+	}
+	switch {
+	case len(desired) == 0:
 		warn("error", "no-hard-interfaces", "%s: no hard interfaces (no mesh radio or wired mesh port)", BatIfname)
+	case working == 0 && failed > 0:
+		warn("error", "no-hard-interfaces", "%s: no hard interface attached and up (%d failed). Node off the mesh", BatIfname, failed)
+	case working == 0 && missing > 0:
+		// None there at all: normal for a moment (start-up, a radio
+		// re-enumerating), an alert once it lasts.
+		if b.noneSince.IsZero() {
+			b.noneSince = time.Now()
+		}
+		if time.Since(b.noneSince) >= noneThereAfter {
+			warn("error", "no-hard-interfaces", "%s: no hard interface present (%d missing) for %s. Node off the mesh", BatIfname, missing, time.Since(b.noneSince).Round(time.Second))
+		}
+		res.RequeueAfter = hardIfRetry
+	}
+	if !(working == 0 && failed == 0 && missing > 0) {
+		b.noneSince = time.Time{} // only "none there at all" runs the clock
 	}
 
 	if ch, err := rtnl.EnsureUp(link); err != nil {
@@ -335,7 +378,9 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 			b.wantAllSince = time.Time{}
 		case b.wantAllSince.IsZero():
 			b.wantAllSince = time.Now()
-			res.RequeueAfter = mcastGrace
+			if res.RequeueAfter == 0 || res.RequeueAfter > mcastGrace {
+				res.RequeueAfter = mcastGrace
+			}
 		case time.Since(b.wantAllSince) >= mcastGrace:
 			why := "no IGMP querier is known"
 			if mf.OwnPriv&batadv.BATADV_MCAST_FLAGS_QUERIER_IPV4_SHADOWING != 0 {
@@ -346,6 +391,22 @@ func (b *batmanReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 	return res, nil
 }
+
+// portDown says what a hard interface that failed means and what to do:
+// a radio's mesh link, a wired mesh port, or a site link tunnel.
+func portDown(name string, wired, sites map[string]bool) string {
+	switch {
+	case wired[name]:
+		return "Wired mesh port down; check the cable and the port"
+	case sites[name]:
+		return "Site link down on this node"
+	}
+	return "Mesh link on this radio down; reload its driver or reboot (a USB radio: replug it)"
+}
+
+// noneThereAfter: no hard interface there at all this long raises
+// no-hard-interfaces.
+const noneThereAfter = time.Minute
 
 // warmUp starts the broadcast warm-up on a new bat0 once one of its hard
 // interfaces is active: before that batman-adv drops broadcasts without
@@ -393,6 +454,11 @@ func (b *batmanReconciler) warmUp(idx int, hifs []batadv.HardIf, mac net.Hardwar
 			return
 		}
 		log.Info("broadcast warm-up sent", "frames", n, "held_back", held, "took", time.Since(start).Round(time.Millisecond))
+		// bat0's first neighbour, and its broadcasts now get through:
+		// tell the mesh this node is here.
+		if g := b.d.gossip; g != nil {
+			g.announce()
+		}
 	}()
 }
 

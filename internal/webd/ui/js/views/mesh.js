@@ -3,7 +3,7 @@ import { h } from '../dom.js';
 import { state, history, nameOf, nodeByAddr, shortMac } from '../state.js';
 import { panel, table, bars, spark, pill, button } from '../ui.js';
 import { mbps, ago, duration, plural, signal, meshLinks, carried, linkName, linkOn, bandName } from '../fmt.js';
-import { topology, legend, resetLayout, hasPins, acrossSites } from '../topo.js';
+import { topology, selection, legend, resetLayout, hasPins, acrossSites, viewButton } from '../topo.js';
 import { stamp } from '../time.js';
 
 // Reasons another node gives for a degraded radio; a code from a newer
@@ -97,12 +97,13 @@ export function mesh() {
   return h('div.page',
     h('header.page-head',
       h('div', h('h1', 'Mesh'),
-        h('p.sub', `${plural(others.length + 1, 'node')} on “${st.profile.name}” · ${plural(nbrs.length, 'direct link')} `,
-          'Layout: stronger links drawn shorter.')),
+        h('p.sub', `${plural(others.length + 1, 'node')} on “${st.profile.name}” · ${plural(nbrs.length, 'direct link')}`)),
       h('div.tools', hasPins() ? button('Reset layout', resetLayout, 'small') : null)),
 
-    panel('Topology', { flush: true, meta: topo ? `polled every ${duration((topo.interval_ms || 5000) / 1000)}` + (silent ? ` · ${plural(silent, 'node')} not reporting links` : '') : 'asking…' },
-      topology(topo, {}), legend(topo)),
+    panel('Topology', { flush: true, tools: [
+      h('span.meta', topo ? `polled every ${duration((topo.interval_ms || 5000) / 1000)}` + (silent ? ` · ${plural(silent, 'node')} not reporting links` : '') : 'asking…'),
+      viewButton(topo, button)] },
+      topology(topo, {}), selection(topo), legend(topo)),
 
     h('div.grid',
       panel('Direct links', { class: 'c12', flush: true, meta: radioLinks.length ? radioLinks.map((l) => linkName(l, st)).join('  +  ') : st.mesh_link.transport },

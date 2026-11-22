@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/cot"
 	"meridian/trellis/internal/gnss"
 	"meridian/trellis/internal/gossip"
@@ -86,11 +87,15 @@ func (r *positionsReconciler) Teardown(ctx context.Context) error {
 }
 
 // positionsOff says which setting turns sharing off: "profile", "node" or "".
-func (d *Daemon) positionsOff() string {
+func (d *Daemon) positionsOff() string { return positionsOffIn(d.cfg, d.profile) }
+
+// positionsOffIn is positionsOff for a configuration read with d.conf(),
+// from a goroutine other than the reconcile loop's.
+func positionsOffIn(cfg *config.Node, profile *config.Profile) string {
 	switch {
-	case d.profile != nil && !d.profile.Positions.Shared():
+	case profile != nil && !profile.Positions.Shared():
 		return "profile"
-	case d.cfg != nil && !d.cfg.Positions.Shared():
+	case cfg != nil && !cfg.Positions.Shared():
 		return "node"
 	}
 	return ""
@@ -110,7 +115,7 @@ func (d *Daemon) gossipPosition(now time.Time) (pos *gossip.Position, off bool) 
 	if d.positionsOff() != "" {
 		return nil, true
 	}
-	st, ok := ownFix(d.gnss, now)
+	st, device, _, ok := d.positionFix(now)
 	if !ok {
 		return nil, false
 	}
@@ -118,7 +123,9 @@ func (d *Daemon) gossipPosition(now time.Time) (pos *gossip.Position, off bool) 
 	if t.IsZero() {
 		t = st.Heard
 	}
-	return gossip.NewPosition(st.Lat, st.Lon, st.AltM, st.HasAlt, st.HAccM, st.Mode, t.Unix()), false
+	p := gossip.NewPosition(st.Lat, st.Lon, st.AltM, st.HasAlt, st.HAccM, st.Mode, t.Unix())
+	p.Device = device != ""
+	return p, false
 }
 
 func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Result, err error) {
@@ -128,6 +135,13 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 	s := &d.positions
 	off := d.positionsOff()
 	me := d.identity()
+	// This node's position: its receiver's fix, else a device's.
+	var fix gnss.State
+	var device, how string
+	var ok bool
+	if off == "" {
+		fix, device, how, ok = d.positionFix(now)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,7 +152,8 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 	if !s.lastSent.IsZero() {
 		st.LastSentAgoMS = now.Sub(s.lastSent).Milliseconds()
 	}
-	defer func() { s.st = st }()
+	defer func() { d.phoneStatus(&st); s.st = st }()
+	d.startPhoneGPS()
 
 	// Last known positions, from the records of the nodes on the mesh.
 	live := map[string]bool{}
@@ -175,8 +190,6 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 		return res, nil
 	}
 
-	// This node's own position.
-	fix, ok := ownFix(d.gnss, now)
 	if !ok || off != "" || me == nil {
 		s.since = time.Time{}
 	}
@@ -186,7 +199,7 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 	case me == nil:
 		st.Note = "waiting for the node's identity"
 	case !ok:
-		st.Note = "no GNSS fix"
+		st.Note = "no GNSS fix, and no position from a device on this node"
 	default:
 		if s.since.IsZero() {
 			s.since = now
@@ -200,6 +213,11 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 			(now.Sub(s.lastSent) >= posMinGap && moved >= max(posMoveM, fix.HAccM))
 		if due {
 			ev := nodeEvent(me.MAC, d.cfg.Callsign, fix, now)
+			if device != "" {
+				// Not this node's receiver: no GPS claim of its own, and
+				// the device's how.
+				ev.Remarks, ev.GPS, ev.How = "Trellis mesh node. Position from a device on this node.", false, how
+			}
 			if err := s.send(ev); err != nil {
 				st.Note = "cannot send: " + err.Error()
 				return res, nil
@@ -208,8 +226,11 @@ func (r *positionsReconciler) Reconcile(ctx context.Context) (res reconcile.Resu
 			s.lastSent, s.lastLat, s.lastLon = now, fix.Lat, fix.Lon
 			st.Sent, st.LastSentAgoMS = s.sent, 0
 		}
-		st.Shared = true
+		st.Shared, st.Device = true, device
 		st.Note = fmt.Sprintf("on the ATAK map, re-sent every %s while still and at once on a move", posStill)
+		if device != "" {
+			st.Note += "; position from the device at " + device
+		}
 	}
 
 	// Nodes that left: the lowest-numbered node re-announces them.
@@ -288,15 +309,23 @@ func lastKnownEvent(mac string, k *lastKnownPos, now time.Time) cot.Event {
 		ce = float64(k.pos.Acc)
 	}
 	start := k.heard
-	return cot.Event{
-		UID: nodeUID(mac), Type: cot.NodeType, Time: now, Start: start, Stale: start.Add(posStaleAfter),
-		Lat: k.pos.Lat, Lon: k.pos.Lon, HAE: hae, CE: ce, LE: cot.Unknown, Callsign: k.callsign + " (last known)", GPS: true,
-		Remarks: fmt.Sprintf("Trellis mesh node, last known position: not on the mesh since %s UTC.", k.heard.UTC().Format("15:04")),
+	rm := fmt.Sprintf("Trellis mesh node, last known position: not on the mesh since %s UTC.", k.heard.UTC().Format("15:04"))
+	if k.pos.Device {
+		rm += " Position from a device on the node."
 	}
+	ev := cot.Event{
+		UID: nodeUID(mac), Type: cot.NodeType, Time: now, Start: start, Stale: start.Add(posStaleAfter),
+		Lat: k.pos.Lat, Lon: k.pos.Lon, HAE: hae, CE: ce, LE: cot.Unknown, Callsign: k.callsign + " (last known)", GPS: !k.pos.Device,
+		Remarks: rm,
+	}
+	if k.pos.Device {
+		ev.How = "m-f" // not "machine, GPS": a device's, its source not known here
+	}
+	return ev
 }
 
 func positionStatus(p gossip.Position) status.Position {
-	out := status.Position{Lat: p.Lat, Lon: p.Lon, AccM: p.Acc, Fix: fmt.Sprintf("%dd", p.Fix), Time: time.Unix(p.Time, 0)}
+	out := status.Position{Lat: p.Lat, Lon: p.Lon, AccM: p.Acc, Fix: fmt.Sprintf("%dd", p.Fix), Time: time.Unix(p.Time, 0), Device: p.Device}
 	if p.HasAlt {
 		alt := p.Alt
 		out.AltM = &alt

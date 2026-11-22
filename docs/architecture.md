@@ -433,6 +433,18 @@ ethertype 0x88B5, and every node's bridge drops them as they come in from
 the mesh. They are spread over 3 s, or 16 s where the node carries a HaLow
 link, where a broadcast costs far more airtime.
 
+**First neighbour:** when `bat0` has its first neighbour, meshd also sends
+its gossip record (§12.5), at once and again 4 and 10 s later. Records sent
+before the link was up reached nobody, and batman-adv sends multicast only
+to the listeners it knows, which a new node learns within seconds. Once
+per `bat0`: parts of a mesh that meet again hear each other at the next
+refresh.
+
+**A hard interface that will not come up** (a radio whose driver is stuck,
+a wired port, a site tunnel) is a warning (`hard-interface-failed`),
+retried every 10 s; `bat0` comes up on the others. With every one failed,
+or none for a minute, it is an error (`no-hard-interfaces`).
+
 **Why batman-adv at all:** it makes the mesh one layer-2 domain with dynamic
 multi-hop routing, which is what ATAK multicast, mDNS and moving EUDs want
 (§7). The alternative, per-hop IP routing, is costly: layer-3 multicast
@@ -618,7 +630,8 @@ a hostname or callsign, and a node ID N.
 **In practice:**
 - **The first ID** is the pinned one, else a hash of the identity MAC
   (`derived`). There is no ARP probe before first use: a duplicate lasts until
-  the first gossip exchange, which comes within seconds because a new node is
+  the first gossip exchange, which comes within seconds of the node's first
+  mesh neighbour: the node sends its record then (§6), and a new node is
   answered early (§12.5).
 - **Who keeps a contested ID:** a pinned ID beats a `derived` or `claimed`
   one. Between equals, the lower identity MAC keeps it. Every node evaluates
@@ -1145,8 +1158,10 @@ Authenticated (§11), versioned, size-capped.
   new channel; a node on a version that does not send it is reported as
   unknown.
 - Sent to UDP multicast group `239.73.73.73:7373` on `br-mesh`, TTL 1: on
-  change, every 30 s ± 5 s, and within a second of hearing a new node (at
-  most once per 3 s), so a newcomer learns the mesh in seconds.
+  change, every 30 s ± 5 s, within a second of hearing a new node (at
+  most once per 3 s), and when the node gets its first mesh neighbour
+  (§6), so a newcomer learns the mesh, and the mesh the newcomer, in
+  seconds.
 - HMAC-SHA256 (truncated to 128 bits) under a key derived with HKDF from the
   mesh passphrase and mesh ID. Replays are refused per sender by a random
   boot ID plus a sequence number. Client ports drop the gossip port in both
@@ -1173,6 +1188,17 @@ needs the whole mesh graph (its topology page is open) asks instead:
   50 nodes), and none at all while nobody asks;
 - a node on an older release doesn't answer; its links then show from the
   other end only.
+
+**Topology views** are drawn in the browser from the same data. The Mesh
+page's View button shows all links, one band, the site link or wired
+links; nodes keep their places. Every band the profile has a mesh link
+on is a view, even with no link on it: an empty view says the band is
+down everywhere. A selected node shows its path from this node, with the
+node's details and the hops in a card under the map, not over it: the
+first hop is batman-adv's next hop towards it, the rest the
+widest path over the map's link figures (BATMAN_V's ranking), and the
+path's figure is batman-adv's own. A route batman-adv knows but the map
+cannot draw is shown as partial, not as no route.
 
 **Why not alfred:** an extra daemon and package on every node, no
 authentication of its own, and master-to-master unicast sync that grows with
@@ -1366,7 +1392,37 @@ Validation-first keeps a bad config from ever reaching a running node.
   another clearly better. A move is a mesh-wide profile change (§12.6).
   Drivers differ: mt76 reports busy times (the MT7610U's are unusable on
   5 GHz during a scan, and are dropped), ath9k_htc and rt2800usb none, so
-  their nodes count networks heard only.
+  their nodes count networks heard only. mt76 keeps the counters of a
+  channel it is not on for the last scan visit only; other drivers keep
+  running totals. Which kind a radio is shows at each scan (a counter
+  that went down, or none longer than one visit), and busy is worked out
+  to match.
+- **Channel busy alert.** From the same gossiped figures, per link: its
+  busiest node at 60 % or more for 10 minutes raises `channel-busy`. A
+  run goes on through 50–60 %; 2 minutes under 50 %, or with no node
+  measuring, clears it. A node's figure counts only while its link is on
+  the profile's channel; nodes at another site of a site link and nodes
+  gone quiet are left out. The figure includes the mesh's own traffic
+  (drivers do not separate it), and the alert says so. The survey and any
+  move stay the operator's.
+- **Channel moves.** A mesh-wide channel change restarts the link on every
+  node at the same moment (§12.6). Trellis announces no channel switch of
+  its own. A mesh radio still follows any peer's announcement in the
+  kernel: a peer that hears radar moves the mesh this way, and a faulty
+  driver can announce a switch it never makes, taking the nodes that
+  follow to a channel the rest is not on. Two checks, per mesh link:
+  - **Off-channel guard:** a link joined on another channel than the
+    profile's for 30 s raises `mesh-off-channel` and is restarted on its
+    own channel, at most once in 10 minutes. On a radar plan (5 GHz
+    channels 52 to 144, or the 160 MHz block of 36 to 64) it is flagged
+    only: the move may be the mesh's own radar move, and the profile's
+    channel is then out of use for half an hour.
+  - **Left the mesh in the kernel:** an interface with no channel in the
+    kernel while wpa_supplicant reports it joined (a driver that fails
+    to follow a peer's switch), for 15 s: wpa_supplicant is restarted,
+    and if that does not hold, the interface is deleted and made again
+    (a restart instead where the client AP shares the radio). The wait
+    doubles with each action in a row, up to 10 minutes.
 - **Time.** chrony on every node (`packaging/chrony/trellis.conf`). A node
   with a GNSS receiver takes its time from gpsd (the receiver's messages, or
   its pulse per second where the board wires it) and serves it to the mesh.
@@ -1395,6 +1451,30 @@ Validation-first keeps a bad config from ever reaching a running node.
   mesh's own. `positions.share: false` in the profile stops every node at
   once and drops the last known positions (emissions control); in
   `node.yaml` it stops one node.
+- **The node and its own devices.** A node with a fix is its devices' GPS,
+  and a node without one takes a device's position (docs/atak.md §7–§8).
+  meshd reads the SA group's datagrams that arrive on its own AP and
+  client ports with a packet socket filtered in the kernel (whole IPv4
+  UDP datagrams to 6969, not from `bat0` or `br-mesh`), **not** by
+  joining the group: that would make the node a listener in batman-adv's
+  eyes and pull every phone's reports to it over the air. A device is a
+  source heard sending its own position report (CoT XML or TAK protocol;
+  not an item it shares from its map, not a Trellis node's) on one of
+  this node's own ports in the last 2 minutes; at most 64. A node with a
+  current fix sends GGA and RMC once a second to UDP 4349 of each
+  (ATAK's external GPS input). A node without a fix takes a device's
+  position. Three rules hold a device back, the reason shown in status
+  (`device_note`):
+  - a source that reported more than one unit in the last 2 minutes is a
+    gateway passing reports on: not fed, not a position;
+  - only a GPS fix counts (CoT how `m-g`): ATAK without one reports its
+    last or a hand-set point with another how;
+  - a device fed this node's fix in the last 2 minutes: ATAK holds an
+    external fix for a while after it stops.
+
+  Such a position goes out with the device's how and no GPS claim of the
+  node's own, and in gossip marked as a device's. The node's receiver
+  always wins. Both directions stop with positions off.
 - **Voice (preview).** Push-to-talk talk groups, Opus over multicast RTP
   (the format MPU5-class radios and the ATAK Voice plugin use): a group is
   a multicast address and port (default `239.73.80.n`, port `38799+2n`),
