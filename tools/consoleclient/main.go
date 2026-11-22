@@ -7,11 +7,15 @@
 //
 // It prints one JSON object: per group the frames heard and the share of
 // --hear-hz in them, whether the PTT was granted, the notices.
+//
+// An https URL reaches a node's own webd; its certificate is self-signed
+// and is not checked (a bench tool).
 package main
 
 import (
 	"bufio"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -65,11 +69,17 @@ func run(base, pw, name, mon string, listen time.Duration, talk int, tone float6
 	if err != nil {
 		return err
 	}
+	secure := bu.Scheme == "https"
+	tlsConf := &tls.Config{InsecureSkipVerify: true} // a node's self-signed certificate
+	client := http.DefaultClient
+	if secure {
+		client = &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConf}}
+	}
 	// Sign in.
 	req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/login", strings.NewReader(`{"password":`+strconv.Quote(pw)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Trellis-Request", "1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -82,7 +92,16 @@ func run(base, pw, name, mon string, listen time.Duration, talk int, tone float6
 		return fmt.Errorf("sign-in: %s", resp.Status)
 	}
 	// The WebSocket.
-	conn, err := net.Dial("tcp", bu.Host)
+	var conn net.Conn
+	if secure {
+		host := bu.Host
+		if bu.Port() == "" {
+			host = net.JoinHostPort(bu.Hostname(), "443")
+		}
+		conn, err = tls.Dial("tcp", host, tlsConf)
+	} else {
+		conn, err = net.Dial("tcp", bu.Host)
+	}
 	if err != nil {
 		return err
 	}

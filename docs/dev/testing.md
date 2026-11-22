@@ -317,7 +317,9 @@ libopus.
 - V1.7 the browser console: `tools/consoleclient` (a console without a
   browser) signs in to a webd on node 1, monitors group 1 while node 4
   talks (3 hops), and keys group 2, which node 3 hears under the
-  console's name.
+  console's name. On the bench it takes a node's own webd
+  (`--url https://<node>`; the self-signed certificate is not checked)
+  as a talker or listener.
 
 The console's browser side is checked with `make ui-dev` (fakemeshd serves
 a made-up console socket) and `FF_FAKE_MEDIA=1 tools/uishot.py`, which
