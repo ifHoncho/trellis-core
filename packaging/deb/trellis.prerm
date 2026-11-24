@@ -9,7 +9,7 @@ case "$1" in
       # meshd removes every interface, route and rule it made as it stops.
       systemctl stop trellis-meshd.service 2>/dev/null || true
     fi
-    for u in trellis-meshd.service trellis-webd.socket trellis-trial.service; do
+    for u in trellis-meshd.service trellis-webd.socket trellis-trial.service trellis-firstboot.service; do
       if command -v systemctl >/dev/null 2>&1; then
         systemctl disable "$u" >/dev/null 2>&1 || true
       elif command -v deb-systemd-helper >/dev/null 2>&1; then

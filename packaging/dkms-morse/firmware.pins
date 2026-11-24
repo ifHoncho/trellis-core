@@ -1,0 +1,14 @@
+# Morse Micro's firmware and board configuration file (BCF) for the
+# Wio-WM6108, pinned by commit and SHA-256. Read by
+# scripts/install-wm6108-halow.sh (sourced) and by trellis firstboot,
+# which installs these files from an image's card: KEY=VALUE lines
+# only. Morse's 2.2 release line, matching the driver
+# (build-morse.sh, mm6108-2.2.2).
+FW_REPO=https://github.com/MorseMicro/morse-firmware.git
+FW_REF=db4b69fd212990c59c5f1712e23060cbb94276ec
+FW_FILE=firmware/mm6108.bin
+FW_SHA256=aeacb187816b62c55efc362cde256c02b862613ebf136b96e11e4fa05b3e1b03
+# The Wio-WM6108 carries a Quectel FGH100M-H (full name FGH100M-H-AAMD).
+BCF_FILE=bcf/quectel/bcf_fgh100mhaamd.bin
+BCF_SHA256=55089af7d08597a16ddd4002ca4b23f24729aa5bd0f1b75b6e04bc5270d23ba6
+LICENSE_FILE=firmware/LICENSE

@@ -90,9 +90,9 @@ Working on real hardware and in a 50-node lab: the mesh, the client
 network, gateways and failover, multicast, the web UI, multiple links per
 node, both regulatory modes, packages with upgrades that go back by
 themselves when a node is not healthy afterwards, and deploying to a set
-of devices from one machine. Wi-Fi HaLow and field testing are in
-progress, with upgrading a whole mesh from one node; images come next.
-The current release is **0.2.1, an alpha**
+of devices from one machine. Wi-Fi HaLow, field testing, upgrading a
+whole mesh from one node and prebuilt images are in progress.
+The current release is **0.3.0, an alpha**
 ([changes](CHANGELOG.md)). See the
 [roadmap](docs/roadmap.md).
 

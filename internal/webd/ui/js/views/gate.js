@@ -3,10 +3,11 @@
 import { h } from '../dom.js';
 import { get, put, post } from '../api.js';
 import { state, redraw, toast } from '../state.js';
-import { brandMark, field, button, notice, qr, toggle, icon } from '../ui.js';
+import { brandMark, field, button, notice, qr, toggle, icon, kv } from '../ui.js';
 import { bandName } from '../fmt.js';
 import { canScan, canScanImages, startScan, scanImage } from '../scan.js';
-import { linkFields, linkOrder, nextLink } from '../links.js';
+import { defaultLinks, linkFields, linkOrder, nextLink } from '../links.js';
+import { ACCOUNT, keyLine, keysEditor, passwordAuthToggle } from '../account.js';
 
 let refresh = () => {};
 
@@ -63,12 +64,31 @@ function listBands(bands) {
   return names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('');
 }
 
+// radioPlan: the radios a node in setup mode will run (meshd's setup
+// plan): each mesh link, and the client AP.
+function radioPlan(plan) {
+  if (!plan) return null;
+  const none = h('span.warn', 'No radio');
+  return h('div.panel', h('div.panel-body',
+    h('div.label', { style: { marginBottom: '10px' } }, 'Radios'),
+    kv([
+      ...(plan.links || []).map((l) => [l.link, l.radio || none]),
+      ['Client AP', plan.ap || none],
+    ])));
+}
+
 function wizard() {
   const s = state.session;
   const ui = (state.ui.setup ||= {
     step: 0, pw: '', pw2: '', mode: 'join', code: '', file: '', name: '', links: null, regMode: 'country', country: 'US',
     callsign: /^trellis-node$|^localhost$/.test(s.callsign || '') ? '' : (s.callsign || ''), nodeID: 0,
     busy: false, error: '', fields: {}, preview: null, done: null, scanning: false, stop: null,
+    // The Access step. adminPw is the admin password set in step
+    // 0, kept in memory until setup applies: the account's by default.
+    adminPw: '', webUplink: true, sshUplink: true, osUpdate: null,
+    // keys and keyOnly start as the account has them (a card's keys, a
+    // node set up again): loaded when the step opens.
+    acct: { same: true, pw: '', pw2: '', keys: [], paste: '', gh: '', keyOnly: false, busy: false, error: '', loaded: false, loading: false, read: null },
   });
   const first = s.admin_set ? 1 : 0;
   if (ui.step < first) ui.step = first;
@@ -77,18 +97,38 @@ function wizard() {
     for (const f of e.fields || []) ui.fields[f.field] = f.message;
     ui.error = e.message.split('\n')[0];
   };
-  const steps = h('div.steps', [0, 1, 2, 3].slice(first).map((i) => h('i', { class: i < ui.step ? 'done' : i === ui.step ? 'now' : '' })));
+  const steps = h('div.steps', [0, 1, 2, 3, 4].slice(first).map((i) => h('i', { class: i < ui.step ? 'done' : i === ui.step ? 'now' : '' })));
   // The bands this node has a mesh radio for, for the links it proposes.
   const radios = ((state.status && state.status.radios) || []).filter((r) => r.mesh_point);
+  // A HaLow module whose firmware or BCF has not arrived yet is a
+  // HaLow radio to come: its link is proposed, and carried once the files
+  // are in.
+  const halowPending = ((state.status && state.status.warnings) || []).some((w) => w.code === 'halow-files-missing')
+    && !radios.some((r) => (r.bands || []).includes('s1g'));
+  if (halowPending) radios.push({ bands: ['s1g'], mesh_point: true });
   const bands = [...new Set(radios.flatMap((r) => r.bands || []))];
-  // A new mesh starts with one link, on the band of this node's radios the
-  // usual order puts first; more can be added, one per band or radio. Made
+  // A new mesh starts with a link per mesh radio of this node, each on its
+  // best band (defaultLinks); links can be removed, changed or added. Made
   // when "Start a new mesh" is shown, by when the radios are known.
-  if (ui.mode === 'new') ui.links ||= [nextLink([], ui.country, bands)];
+  if (ui.mode === 'new') ui.links ||= defaultLinks(radios, ui.country);
   const profileInput = () => {
     if (ui.mode !== 'new') return ui.file ? { yaml: ui.file } : { code: ui.code.trim() };
     const [first, ...more] = ui.links.map((l) => ({ band: l.band, channel: Number(l.channel), width: Number(l.width) }));
     return { new: { name: ui.name.trim(), ...first, links: more.length ? more : undefined, mode: ui.regMode, country: ui.country.toUpperCase() } };
+  };
+  // The account's password: the admin password unless another is set.
+  const acctPassword = () => (ui.acct.same && ui.adminPw ? ui.adminPw : ui.acct.pw);
+  // The whole setup request, for the dry runs and the apply alike. keys
+  // is the account's whole list: sent only when the account's own were
+  // read first, or keys were added here; else they stay as they are.
+  const setupBody = () => {
+    const a = ui.acct;
+    const account = { password: acctPassword() || undefined };
+    if (a.loaded || a.keys.length) { account.keys = a.keys.map(keyLine); account.key_only = a.keyOnly; }
+    return {
+      ...profileInput(), callsign: ui.callsign.trim(), node_id: Number(ui.nodeID) || 0,
+      account, web_uplink: ui.webUplink, ssh_uplink: ui.sshUplink, os_update: !!ui.osUpdate,
+    };
   };
   const stopScan = () => { if (ui.stop) ui.stop(); ui.stop = null; ui.scanning = false; };
   const go = (n) => { stopScan(); ui.error = ''; ui.step = n; redraw(); };
@@ -103,6 +143,7 @@ function wizard() {
       ui.busy = true; redraw();
       try {
         await put('/password', { new: ui.pw });
+        ui.adminPw = ui.pw;
         ui.pw = ui.pw2 = '';
         await refresh();
         ui.step = 1;
@@ -185,6 +226,7 @@ function wizard() {
         return i === 0 ? row : h('div.link-row', row,
           h('div.row.end', button('Remove link', () => { ui.links.splice(i, 1); redraw(); }, 'small')));
       }),
+      halowPending ? notice({ level: 'warning', message: 'HaLow module files missing. HaLow link carried once they arrive (card, uplink or mesh node).' }) : null,
       h('div.row',
         button('Add a mesh link', () => { ui.links.push(nextLink(ui.links, ui.country, bands)); redraw(); }, 'small', { disabled: ui.links.length >= 10 }),
         h('span.hint', bands.length
@@ -214,7 +256,7 @@ function wizard() {
       e.preventDefault();
       ui.busy = true; ui.error = ''; ui.fields = {}; redraw();
       try {
-        ui.preview = await post('/setup?dry_run=1', { ...profileInput(), callsign: ui.callsign.trim(), node_id: Number(ui.nodeID) || 0 });
+        await post('/setup?dry_run=1', { ...profileInput(), callsign: ui.callsign.trim(), node_id: Number(ui.nodeID) || 0 });
         ui.step = 3;
       } catch (err) { fail(err); }
       ui.busy = false; redraw();
@@ -231,15 +273,78 @@ function wizard() {
         h('div.row.between', button('Back', () => go(1)), button(ui.busy ? 'Checking…' : 'Continue', null, 'primary', { type: 'submit', disabled: ui.busy || !ui.callsign.trim() }))));
   }
 
-  // Step 3: review, apply, and what to do afterwards.
+  // Step 3: access: the operator account and the uplink network.
+  if (ui.step === 3) {
+    const a = ui.acct;
+    if (!a.loaded && !a.loading) {
+      a.loading = true; // once: a node that does not manage the account answers with an error
+      a.read = get('/account').then((st) => {
+        for (const k of st.keys || []) if (!a.keys.some((x) => x.data === k.data)) a.keys.push({ ...k, line: keyLine(k) });
+        a.keyOnly = a.keyOnly || !!st.key_only;
+        a.loaded = true;
+        redraw();
+      }).catch(() => {});
+    }
+    if (!ui.adminPw) a.same = false;
+    const pwOK = (a.same && ui.adminPw) || (a.pw.length >= 8 && a.pw === a.pw2);
+    const next = async (e) => {
+      e.preventDefault();
+      if (!a.same && a.pw !== a.pw2) { ui.error = 'Passwords do not match.'; redraw(); return; }
+      ui.busy = true; ui.error = ''; ui.fields = {}; redraw();
+      try {
+        // The account's own keys first: keys added before its read
+        // answered would otherwise replace them.
+        await a.read;
+        ui.preview = await post('/setup?dry_run=1', setupBody());
+        ui.step = 4;
+      } catch (err) { fail(err); }
+      ui.busy = false; redraw();
+    };
+    return frame(true, steps,
+      h('div', h('h1', 'Access'), h('p.lede', 'Operator account and uplink access.')),
+      h('form.form', { onsubmit: next },
+        h('div.label', 'Operator account'),
+        kv([['Account', h('span.mono', ACCOUNT)], ['Privileges', 'sudo · meshctl'], ['SSH', 'On']]),
+        ui.adminPw ? toggle('Password: same as admin', null, a.same, (v) => { a.same = v; redraw(); }) : null,
+        a.same && ui.adminPw ? null : h('div.fields',
+          field('Password', h('input.input', { type: 'password', value: a.pw, autocomplete: 'new-password', oninput: (e) => { a.pw = e.target.value; redraw(); } }), { hint: 'Min. 8 characters.' }),
+          field('Confirm', h('input.input', { type: 'password', value: a.pw2, autocomplete: 'new-password', oninput: (e) => { a.pw2 = e.target.value; redraw(); } }))),
+        keysEditor(a),
+        passwordAuthToggle(a),
+        h('div.label', { style: { marginTop: '6px' } }, 'Uplink access'),
+        toggle('Web UI from uplink', 'tcp/80, tcp/443', ui.webUplink, (v) => { ui.webUplink = v; redraw(); }),
+        toggle('SSH from uplink', 'tcp/22 · Max. 10 new connections/min per address', ui.sshUplink, (v) => { ui.sshUplink = v; redraw(); }),
+        h('p.faint', { style: { fontSize: '13.5px' } }, 'Mesh, client AP, client ports: always accessible.'),
+        ui.error ? notice({ level: 'error', message: ui.error }) : null,
+        h('div.row.between', button('Back', () => go(2), '', { disabled: ui.busy }),
+          button(ui.busy ? 'Checking…' : 'Continue', null, 'primary', { type: 'submit', disabled: ui.busy || !pwOK || (a.keyOnly && !a.keys.length) }))));
+  }
+
+  // Step 4: review, apply, and what to do afterwards.
   const p = ui.done || ui.preview;
   const apply = async () => {
     ui.busy = true; ui.error = ''; redraw();
     try {
-      ui.done = await post('/setup', { ...profileInput(), callsign: ui.callsign.trim(), node_id: Number(ui.nodeID) || 0 });
+      ui.done = await post('/setup', setupBody());
+      // Applied: the passwords leave memory.
+      ui.adminPw = ''; ui.acct.pw = ui.acct.pw2 = '';
     } catch (err) { fail(err); }
     ui.busy = false; redraw();
   };
+  const onOff = (v) => (v ? 'On' : h('span.faint', 'Off'));
+  // OS updates once set up: on by default when the uplink is up.
+  const uplink = !!(state.status && state.status.gateway && state.status.gateway.wan_healthy);
+  if (ui.osUpdate == null) ui.osUpdate = uplink;
+  const osUpdate = () => h('div.panel', h('div.panel-body',
+    toggle('OS updates after setup', `apt upgrade · kernel held · Uplink: ${uplink ? 'Up' : 'Down'}`, ui.osUpdate, (v) => { ui.osUpdate = v; redraw(); })));
+  const access = h('div.panel', h('div.panel-body',
+    h('div.label', { style: { marginBottom: '10px' } }, 'Access'),
+    kv([
+      ['Operator account', h('span', h('span.mono', ACCOUNT), h('span.faint', `  ·  ${ui.acct.keys.length} SSH key${ui.acct.keys.length === 1 ? '' : 's'}`))],
+      ['Password authentication', onOff(!ui.acct.keyOnly)],
+      ['Web UI from uplink', onOff(ui.webUplink)],
+      ['SSH from uplink', onOff(ui.sshUplink)],
+    ])));
   const wifi = p && p.ap && p.ap.enabled ? h('div.panel', h('div.panel-body',
     h('div.label', { style: { marginBottom: '10px' } }, ui.done ? 'Client AP' : 'Client AP after setup'),
     h('div.join', qr(p.ap.qr, 'Wi-Fi QR code'),
@@ -248,19 +353,25 @@ function wizard() {
         h('div', h('div.label', 'Passphrase'), h('div.mono', { style: { fontSize: '18px', overflowWrap: 'anywhere' } }, p.ap.passphrase)),
         h('p.dim', { style: { fontSize: '13.5px' } }, ui.done ? 'Reconnect via this AP.' : 'Record these now: the setup AP will shut down.'))))) : null;
   if (ui.done) {
-    return frame(true, h('div.steps', [1, 2, 3].map(() => h('i.done'))),
+    const anycast = (state.status && state.status.client_network.anycast.address) || '10.73.0.1';
+    return frame(true, h('div.steps', [1, 2, 3, 4].map(() => h('i.done'))),
       h('div', h('h1', `${ui.callsign} provisioned`), h('p.lede', 'Joining the mesh.')),
       wifi,
-      notice({ level: 'info', message: h('span', 'Web UI: ', h('b', 'https://' + ((state.status && state.status.client_network.anycast.address) || '10.73.0.1')), ' or ',
+      notice({ level: 'info', message: h('span', 'Web UI: ', h('b', 'https://' + anycast), ' or ',
         h('b', 'https://node.mesh'), ' (requires node DNS). Sign in with the admin password. Mesh DNS name: ', h('b', ui.callsign + '.mesh'), '.') }),
+      notice({ level: 'info', message: h('span', 'SSH: ', h('b', `ssh ${ACCOUNT}@${anycast}`), ' or ', h('b', `ssh ${ACCOUNT}@${ui.callsign}.mesh`), '.') }),
+      ui.osUpdate ? notice({ level: 'info', message: 'OS updates: start 30 s after setup · Settings → System' }) : null,
       h('div.row.end', button('Open dashboard', async () => { state.ui.setup = null; await refresh(); }, 'primary')));
   }
   return frame(true, steps,
     h('div', h('h1', 'Ready'), h('p.lede', `${ui.callsign}: ${ui.mode === 'new' ? 'create mesh “' + ui.name.trim() + '”' : 'join mesh'}.`)),
-    p ? h('div.notices', (p.effects || []).map((e) => notice(e))) : null,
+    p && (p.effects || []).length ? h('div.notices', p.effects.map((e) => notice(e))) : null,
+    radioPlan(p && p.plan),
+    access,
+    osUpdate(),
     wifi,
     ui.error ? notice({ level: 'error', message: ui.error }) : null,
-    h('div.row.between', button('Back', () => go(2), '', { disabled: ui.busy }), button(ui.busy ? 'Setting up…' : 'Node setup', apply, 'primary', { disabled: ui.busy })));
+    h('div.row.between', button('Back', () => go(3), '', { disabled: ui.busy }), button(ui.busy ? 'Setting up…' : 'Node setup', apply, 'primary', { disabled: ui.busy })));
 }
 
 export function gate(ctx) {

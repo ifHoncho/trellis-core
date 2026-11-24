@@ -66,6 +66,9 @@ type ConfigResult struct {
 
 // ApplyResult answers a configuration change, or a dry run of one.
 type ApplyResult struct {
+	// Plan, for a node in setup mode, is what it will run: each mesh link
+	// and the client AP, with the radio that carries it.
+	Plan *SetupPlan `json:"plan,omitempty"`
 	// Applied is false for a dry run, and when nothing would change.
 	Applied bool `json:"applied"`
 	// Changed reports whether the request differs from what is in force.
@@ -141,6 +144,43 @@ type SetupInput struct {
 	ProfileInput
 	Callsign string `json:"callsign"`
 	NodeID   int    `json:"node_id,omitempty"` // 0: automatic
+	// The setup's Access step: the operator account, and access
+	// from the uplink network (web.wan_access, firewall.ssh). Absent:
+	// unchanged.
+	Account   *AccountInput `json:"account,omitempty"`
+	WebUplink *bool         `json:"web_uplink,omitempty"`
+	SSHUplink *bool         `json:"ssh_uplink,omitempty"`
+	// OSUpdate installs the operating system's package updates once the
+	// setup is in force (internal/osupdate).
+	OSUpdate bool `json:"os_update,omitempty"`
+}
+
+// SetupPlan is a node's radios after setup: one entry per mesh link of
+// the profile, in order, and the client AP.
+type SetupPlan struct {
+	Links []SetupLink `json:"links"`
+	AP    string      `json:"ap,omitempty"` // the radio; "" when the node has none for it
+}
+
+// SetupLink is a mesh link ("5 GHz · ch 149 · 20 MHz") and the radio that
+// carries it on this node, "" when it has none for it.
+type SetupLink struct {
+	Link  string `json:"link"`
+	Radio string `json:"radio,omitempty"`
+}
+
+// AccountInput changes the operator account, the Linux user trellis.
+// Absent fields stay as they are; keys is the whole list.
+type AccountInput struct {
+	Password string    `json:"password,omitempty"`
+	Keys     *[]string `json:"keys,omitempty"` // public keys, one authorized_keys line each
+	KeyOnly  *bool     `json:"key_only,omitempty"`
+}
+
+// GitHubKeysInput names a GitHub user whose public SSH keys the node
+// fetches (POST /account/github).
+type GitHubKeysInput struct {
+	User string `json:"user"`
 }
 
 // IdentifyInput asks a radio to blink its LED.

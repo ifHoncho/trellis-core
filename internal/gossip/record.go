@@ -113,6 +113,9 @@ type Record struct {
 	// Rollouts: the node takes mesh-wide upgrades (a package install that
 	// trusts a release key).
 	Rollouts bool `json:"ru,omitempty"`
+	// HaLowFiles: this node holds Morse's pinned firmware and BCF and
+	// serves them to nodes that lack them.
+	HaLowFiles bool `json:"hf,omitempty"`
 	// Rollout is the node's progress in the mesh-wide upgrade under way
 	// (internal/rollout), or nil.
 	Rollout *RolloutState `json:"ro,omitempty"`

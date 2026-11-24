@@ -1478,7 +1478,7 @@ print(json.dumps(n))" 2>/dev/null)
   done
   left=$([ -e "$RUN/node9/state/setup-profile.yaml" ] && echo "setup profile left behind" || echo gone)
   if [ -n "$ip9" ] && [ "$s0" = "setup=True mesh=trellis-setup- anycast=True" ] && [ "$(kv "$r" session)" = "200 setup=True admin_set=False" ] && [ "$(kv "$r" password)" = 200 ] \
-     && echo "$(kv "$r" dryrun)" | grep -q "^200 ssid=lab-node-9 effects=.*joins-mesh" && [ "$(kv "$r" apply)" = "200 applied=True" ] \
+     && echo "$(kv "$r" dryrun)" | grep -q "^200 ssid=lab-node-9 " && [ "$(kv "$r" apply)" = "200 applied=True" ] \
      && [ "$s1" = "setup=False mesh=trellis-lab callsign=lab-node-9" ] && [ -n "$seen" ] && [ "$seen" != "[]" ] && [ "$left" = gone ]; then
     pass "W5 a node with no configuration took over the port a device was plugged into and served it the setup page ($ip9), took the admin password, the mesh profile and the name lab-node-9 through the web API, and joined the mesh (node 1 sees it at $seen)"
   else

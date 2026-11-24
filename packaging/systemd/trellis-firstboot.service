@@ -1,0 +1,22 @@
+[Unit]
+Description=Trellis: install files put on the card at flash time
+# The mesh profile, node configuration, admin credential and Morse firmware
+# a card was flashed with (trellis/ on the boot partition), and on an image
+# the node's own hostname and HaLow MAC suffix (internal/firstboot). Does
+# nothing when there is nothing to do. Before networking, so the hostname
+# is the node's own from the first DHCP request; before meshd, so it starts
+# on the card's profile. After cloud-init's first stage: a hostname given
+# through Raspberry Pi Imager (cloud-init) is kept.
+DefaultDependencies=no
+After=local-fs.target systemd-remount-fs.service systemd-machine-id-commit.service cloud-init-local.service
+Before=network-pre.target trellis-meshd.service sysinit.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/trellis firstboot
+
+[Install]
+WantedBy=sysinit.target

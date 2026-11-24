@@ -96,7 +96,9 @@ func TestSetupModeAndProvisioning(t *testing.T) {
 	if err != nil || res.Applied {
 		t.Fatalf("dry run: %+v %v", res, err)
 	}
-	if !hasEffect(res.Effects, "info", "joins-mesh") || !hasEffect(res.Effects, "warning", "ap-credentials") {
+	// A first setup lists what needs attention only; the plan and the
+	// client AP are shown apart (setupEffects, setupPlan).
+	if hasEffect(res.Effects, "info", "joins-mesh") || hasEffect(res.Effects, "warning", "ap-credentials") {
 		t.Errorf("effects: %+v", res.Effects)
 	}
 	if res.AP == nil || res.AP.SSID != "alpha-1" || res.AP.Passphrase != "generated1234" {

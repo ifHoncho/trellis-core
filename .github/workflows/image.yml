@@ -1,0 +1,68 @@
+# A board's image from a published release.
+# Started by hand with the release's tag. The image is built from that
+# release's signed packages, checked against the keys the source trusts,
+# on GitHub's arm64 runner (natively: no emulation). This workflow holds no
+# key: the image comes out as an artifact, and the maintainer checks,
+# signs and publishes it (make publish).
+name: image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (vX.Y.Z)"
+        required: true
+      board:
+        description: "Board (packaging/image/boards/)"
+        required: true
+        default: cm4-reference
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    env:
+      TAG: ${{ inputs.tag }}
+      BOARD: ${{ inputs.board }}
+    steps:
+      - name: Check the inputs
+        run: |
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "tag: vX.Y.Z expected"; exit 1; }
+          echo "$BOARD" | grep -Eq '^[a-z0-9-]+$' || { echo "board: a file name in packaging/image/boards/"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: The release's packages, signed by a key the source trusts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p debs
+          gh release download "$TAG" --dir debs --pattern 'trellis_*_arm64.deb' --pattern 'trellis-batman-adv-dkms_*.deb'
+          ls -l debs
+          go run ./tools/mkdeb verify --pub internal/release/trusted.keys debs/*.deb
+
+      - name: Tools
+        run: sudo apt-get install -y -q --no-install-recommends parted fdisk e2fsprogs xz-utils
+
+      - name: Image
+        run: |
+          sudo env SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" IMAGE_WORK="$RUNNER_TEMP" \
+            scripts/build-image.sh "$BOARD" debs dist/image
+          ls -l dist/image
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trellis-image-${{ inputs.tag }}-${{ inputs.board }}
+          path: dist/image/
+          compression-level: 0
+          retention-days: 14

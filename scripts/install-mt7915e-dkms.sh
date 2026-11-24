@@ -36,7 +36,12 @@ done
 NAME=trellis-mt7915e
 SRC="/usr/src/${NAME}-${PKG_VERSION}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-KREL="$(uname -r)"
+# TRELLIS_IMAGE_KERNEL=<kernel release>: building an image
+# (scripts/build-image.sh) in a chroot. That kernel's configuration and
+# headers are used; this machine's kernel, hardware and modules are left
+# alone, and nothing is loaded.
+IMAGE_KERNEL="${TRELLIS_IMAGE_KERNEL:-}"
+KREL="${IMAGE_KERNEL:-$(uname -r)}"
 BUILD="/lib/modules/${KREL}/build"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -53,9 +58,9 @@ if [ "$KARCH" = aarch64 ] && [ "$UARCH" = armhf ]; then
   exit 1
 fi
 
-[ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
+[ -n "$IMAGE_KERNEL" ] || [ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
 CFG=""
-if [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
+if [ -z "$IMAGE_KERNEL" ] && [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
 elif [ -r "/boot/config-${KREL}" ]; then CFG="$(cat "/boot/config-${KREL}")"
 elif [ -r "$BUILD/.config" ]; then CFG="$(cat "$BUILD/.config")"
 fi
@@ -66,7 +71,10 @@ has() { echo "$CFG" | grep -qE "^$1=[ym]"; }
 # of a 5/6 GHz radio (Linux 6.14 on), replaced by this build when not.
 if has CONFIG_MT7915E; then
   if echo "$CFG" | grep -q '^CONFIG_MT7915E=y'; then
-    if [ -e /sys/module/mt7915e/parameters/enable_6ghz ]; then
+    # Band selection came in Linux 6.14: known from the running driver, or
+    # for an image from the kernel's version.
+    if { [ -z "$IMAGE_KERNEL" ] && [ -e /sys/module/mt7915e/parameters/enable_6ghz ]; } \
+       || { [ -n "$IMAGE_KERNEL" ] && printf '6.14\n%s\n' "${KREL%%[!0-9.]*}" | sort -V -C; }; then
       echo "-- this kernel has mt7915e built in, with band selection; nothing to do"
       exit 0
     fi
@@ -146,7 +154,13 @@ diagnose() {
 dkms add "${NAME}/${PKG_VERSION}"
 dkms build "${NAME}/${PKG_VERSION}" -k "$KREL" || diagnose
 dkms install --force "${NAME}/${PKG_VERSION}" -k "$KREL"
-depmod -a
+depmod -a "$KREL"
+if [ -n "$IMAGE_KERNEL" ]; then
+  # The board's overlays (pcie-32bit-dma, trellis-pcie-gen1) are the
+  # image's to set: packaging/image/boards/.
+  echo "== OK: mt7915e is installed for ${KREL}: $(modinfo -k "$KREL" -n mt7915e)"
+  exit 0
+fi
 
 cards=""
 reboot_needed=0

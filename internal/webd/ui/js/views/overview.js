@@ -109,14 +109,14 @@ export function overview() {
         h('div', h('span', 'Uptime'), st.host && st.host.uptime_s ? duration(st.host.uptime_s) : since(st.started_at)),
         // Every link of the profile, by its band and channel; one this node
         // has no radio for is the mesh's, not this node's, and says so.
-        h('div', h('span', links.length > 1 ? 'Mesh links' : 'Mesh link'),
+        h('div.wide', h('span', links.length > 1 ? 'Mesh links' : 'Mesh link'),
           links.map((l) => h('div', `${linkName(l, st)} · ${linkWidth(l, st)} MHz`,
             l.running_width_mhz && l.running_width_mhz !== linkWidth(l, st) ? h('span.warn', ` (running ${l.running_width_mhz} MHz)`) : null,
             links.length > 1 && !carried(l) ? h('span.faint', ' · no radio') : null))),
         timeFact(st),
         siteFact(st),
         st.gnss && st.gnss.receiver ? h('div', h('span', 'GNSS'), h('a', { href: '#/settings/system' }, gnssShort(st.gnss))) : null,
-        h('div', h('span', 'Version'), st.version))),
+        h('div.wide', h('span', 'Version'), st.version))),
 
     h('div.grid',
       panel('Mesh', { class: 'c8', flush: true, meta: h('a', { href: '#/mesh' }, 'Topology and routes →') },

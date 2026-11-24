@@ -33,6 +33,14 @@ from your computer over SSH. The first time:
   trellis-deploy --new-mesh team1 --country US        your mesh, in mesh.yaml
   trellis-deploy --profile mesh.yaml nodes.txt        install; they join the mesh
 
+A card flashed with a Trellis image needs no NODES-FILE: with its boot
+partition mounted,
+
+  trellis-deploy --card /media/bootfs --profile mesh.yaml --callsign kit-07
+
+puts the mesh profile, the node's name, the admin password and the
+operator account trellis on it; the node joins the mesh at its first boot.
+
 NODES-FILE has one device per line, user@address, optionally followed by
 callsign=NAME, id=N (1-254), port=N (SSH) and mesh=ADDRESS (the node's mesh
 address, to reach it through another listed node). The release is checked
@@ -72,7 +80,14 @@ func run() int {
 	repo := fs.String("repo", deploy.DefaultRepo, "the GitHub repository releases come from")
 	setup := fs.Bool("setup", false, "only ready the devices for later runs: your SSH key on each one it does not log in to yet (ssh-copy-id asks for that device's password)")
 	sudoNoPass := fs.Bool("sudo-nopasswd", false, "with --setup: also let the login user use sudo without a password, so runs stop asking. Whoever logs in as that user with your key is then root on the device: see docs/reference.md before using it")
-	sshKey := fs.String("ssh-key", "", "with --setup: the public key to install (default: ssh-copy-id's choice; where there is none, as on Windows, id_ed25519.pub, id_ecdsa.pub or id_rsa.pub)")
+	sshKey := fs.String("ssh-key", "", "with --setup: the public key to install (default: ssh-copy-id's choice; where there is none, as on Windows, id_ed25519.pub, id_ecdsa.pub or id_rsa.pub). With --card: a file of public keys for the operator account trellis")
+	cardDir := fs.String("card", "", "write the setup files onto a card flashed with a Trellis image, whose boot partition is mounted at DIR, and stop")
+	cardCallsign := fs.String("callsign", "", "with --card: the node's callsign")
+	github := fs.String("github", "", "with --card: also the public SSH keys of this GitHub user (github.com/USER.keys)")
+	noWebUplink := fs.Bool("no-web-uplink", false, "with --card: no web UI from the node's uplink network")
+	noSSHUplink := fs.Bool("no-ssh-uplink", false, "with --card: no SSH from the node's uplink network")
+	halow := fs.Bool("halow", false, "with --card: Morse Micro's firmware and BCF for a Wio-WM6108 HaLow module, fetched from Morse's repository at the pinned commit (the default for a HaLow board's card)")
+	noHalow := fs.Bool("no-halow", false, "with --card: no Morse files, even for a HaLow board")
 	var sshOpts multi
 	fs.Var(&sshOpts, "ssh-option", "an ssh option for every connection, as Name=value (repeatable)")
 	showVersion := fs.Bool("version", false, "print the version")
@@ -105,6 +120,12 @@ func run() int {
 		}
 		fmt.Printf("Mesh %q written to %s. It holds the mesh's secret: keep it private.\nNext: trellis-deploy --profile %s NODES-FILE\n", *newMesh, *outFile, *outFile)
 		return 0
+	}
+	if *cardDir != "" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return runCard(ctx, cardOptions{dir: *cardDir, profile: *profilePath, callsign: *cardCallsign, sshKey: *sshKey,
+			github: *github, webUplink: !*noWebUplink, sshUplink: !*noSSHUplink, halow: *halow, noHalow: *noHalow})
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()

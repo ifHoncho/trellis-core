@@ -59,20 +59,22 @@ fi
 
 # Firmware and BCF: Morse Micro's 2.2 release line, matching the driver
 # (packaging/dkms-morse/build-morse.sh, mm6108-2.2.2).
-FW_REPO="${TRELLIS_MORSE_FIRMWARE_REPO:-https://github.com/MorseMicro/morse-firmware.git}"
-FW_REF=db4b69fd212990c59c5f1712e23060cbb94276ec   # "Firmware binaries for 2.2 releases"
-FW_FILE=firmware/mm6108.bin
-FW_SHA256=aeacb187816b62c55efc362cde256c02b862613ebf136b96e11e4fa05b3e1b03
-# The Wio-WM6108 carries a Quectel FGH100M-H (full name FGH100M-H-AAMD).
-BCF_FILE=bcf/quectel/bcf_fgh100mhaamd.bin
-BCF_SHA256=55089af7d08597a16ddd4002ca4b23f24729aa5bd0f1b75b6e04bc5270d23ba6
+# Pinned in packaging/dkms-morse/firmware.pins, which trellis firstboot
+# reads too (the files an image's card carries).
+. "$(cd "$(dirname "$0")" && pwd)/../packaging/dkms-morse/firmware.pins"
+FW_REPO="${TRELLIS_MORSE_FIRMWARE_REPO:-$FW_REPO}"
 FW_CACHE="${TRELLIS_MORSE_FIRMWARE_CACHE:-/var/cache/trellis/morse-firmware}"
 FW_DIR=/lib/firmware/morse
 
 SRC="/usr/src/${NAME}-${PKG_VERSION}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PKG="$HERE/../packaging"
-KREL="$(uname -r)"
+# TRELLIS_IMAGE_KERNEL=<kernel release>: building an image
+# (scripts/build-image.sh) in a chroot. That kernel's configuration and
+# headers are used; this machine's kernel, hardware and modules are left
+# alone, and nothing is loaded.
+IMAGE_KERNEL="${TRELLIS_IMAGE_KERNEL:-}"
+KREL="${IMAGE_KERNEL:-$(uname -r)}"
 BUILD="/lib/modules/${KREL}/build"
 OVERLAY=trellis-wm6108-spi
 # The chip's node once the overlay is live.
@@ -93,26 +95,29 @@ if [ "$KARCH" = aarch64 ] && [ "$UARCH" = armhf ]; then
   exit 1
 fi
 
-# The overlay is written for the BCM283x/BCM2711 GPIO controller.
-compat="$(tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null || true)"
-if echo "$compat" | grep -qx 'brcm,bcm2712'; then
-  echo "!! This is a Raspberry Pi 5 family board. Its header pins belong to the RP1" >&2
-  echo "   chip, which this overlay does not describe; not supported yet." >&2
-  exit 1
+# The overlay is written for the BCM283x/BCM2711 GPIO controller. An
+# image's board is known from its board file instead.
+if [ -z "$IMAGE_KERNEL" ]; then
+  compat="$(tr '\0' '\n' < /proc/device-tree/compatible 2>/dev/null || true)"
+  if echo "$compat" | grep -qx 'brcm,bcm2712'; then
+    echo "!! This is a Raspberry Pi 5 family board. Its header pins belong to the RP1" >&2
+    echo "   chip, which this overlay does not describe; not supported yet." >&2
+    exit 1
+  fi
+  if ! echo "$compat" | grep -qxE 'brcm,bcm2711|brcm,bcm2837|brcm,bcm2836|brcm,bcm2835'; then
+    echo "!! Not a Raspberry Pi with a BCM283x/BCM2711 SoC; this script only knows the" >&2
+    echo "   WM1302 Pi HAT's wiring on those boards." >&2
+    exit 1
+  fi
+  CONFIG_TXT=/boot/firmware/config.txt
+  [ -f "$CONFIG_TXT" ] || CONFIG_TXT=/boot/config.txt
+  [ -f "$CONFIG_TXT" ] || { echo "!! no config.txt under /boot/firmware or /boot" >&2; exit 1; }
+  OVERLAYS="$(dirname "$CONFIG_TXT")/overlays"
 fi
-if ! echo "$compat" | grep -qxE 'brcm,bcm2711|brcm,bcm2837|brcm,bcm2836|brcm,bcm2835'; then
-  echo "!! Not a Raspberry Pi with a BCM283x/BCM2711 SoC; this script only knows the" >&2
-  echo "   WM1302 Pi HAT's wiring on those boards." >&2
-  exit 1
-fi
-CONFIG_TXT=/boot/firmware/config.txt
-[ -f "$CONFIG_TXT" ] || CONFIG_TXT=/boot/config.txt
-[ -f "$CONFIG_TXT" ] || { echo "!! no config.txt under /boot/firmware or /boot" >&2; exit 1; }
-OVERLAYS="$(dirname "$CONFIG_TXT")/overlays"
 
-[ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
+[ -n "$IMAGE_KERNEL" ] || [ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
 CFG=""
-if [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
+if [ -z "$IMAGE_KERNEL" ] && [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
 elif [ -r "/boot/config-${KREL}" ]; then CFG="$(cat "/boot/config-${KREL}")"
 elif [ -r "$BUILD/.config" ]; then CFG="$(cat "$BUILD/.config")"
 fi
@@ -150,7 +155,11 @@ fi
 sha_ok() { [ "$(sha256sum "$1" 2>/dev/null | cut -d' ' -f1)" = "$2" ]; }
 FW_NAME="$(basename "$FW_FILE")"
 BCF_NAME="$(basename "$BCF_FILE")"
-if sha_ok "$FW_DIR/$FW_NAME" "$FW_SHA256" && sha_ok "$FW_DIR/$BCF_NAME" "$BCF_SHA256"; then
+if [ -n "$IMAGE_KERNEL" ]; then
+  # An image carries the firmware (its build adds it), never the BCF:
+  # that comes from the card, the uplink or another node.
+  echo "-- firmware: the image build adds it; BCF: card, uplink or a mesh node"
+elif sha_ok "$FW_DIR/$FW_NAME" "$FW_SHA256" && sha_ok "$FW_DIR/$BCF_NAME" "$BCF_SHA256"; then
   echo "-- firmware and BCF already installed in $FW_DIR"
 else
   FWSRC="$FW_CACHE/$FW_REF"
@@ -203,8 +212,8 @@ echo "-- building the driver (a few minutes on a Pi)"
 dkms add "${NAME}/${PKG_VERSION}"
 dkms build "${NAME}/${PKG_VERSION}" -k "$KREL" || diagnose
 dkms install --force "${NAME}/${PKG_VERSION}" -k "$KREL"
-depmod -a
-echo "-- module file: $(modinfo -n morse)"
+depmod -a "$KREL"
+echo "-- module file: $(modinfo -k "$KREL" -n morse)"
 
 # --- 3. Module options -------------------------------------------------------
 # - bcf: the chip on this module has no board type programmed, so the driver
@@ -218,12 +227,16 @@ echo "-- module file: $(modinfo -n morse)"
 #   the machine id, and ignored by the driver when the chip has its own.
 MODCONF=/etc/modprobe.d/trellis-morse.conf
 suffix="$(sed -n 's/.*macaddr_suffix=\([0-9a-f:]*\).*/\1/p' "$MODCONF" 2>/dev/null | head -1)"
-if ! echo "$suffix" | grep -qE '^[0-9a-f]{2}(:[0-9a-f]{2}){2}$'; then
+if [ -n "$IMAGE_KERNEL" ]; then
+  # Every node of an image would share the build's machine id: trellis
+  # firstboot adds the suffix from the node's own.
+  suffix=""
+elif ! echo "$suffix" | grep -qE '^[0-9a-f]{2}(:[0-9a-f]{2}){2}$'; then
   h="$(sha256sum /etc/machine-id | cut -c1-6)"
   suffix="$(echo "$h" | sed 's/\(..\)\(..\)\(..\)/\1:\2:\3/')"
   [ "$suffix" = "00:00:00" ] && suffix="00:00:01"   # 00:00:00 means "random" to the driver
 fi
-opts="country=$COUNTRY bcf=$BCF_NAME enable_ps=0 macaddr_suffix=$suffix"
+opts="country=$COUNTRY bcf=$BCF_NAME enable_ps=0${suffix:+ macaddr_suffix=$suffix}"
 if [ -n "$SPI_HZ" ]; then
   opts="$opts spi_clock_speed=$SPI_HZ"
   # The chip wants a number of clock bytes between data blocks (50 are
@@ -248,6 +261,12 @@ if [ "$(cat "$UDEV" 2>/dev/null)" != "$udev_want" ]; then
   printf '%s\n' "$udev_want" > "$UDEV"
   udevadm control --reload 2>/dev/null || true
   echo "-- wrote $UDEV"
+fi
+
+if [ -n "$IMAGE_KERNEL" ]; then
+  # The overlay and its config.txt line are the image's (packaging/image/boards/).
+  echo "== OK: the Morse driver is installed for ${KREL}"
+  exit 0
 fi
 
 # --- 5. Device tree ----------------------------------------------------------

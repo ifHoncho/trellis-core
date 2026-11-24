@@ -121,6 +121,25 @@ export function linkFields(l, key, fields, { title = '', country = 'US', others 
       { error: fields[key + '.width'], hint: widthHint(l, key) }));
 }
 
+// defaultLinks proposes a new mesh's links from this node's mesh radios:
+// one per radio, each on the best band it has that no other link uses, in
+// the usual order (nextLink's). Radios with fewer bands choose first: a
+// 2.4 GHz-only radio takes 2.4 GHz before a dual-band one could. A node
+// whose radios are not known yet gets one link.
+export function defaultLinks(radios, country) {
+  const usual = ['5g', 's1g', '2g', '6g'];
+  const byChoice = [...radios].sort((a, b) => (a.bands || []).length - (b.bands || []).length);
+  const links = [];
+  for (const r of byChoice) {
+    const band = usual.find((b) => (r.bands || []).includes(b) && !links.some((l) => l.band === b));
+    if (!band) continue;
+    const width = DEFAULT_WIDTH[band];
+    links.push({ band, channel: defaultChannel(band, width, country, []), width });
+  }
+  links.sort((a, b) => usual.indexOf(a.band) - usual.indexOf(b.band));
+  return links.length ? links : [nextLink([], country, [])];
+}
+
 // nextLink proposes another link for a list of links: the first band none
 // uses yet, on its usual channel. bands, when given, are the bands this node
 // has a radio for, tried first.

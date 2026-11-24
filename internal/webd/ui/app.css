@@ -416,6 +416,7 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   background-color: var(--bg);
   /* The trellis: a faint diamond lattice behind everything. */
   background-image:
@@ -660,6 +661,9 @@ svg { display: block; }
 .check input::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-3); transition: transform 0.15s, background 0.15s; }
 .check input:checked { background: var(--accent); border-color: var(--accent); }
 .check input:checked::after { transform: translateX(16px); background: var(--on-accent); }
+/* A switch that cannot be changed yet: dimmed, as a disabled button is. */
+.check input:disabled { opacity: 0.45; cursor: not-allowed; }
+.check:has(input:disabled) { cursor: not-allowed; }
 .check .text { display: flex; flex-direction: column; gap: 2px; }
 .check .text small { color: var(--ink-3); font-size: 13px; line-height: 1.4; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -668,6 +672,14 @@ svg { display: block; }
 /* Band, channel and width side by side, also in the setup wizard's column. */
 .link-fields { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .link-row { display: flex; flex-direction: column; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+/* SSH keys of the operator account (account.js). */
+.key-list { display: flex; flex-direction: column; gap: 6px; }
+.key-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.key-row .mono { font-size: 13px; overflow-wrap: anywhere; }
+.key-row .faint { font-size: 12.5px; overflow-wrap: anywhere; }
+/* An input with its action button on the same line. */
+.input-action { display: flex; gap: 8px; align-items: stretch; max-width: 460px; }
+.input-action .input { flex: 1; min-width: 0; }
 /* The other nodes' mesh radios, in the profile editor: what a channel has to fit. */
 .others { display: flex; flex-direction: column; gap: 8px; }
 .others-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 22px; font-size: 13.5px; }
@@ -751,6 +763,7 @@ svg { display: block; }
 .hero .state { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 16px; color: var(--ink-2); }
 .hero .state b { color: var(--ink); font-weight: 600; }
 .hero-facts { display: grid; grid-template-columns: repeat(2, max-content); gap: 6px 26px; font: 400 12.5px/1.5 var(--mono); color: var(--ink-2); }
+.hero-facts > div { min-width: 0; overflow-wrap: anywhere; }
 .hero-facts > div > span:first-child { color: var(--ink-3); letter-spacing: 0.1em; text-transform: uppercase; font-size: 10.5px; font-weight: 600; display: block; }
 .timefact .clock { display: inline-block; font: 600 15px/1.35 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; text-decoration: none; }
 .timefact .clock.warn { color: var(--warn); }
@@ -869,7 +882,7 @@ details > summary::-webkit-details-marker { display: none; }
 
 /* Sign-in and setup ----------------------------------------------------------- */
 
-.gate { min-height: 100vh; display: grid; place-items: center; padding: 28px 18px; }
+.gate { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 28px 18px; }
 .gate-card { width: min(440px, 100%); display: flex; flex-direction: column; gap: 22px; }
 .gate-card.wide { width: min(640px, 100%); }
 .gate-brand { display: flex; align-items: center; gap: 14px; }
@@ -921,13 +934,13 @@ details > summary::-webkit-details-marker { display: none; }
     background: color-mix(in srgb, var(--bg-2) 94%, transparent); backdrop-filter: blur(8px);
     border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom);
   }
-  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 2px 8px; color: var(--ink-3); font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; position: relative; }
+  .tabbar a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; min-height: 58px; padding: 9px 2px 8px; color: var(--ink-3); font: 600 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; position: relative; }
   .tabbar a:hover { text-decoration: none; }
   .tabbar a[aria-current="page"] { color: var(--accent); }
   .tabbar a[aria-current="page"]::before { content: ""; position: absolute; top: -1px; left: 26%; right: 26%; height: 2px; background: var(--accent); }
-  .tabbar .ico { width: 21px; height: 21px; }
+  .tabbar .ico { width: 22px; height: 22px; }
   .tabbar .count { position: absolute; top: 5px; left: calc(50% + 6px); min-width: 16px; padding: 2px 4px; border-radius: 8px; background: var(--warn); color: var(--bg); font-size: 9.5px; }
-  .main { padding: 16px 12px 96px; }
+  .main { padding: 16px 12px calc(104px + env(safe-area-inset-bottom)); }
   .banner { padding: 9px 14px; flex-wrap: wrap; }
   .banner > span:not(.banner-actions) { flex: 1 1 0; min-width: 0; }
   .banner .banner-actions { flex: 1 0 100%; margin-left: 24px; }
@@ -935,6 +948,29 @@ details > summary::-webkit-details-marker { display: none; }
   .grid { grid-template-columns: minmax(0, 1fr); }
   .c3, .c4, .c5, .c6, .c7, .c8, .c12 { grid-column: auto; }
   .hero { grid-template-columns: minmax(0, 1fr); }
+  .hero-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
+  /* Values that read as one line (a link's band, channel and width; the
+     version) take the whole width. */
+  .hero-facts > .wide { grid-column: 1 / -1; }
+  /* A link's band takes the row: its names are long (HaLow (below 1 GHz)). */
+  .link-fields > :first-child { grid-column: 1 / -1; }
+  /* Settings' sections: a grid of buttons, all in view, not a strip that
+     scrolls out of sight. */
+  .seg.sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-self: stretch !important; overflow: visible !important; }
+  .seg.sections button { white-space: normal; text-align: center; border-left: 0; border-top: 1px solid var(--line-2); }
+  .seg.sections button:nth-child(-n+3) { border-top: 0; }
+  .seg.sections button:not(:nth-child(3n+1)) { border-left: 1px solid var(--line-2); }
+  /* Touch: targets of 44 px, text of 16 px in fields (smaller makes iOS
+     zoom the page on focus), bottom bar labels readable. */
+  .btn { min-height: 44px; }
+  .btn.small { min-height: 40px; padding: 9px 12px; }
+  .input, .select { min-height: 44px; font-size: 16px; }
+  .textarea { font-size: 16px; }
+  .seg button { padding: 13px 14px; }
+  .check { padding: 4px 0; }
+  .check input { width: 44px; height: 26px; border-radius: 13px; }
+  .check input::after { width: 18px; height: 18px; }
+  .check input:checked::after { transform: translateX(18px); }
   .page-head h1 { font-size: 21px; }
   .join { grid-template-columns: minmax(0, 1fr); }
   .qr { max-width: 240px; margin: 0 auto; }
@@ -947,9 +983,9 @@ details > summary::-webkit-details-marker { display: none; }
   /* Tables turn into stacked rows: each cell names itself. */
   .table.stack thead { display: none; }
   .table.stack, .table.stack tbody, .table.stack tr, .table.stack td { display: block; width: 100%; }
-  .table.stack tr { padding: 10px 14px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+  .table.stack tr { padding: 10px 14px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
   .table.stack tr:last-child { border-bottom: 0; }
-  .table.stack td { padding: 0; border: 0; text-align: left !important; }
+  .table.stack td { padding: 0; border: 0; text-align: left !important; white-space: normal; overflow-wrap: anywhere; min-width: 0; }
   .table.stack td.wide { grid-column: 1 / -1; }
   .table.stack td[data-label]::before { content: attr(data-label); display: block; font: 600 9.5px/1.5 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
   .table.stack td:empty { display: none; }

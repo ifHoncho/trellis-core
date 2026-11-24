@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/doctor"
@@ -283,16 +284,51 @@ func (d *Daemon) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*ap
 	}
 	n := *cur
 	n.Callsign, n.NodeID = strings.TrimSpace(in.Callsign), in.NodeID
+	// Access from the uplink network: the wizard shows both, on.
+	if in.WebUplink != nil {
+		n.Web.WANAccess = *in.WebUplink
+	}
+	if in.SSHUplink != nil {
+		v := *in.SSHUplink
+		n.Firewall.SSH = &v
+	}
 	n.ApplyDefaults()
 	if err := n.Validate(); err != nil {
 		return nil, err
 	}
+	// The operator account: checked with the rest, applied first, so a
+	// refused account leaves the node as it was.
+	var acct account.Service
+	var acctChange account.Change
+	if in.Account != nil {
+		if acct, err = d.accountSystem(); err != nil {
+			return nil, err
+		}
+		if acctChange, err = accountChange(*in.Account); err != nil {
+			return nil, err
+		}
+		if err := acct.Check(ctx, acctChange); err != nil {
+			return nil, accountErr(err)
+		}
+	}
 	res := &api.ApplyResult{Changed: true}
 	res.Effects = append(profileEffects(curProfile, p, setup.Needed, d.profileView(&n, curProfile, p)), d.nodeEffects(cur, &n, p, false)...)
+	if setup.Needed {
+		// A first setup changes no running mesh: what it will run is the
+		// plan; only what needs the operator's attention stays an effect.
+		res.Effects = setupEffects(res.Effects)
+		res.Plan = d.setupPlan(&n, p)
+	}
 	sortEffects(res.Effects)
 	res.AP = d.apJoinFor(&n, false)
 	if dryRun {
 		return res, nil
+	}
+	if acct != nil {
+		if err := acct.Apply(ctx, acctChange); err != nil {
+			return nil, accountErr(err)
+		}
+		d.log.Info("operator account set up", "account", account.Name, "keys", in.Account.Keys != nil)
 	}
 	nodeData, err := n.YAML(fmt.Sprintf(nodeFileHeader, stamp()))
 	if err != nil {
@@ -307,6 +343,9 @@ func (d *Daemon) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*ap
 		return nil, err
 	}
 	d.log.Info("node provisioned through the API", "callsign", n.Callsign, "mesh", p.MeshID)
+	if in.OSUpdate && !d.opts.NoHostConfig {
+		d.osUpdateAfterSetup()
+	}
 	res.Applied = true
 	return res, nil
 }
@@ -705,6 +744,45 @@ func linkDesc(l config.RadioPlan) string {
 }
 
 func linkName(l config.RadioPlan) string { return l.Name() }
+
+// setupEffects keeps, of a first setup's effects, the errors and the
+// warnings that ask something of the operator. Comparisons with the
+// private setup mesh's plan (a link or the AP "moves") and notes the
+// setup screen shows itself are dropped.
+func setupEffects(es []status.Warning) []status.Warning {
+	drop := map[string]bool{"ap-credentials": true, "mesh-link-moves": true, "ap-moves": true, "ap-band": true, "link-restarts": true}
+	var out []status.Warning
+	for _, e := range es {
+		if e.Level == "error" || (e.Level == "warning" && !drop[e.Code]) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// setupPlan is the radio plan a node in setup mode will run with this
+// configuration and profile.
+func (d *Daemon) setupPlan(n *config.Node, p *config.Profile) *api.SetupPlan {
+	plan := d.previewPlan(n, p)
+	if plan == nil {
+		return nil
+	}
+	name := func(r *radio.Radio) string {
+		if r == nil {
+			return ""
+		}
+		return r.Name() + " (" + r.Phy + ")"
+	}
+	out := &api.SetupPlan{Links: []api.SetupLink{}, AP: name(plan.AP)}
+	for i := 0; ; i++ {
+		l, ok := p.Link(i)
+		if !ok {
+			break
+		}
+		out.Links = append(out.Links, api.SetupLink{Link: linkName(l), Radio: name(plan.Link(i))})
+	}
+	return out
+}
 
 // listAnd joins names for a sentence: "a", "a and b", "a, b and c"; past
 // six it counts the rest.

@@ -159,6 +159,7 @@ func (g *gossipReconciler) Reconcile(ctx context.Context) (reconcile.Result, err
 	}
 	r.Pos, r.NoPos = d.gossipPosition(time.Now())
 	r.Arch, r.Rollouts, _ = d.rolloutSelfCheck(ctx)
+	r.HaLowFiles = d.halowHeld()
 	r.Rollout = d.rolloutGossip()
 	if d.time != nil {
 		r.Time = d.time.Role()

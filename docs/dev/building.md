@@ -85,10 +85,39 @@ sign the next one. Keep the secret file off the network.
    `STAGE=beta` names another stage, `STAGE=final` publishes a full
    release. `scripts/release-notes.sh 0.4.0` prints the notes alone.
 
-6. Add it to the apt repository (below).
+6. Build its images (below).
 
-**The apt repository** is a folder of static files that any web server can
-serve as it is. `tools/aptrepo` adds packages to its `pool/`, then writes
+**Images.** A board's image is Raspberry Pi OS Lite with the release's
+packages, the board's drivers built for its kernel, and its overlays and
+boot settings. Each board is one file in `packaging/image/boards/`, which
+also pins the base image by SHA-256. The image holds no mesh profile, no
+node identity and no BCF: those go on the card when it is flashed, in a
+folder `trellis/` on the boot partition (`profile.yaml`, `node.yaml`,
+`web-admin.yaml`, `authorized_keys`, `password`, `morse/`). At boot, `trellis firstboot`
+checks them, installs them and removes them from the card, and writes
+what it did to `trellis/firstboot.txt`.
+
+The build runs as root on an arm64 Linux machine, natively (its drivers
+are compiled inside the image), with e2fsprogs 1.47 or newer (Ubuntu 24.04,
+Debian 13: the image's ext4 uses `orphan_file`), in 30 to 60 minutes:
+
+```sh
+sudo make image BOARD=cm4-reference DEBS=dist/release/0.4.0
+```
+
+It writes `dist/image/`: the `.img.xz`, its `.sha256` and a manifest of the
+image's packages. `IMAGE_XZ=0` leaves the image uncompressed, for a build
+host that cannot take a long compression on all its cores. A HaLow
+board's image carries Morse's firmware and licence, fetched at the pinned
+commit and checked; never the BCF (licensing: it reaches a node from the
+card, the node's uplink or another node). For a release, the `image` workflow builds it on
+GitHub's arm64 runner (Actions → image → Run workflow, with the tag and
+the board). It checks the release's packages against `trusted.keys`,
+holds no key, and leaves the image as an artifact for 14 days.
+
+**The apt repository** tooling is kept, though no public repository is
+run: releases go out as packages, images and mesh upgrades. A repository
+is a folder of static files that any web server can serve as it is. `tools/aptrepo` adds packages to its `pool/`, then writes
 `dists/stable/` again from everything the pool holds. It signs `Release`
 with a gpg key, the **archive key** (separate from the release key and
 from anyone's commit key), and writes the key's public half beside it as
@@ -105,8 +134,10 @@ never replaces a published file with different contents. Older versions
 stay listed. `make apt-test` builds a repository with throwaway keys and
 checks, in Debian and Ubuntu containers, that apt installs and upgrades
 from it, and that it refuses the repository when an index is changed or
-another key signed it. The [reference](../reference.md#installing-from-the-apt-repository) has
-the lines a machine needs.
+another key signed it. A machine uses one with the keyring in
+`/usr/share/keyrings/` and `deb [signed-by=…] URL stable main`; `apt
+upgrade` then installs releases without `meshctl upgrade`'s health check
+and rollback.
 
 A node takes a release with `sudo meshctl upgrade FILE.deb`
 ([reference](../reference.md#upgrading-a-device-by-itself)). To try one that no built-in key signed,

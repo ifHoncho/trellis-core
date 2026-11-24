@@ -72,6 +72,31 @@ func TestGossipFilterAndRouting(t *testing.T) {
 	}
 }
 
+func TestRenderSSHRate(t *testing.T) {
+	plain := Input{Inside: []string{"lo"}, TCP: []int{22}}.Render()
+	if strings.Contains(plain, "ssh_rate") {
+		t.Fatal("a rate limit without SSHRate")
+	}
+	out := Input{Inside: []string{"lo", "br-mesh"}, TCP: []int{22, 443}, SSHRate: 10}.Render()
+	for _, want := range []string{
+		"set ssh_rate4 { type ipv4_addr; flags dynamic, timeout; timeout 1m; size 8192; }",
+		"set ssh_rate6 { type ipv6_addr; flags dynamic, timeout; timeout 1m; size 8192; }",
+		`tcp dport 22 ct state new update @ssh_rate4 { ip saddr limit rate over 10/minute burst 10 packets } counter drop comment "` + RuleSSHRate + `"`,
+		`tcp dport 22 ct state new update @ssh_rate6 { ip6 saddr limit rate over 10/minute burst 10 packets } counter drop comment "` + RuleSSHRate + `"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	// After the mesh side's accept, before tcp/22's.
+	if i := strings.Index(out, "ssh_rate4 { ip saddr"); i < strings.Index(out, `iifname {`) || i > strings.Index(out, "tcp dport { 22, 443 } accept") {
+		t.Fatalf("rate limit out of place:\n%s", out)
+	}
+	if testing.Verbose() {
+		t.Log("\n" + out)
+	}
+}
+
 func TestRenderFirewall(t *testing.T) {
 	if strings.Contains(Routing{AnycastIf: "anycast0", Prefix: "10.73.0.0/16"}.Render(), "hook input") {
 		t.Fatal("the routing table has an input chain")

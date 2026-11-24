@@ -50,8 +50,8 @@ runs and is tested, not a layer of half-built parts.
   if it is not healthy, even when it loses power in the middle. Nodes warn
   when a mesh runs mixed releases.
 - **Deploying from your computer** (0.2.0). `trellis-deploy` installs or
-  upgrades every node in a list over SSH, from Linux or macOS (Windows
-  next): the release
+  upgrades every node in a list over SSH, from Linux, macOS or Windows:
+  the release
   checked first, a plan shown before anything is done, new nodes joining
   the mesh at once, upgrades one at a time that stop at the first that
   goes back.
@@ -82,11 +82,15 @@ runs and is tested, not a layer of half-built parts.
   places joined into one over WireGuard, with a node behind NAT able to
   hold the link and a second node per site to take over (built and
   tested in the lab; real sites next).
+- **Images:** prebuilt images that boot into a working node with no
+  keyboard or SSH. The team's mesh profile goes onto the card when it is
+  flashed, so a whole kit comes up meshed with no setup per node; a node
+  flashed without one is set up from a phone, operator account and OS
+  updates included (built for the reference CM4 and set up on one from
+  a phone; a card with the mesh profile next).
 
 ## Next
 
-- **Images:** prebuilt images that boot into a working node, set up from a
-  phone with no keyboard or SSH.
 - **Re-keying a whole mesh from one node,** with keys of each node's own,
   so that a lost or captured node can be shut out without visiting every
   other one.

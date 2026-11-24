@@ -612,6 +612,17 @@ There is no systemd in a container, so there is no reboot (`--no-reboot`),
 no meshd to start after an `apt` install, and `meshctl prepare` reports
 the module it cannot build.
 
+## The web UI on phones
+
+`make ui-dev LONG=1` gives the made-up node values as long as a real
+node's (a development build's version, a HaLow link with no radio). Desktop
+Firefox goes no narrower than 500 px and ignores the mobile viewport;
+check phone layouts with Playwright's Chromium, which emulates devices
+(`devices['Pixel 7']`: 412 px, `devices['Galaxy S8']`: 360 px, mobile
+viewport, touch). A page is wider than the phone when the browser's layout
+viewport (`window.innerWidth`) is wider than the device: the phone then
+zooms the page out, and its fixed bottom bar with it.
+
 ## Real nodes
 
 See [docs/hardware.md](../hardware.md) for what a node needs, and

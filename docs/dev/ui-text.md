@@ -40,6 +40,11 @@ like a sentence from a manual or a chat, it is wrong.
    irreversible step), as a short technical line.
 8. **One name per thing** (glossary). Implementation names (`meshd`,
    reconciler) appear only on diagnostic screens.
+9. **A switch has the name of the setting it governs,** as the system it
+   belongs to names it, in the positive sense and with that setting's
+   default: `Password authentication` (On), never an opposite made up
+   for it (`SSH key only`). A switch that cannot be changed yet says what
+   it needs (`Off: requires a public key`).
 
 ## Examples
 
@@ -52,6 +57,7 @@ like a sentence from a manual or a chat, it is wrong.
 | `This node's own uplink on eth0 gives the whole mesh its internet.` | `Local uplink (eth0)` · `Gateway for the mesh` |
 | `…is too hot at 121 °C: it now sends only 50% of the time to cool off, so links on it are slower.` | `MT7915 5/6 GHz thermal throttling: 121 °C, Tx duty 50%. Improve card cooling.` |
 | `The lines show up to the last three minutes, from when this page was opened.` | `History: 3 min` |
+| Switch `SSH key only` (off) | Switch `Password authentication` (on) |
 
 ## Glossary
 
@@ -69,5 +75,7 @@ like a sentence from a manual or a chat, it is wrong.
 | supply | power rail, PSU | The board's power input |
 | unplanned reset | crash, went down | A restart without a shutdown |
 | alert | warning (as the general word) | A fault, a warning or a note |
+| operator account | admin account, user | The Linux account `trellis`: SSH, sudo, meshctl |
+| password authentication | SSH key only, key login only | SSH login with the operator account's password; On by default, Off needs a public key |
 
 Add a term here when it first enters the UI.

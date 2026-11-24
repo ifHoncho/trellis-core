@@ -10,6 +10,7 @@
 #   make apt-repo APT_REPO=DIR APT_GPG_KEY=FINGERPRINT   add dist/release/<version>/'s packages to the apt repository in DIR
 #   make apt-test   an apt repository signed with a throwaway key: install, upgrade, tampering, in containers
 #   make deploy-tool  dist/trellis-deploy/: trellis-deploy for Linux, macOS and Windows (amd64, arm64)
+#   make image [BOARD=cm4-reference] [DEBS=dir]   dist/image/: a board's image (root, on an arm64 machine; scripts/build-image.sh)
 #   make test       unit tests (no root)
 #   make lab        lab tests in network namespaces (root, or a user namespace)
 #   make check      gofmt, vet and tests
@@ -38,7 +39,7 @@ ARCHES   = arm64 arm armv6 amd64
 # and tested on these only.
 VOICE_ARCHES = arm64 amd64
 
-.PHONY: static lab-voice lab-rollout lab-sites lab-trial all build cross deb deb-test apt-repo apt-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
+.PHONY: image static lab-voice lab-rollout lab-sites lab-trial all build cross deb deb-test apt-repo apt-test deploy-test release publish deploy-tool fuzz test lab lab-scale check fmt vet gen clean deploy nodes band profile web-password web-wan ui-dev
 
 all: build
 
@@ -109,6 +110,14 @@ apt-repo:
 
 apt-test:
 	scripts/apt-test.sh
+
+# A board's image (packaging/image/boards/), from the packages in DEBS:
+# a signed release's (dist/release/<version>), or make deb's. Root, on an
+# arm64 machine.
+BOARD ?= cm4-reference
+DEBS  ?= $(DEB_OUT)
+image:
+	scripts/build-image.sh $(BOARD) $(DEBS) dist/image
 
 # trellis-deploy runs on the operator's computer, not on a node.
 DEPLOY_TOOL_OUT ?= dist/trellis-deploy
@@ -218,13 +227,15 @@ web-wan:
 # LINKS=2 gives the made-up node a HaLow radio and a second mesh link,
 # LINKS=3 a third link on 2.4 GHz as well. BARE=1 is a node with no
 # per-radio rules, as freshly installed. ONE_RADIO=1 is a node with one
-# dual-band adapter in a 2.4 + 5 GHz profile.
+# dual-band adapter in a 2.4 + 5 GHz profile. LONG=1: values as long as a
+# real node's (a development version, a HaLow link with no radio), for
+# phone layouts.
 # UI files are built into the binary, so run it again after editing them.
 UI_DEV_DIR ?= $(or $(XDG_RUNTIME_DIR),/tmp)/trellis-ui-dev
 ui-dev: build
 	$(GO) build -o bin/fakemeshd ./tools/fakemeshd
 	@mkdir -p $(UI_DEV_DIR)
 	@echo "== http://127.0.0.1:8480  (password: trellis-demo; Ctrl-C stops both)"
-	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock --console $(UI_DEV_DIR)/console.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) $(if $(PORTAL),--portal) $(if $(TROUBLED),--troubled) & fake=$$!; \
+	@bin/fakemeshd --socket $(UI_DEV_DIR)/meshd.sock --console $(UI_DEV_DIR)/console.sock $(if $(SETUP),--setup) $(if $(LINKS),--links $(LINKS)) $(if $(BARE),--bare) $(if $(ONE_RADIO),--one-radio) $(if $(UNRESTRICTED),--unrestricted) $(if $(PORTAL),--portal) $(if $(TROUBLED),--troubled) $(if $(LONG),--long-values) & fake=$$!; \
 	  trap "kill $$fake 2>/dev/null" EXIT INT TERM; sleep 0.5; \
 	  bin/trellis webd --socket $(UI_DEV_DIR)/meshd.sock --voice-console $(UI_DEV_DIR)/console.sock --listen 127.0.0.1:8480 --plain-http

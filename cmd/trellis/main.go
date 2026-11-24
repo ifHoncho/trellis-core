@@ -16,10 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/halowfiles"
 	"meridian/trellis/internal/meshctl"
 	"meridian/trellis/internal/meshd"
+	"meridian/trellis/internal/osupdate"
 	"meridian/trellis/internal/pcie"
 	"meridian/trellis/internal/webd"
 )
@@ -56,6 +59,29 @@ func run(argv []string) int {
 		return runCRDA(args)
 	case "pcie-watch":
 		return runPCIeWatch(args)
+	case "firstboot":
+		return runFirstboot(args)
+	case "halow":
+		// HaLow firmware and BCF: meshd runs it outside its sandbox.
+		if len(args) != 3 || args[0] != "install" || args[1] != "--from" {
+			fmt.Fprintln(os.Stderr, "usage: trellis halow install --from DIR (run by meshd)")
+			return 2
+		}
+		if err := halowfiles.Install(context.Background(), halowfiles.DefaultPinsFile, args[2], os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	case "os":
+		// OS package updates: meshd runs it outside its sandbox.
+		return osupdate.HelperMain(args, os.Stderr)
+	case "account":
+		// The operator account helper: meshd runs it outside its sandbox.
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: trellis account get|check|apply (run by meshd; a change on stdin)")
+			return 2
+		}
+		return account.Helper(context.Background(), args[0], os.Stdin, os.Stdout, os.Stderr)
 	case "version", "--version", "-v":
 		fmt.Println("trellis", version)
 		return 0
@@ -77,6 +103,7 @@ Usage: trellis <subcommand> [flags]
   meshctl   operator CLI: status, radios, doctor, config validate, profile new, web
   webd      the web UI and network API (unprivileged, under systemd)
   crda      answer the kernel's regulatory request (run by udev; --print to show the answer)
+  firstboot install the files put on the card at flash time (run at boot by systemd)
   version
 
 The binary may also be installed as symlinks named meshd, meshctl and webd.

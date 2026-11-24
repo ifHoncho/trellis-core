@@ -26,11 +26,13 @@ import (
 	"syscall"
 	"time"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/config"
 	"meridian/trellis/internal/hostapd"
 	"meridian/trellis/internal/hoststat"
 	"meridian/trellis/internal/meshd"
+	"meridian/trellis/internal/osupdate"
 	"meridian/trellis/internal/qr"
 	"meridian/trellis/internal/status"
 )
@@ -96,8 +98,13 @@ type fake struct {
 	profile  config.Profile
 	setup    bool
 	password string
-	fails    int
-	mcast    uint64
+	account  account.State  // the operator account (account.go)
+	os       osupdate.State // OS package updates (osupdate.go)
+	// longValues: the lengths a real node has, for phone layouts: a
+	// development build's version, a HaLow link with no radio.
+	longValues bool
+	fails      int
+	mcast      uint64
 	// A made-up mesh-wide channel survey (StartSurvey).
 	surveyAt time.Time
 	// A mesh-wide change this node sent (SetMeshProfile).
@@ -164,7 +171,7 @@ func newFake(setup bool, password string, links int, bare bool) *fake {
 		n.Callsign = "trellis-node"
 		n.NodeID = 0
 	}
-	return &fake{started: time.Now().Add(-3*time.Hour - 17*time.Minute), node: n, profile: p, setup: setup, password: password, mcast: 48211, siteKey: fakeSiteKeys[0]}
+	return &fake{started: time.Now().Add(-3*time.Hour - 17*time.Minute), node: n, profile: p, setup: setup, password: password, mcast: 48211, siteKey: fakeSiteKeys[0], account: newAccount(setup)}
 }
 
 // oneRadioNode makes the demo node one with a single dual-band adapter, on
@@ -323,7 +330,7 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 	}
 	self := nodes[0]
 	st := &status.Status{
-		Version: "demo", Hostname: "relay-1", Time: now, StartedAt: f.started,
+		Version: f.version(), Hostname: "relay-1", Time: now, StartedAt: f.started,
 		Node: status.Node{Callsign: f.node.Callsign, NodeID: self.id, NodeIDSource: "config", MAC: self.mac, Address: "10.73.12.1/16", ConfigDigest: f.node.Digest()},
 		Profile: status.Profile{Name: f.profile.Name, MeshID: f.profile.MeshID, Band: f.profile.Radio.Band, Channel: f.profile.Radio.Channel,
 			FreqMHz: config.LinkFrequencyMHz(f.profile.Radio, f.profile.Regulatory.Country), WidthMHz: f.profile.Radio.Width, Prefix: f.profile.Prefix, PinnedBatman: "2026.3", MinBatman: "2024.0", OrigIntervalMS: 1000,
@@ -334,6 +341,11 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 			KernelAlpha2: f.profile.Regulatory.Country, Source: "trellis"},
 		Setup:    status.Setup{Needed: f.setup, NodeConfig: !f.setup, Profile: !f.setup},
 		Warnings: []status.Warning{},
+	}
+	if f.longValues {
+		// A HaLow module whose BCF has not arrived.
+		st.Warnings = append(st.Warnings, status.Warning{Level: "warning", Code: "halow-files-missing", Source: "halow-files",
+			Message: "HaLow module files missing: bcf_fgh100mhaamd.bin. Fetching from mesh nodes and uplink; or write a card: trellis-deploy --card --halow."})
 	}
 	if st.Regulatory.RequestedMode == config.RegModeUnrestricted {
 		st.Regulatory.Note = "Trellis's rules, without regulatory limits: each radio's driver and firmware set its power"
@@ -365,6 +377,12 @@ func (f *fake) Status(ctx context.Context) (*status.Status, error) {
 		role := fmt.Sprintf("mesh%d", i+2)
 		switch l.Band {
 		case config.BandS1G:
+			if f.longValues {
+				// A HaLow module whose files are missing: the link is the
+				// mesh's, not carried here.
+				ml.Interface, ml.Supplicant = "", status.Supplicant{}
+				break
+			}
 			ml.TXPowerDBm = 21
 			st.Radios = append(st.Radios, status.Radio{Fingerprint: "mac:a0:b0:c0:00:89:3d", FingerprintSource: "permanent-mac", Phy: "phy3",
 				Chipset: "Morse Micro MM8108 (Wi-Fi HaLow)", Driver: "morse_usb", Bus: "usb", Port: "usb:1-1.2", PermAddr: "a0:b0:c0:00:89:3d",
@@ -973,16 +991,6 @@ func (f *fake) SetProfile(ctx context.Context, in api.ProfileInput, dryRun bool)
 	return res, nil
 }
 
-// joinsMesh is meshd's own sentence for the mesh a node in setup joins.
-func joinsMesh(p *config.Profile) string {
-	for _, e := range meshd.ProfileEffects(nil, p, true, meshd.ProfileView{}) {
-		if e.Code == "joins-mesh" {
-			return e.Message
-		}
-	}
-	return ""
-}
-
 func (f *fake) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*api.ApplyResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -992,13 +1000,24 @@ func (f *fake) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*api.
 	}
 	n := f.node
 	n.Callsign, n.NodeID = strings.TrimSpace(in.Callsign), in.NodeID
+	if in.WebUplink != nil {
+		n.Web.WANAccess = *in.WebUplink
+	}
+	if in.SSHUplink != nil {
+		v := *in.SSHUplink
+		n.Firewall.SSH = &v
+	}
 	if err := n.Validate(); err != nil {
 		return nil, err
 	}
-	res := &api.ApplyResult{Changed: true, Effects: []status.Warning{
-		eff("warning", "ap-credentials", "The setup Wi-Fi goes away. The node's own client Wi-Fi replaces it under a new name and passphrase: note them before applying if that is how you are connected."),
-		eff("info", "joins-mesh", joinsMesh(p)),
-	}}
+	if in.Account != nil {
+		if err := f.setAccount(*in.Account, true); err != nil {
+			return nil, err
+		}
+	}
+	// As meshd in setup mode: the plan, and only effects that need the
+	// operator (setupEffects).
+	res := &api.ApplyResult{Changed: true, Effects: []status.Warning{}, Plan: fakeSetupPlan(p)}
 	if p.Regulatory.Mode == config.RegModeUnrestricted {
 		res.Effects = append([]status.Warning{eff("warning", "regulatory", "Regulatory mode is unrestricted: radios use every channel and the full power the hardware allows. That is lawful only with frequency authorization; without it, use country mode.")}, res.Effects...)
 	}
@@ -1008,6 +1027,9 @@ func (f *fake) Setup(ctx context.Context, in api.SetupInput, dryRun bool) (*api.
 	if dryRun {
 		f.node, f.setup = keepNode, keepSetup
 		return res, nil
+	}
+	if in.Account != nil {
+		_ = f.setAccount(*in.Account, false)
 	}
 	f.profile, res.Applied = *p, true
 	return res, nil
@@ -1107,7 +1129,7 @@ func (f *fake) Doctor(ctx context.Context) (string, error) {
 func (f *fake) WebInfo() api.WebInfo {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return api.WebInfo{Callsign: f.node.Callsign, Version: "demo", AdminSet: f.password != "", Setup: f.setup, WANAccess: f.node.Web.WANAccess, Prefix: f.profile.Prefix}
+	return api.WebInfo{Callsign: f.node.Callsign, Version: f.version(), AdminSet: f.password != "", Setup: f.setup, WANAccess: f.node.Web.WANAccess, Prefix: f.profile.Prefix}
 }
 
 func (f *fake) WebLogin(from, password string) error {
@@ -1153,6 +1175,7 @@ func main() {
 	unrestricted := flag.Bool("unrestricted", false, "a mesh profile in unrestricted regulatory mode")
 	links := flag.Int("links", 1, "mesh links: 2 adds a HaLow radio and link, 3 a 2.4 GHz link as well")
 	consoleSock := flag.String("console", "", "also serve a made-up voice console socket here (webd --voice-console)")
+	longValues := flag.Bool("long-values", false, "values as long as a real node's: a development build's version, a HaLow link with no radio (phone layouts)")
 	troubled := flag.Bool("troubled", false, "a node with hardware trouble: a PCIe link that loses packets, a throttling radio, resets, a trial that was undone")
 	flag.Parse()
 	if *socket == "" {
@@ -1173,6 +1196,7 @@ func main() {
 	}
 	f.portal = *portal
 	f.troubled = *troubled
+	f.longValues = *longValues
 	if *consoleSock != "" {
 		if err := f.serveConsole(*consoleSock); err != nil {
 			fmt.Fprintln(os.Stderr, "fakemeshd:", err)
@@ -1296,4 +1320,35 @@ func linkPtrs(ls []status.MeshLink) []*status.MeshLink {
 		out[i] = &ls[i]
 	}
 	return out
+}
+
+// fakeSetupPlan is the demo node's radios for a profile's links: one
+// radio per band, the spare adapter on the client AP.
+func fakeSetupPlan(p *config.Profile) *api.SetupPlan {
+	byBand := map[string]string{"2g": "MediaTek MT7915 (phy0)", "5g": "MediaTek MT7915 (phy1)", "6g": "MediaTek MT7915 (phy1)",
+		"s1g": "Morse Micro MM8108 (Wi-Fi HaLow) (phy3)"}
+	used := map[string]bool{}
+	out := &api.SetupPlan{Links: []api.SetupLink{}, AP: "spare Alfa (phy2)"}
+	for i := 0; ; i++ {
+		l, ok := p.Link(i)
+		if !ok {
+			break
+		}
+		r := byBand[l.Band]
+		if used[r] {
+			r = ""
+		}
+		used[r] = r != ""
+		out.Links = append(out.Links, api.SetupLink{Link: l.Name(), Radio: r})
+	}
+	return out
+}
+
+// version is this node's: "demo", or a development build's with
+// --long-values.
+func (f *fake) version() string {
+	if f.longValues {
+		return "0.2.1-11-g601be86-dirty+1122.163516"
+	}
+	return "demo"
 }

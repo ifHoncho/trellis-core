@@ -120,7 +120,8 @@ export function table(opts, cols, rows, empty) {
 // A name at the start ("scout-7 runs…", "mt7915e-power 2 was…") keeps its
 // case: only a plain word is capitalised.
 export function asSentence(m) {
-  if (!m) return m;
+  // Text only: a message built of elements is shown as it is.
+  if (!m || typeof m !== 'string') return m;
   if (/^[a-z]+(\s|$)/.test(m)) m = m[0].toUpperCase() + m.slice(1);
   return /[.!?)]$/.test(m) ? m : m + '.';
 }

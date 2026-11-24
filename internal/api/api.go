@@ -20,6 +20,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"meridian/trellis/internal/account"
+	"meridian/trellis/internal/osupdate"
 	"meridian/trellis/internal/status"
 )
 
@@ -41,6 +43,15 @@ type Provider interface {
 	Survey() *status.Survey
 	StartSurvey(ctx context.Context) (*status.Survey, error)
 	Setup(ctx context.Context, in SetupInput, dryRun bool) (*ApplyResult, error)
+	// The operator account: its state; a change (dry run: checked
+	// only); a GitHub user's public keys, fetched by the node.
+	Account(ctx context.Context) (*account.State, error)
+	SetAccount(ctx context.Context, in AccountInput, dryRun bool) (*account.State, error)
+	GitHubKeys(ctx context.Context, user string) ([]account.Key, error)
+	// OS package updates (internal/osupdate): the record; a check or an
+	// upgrade started in the background.
+	OSUpdates(ctx context.Context) (*osupdate.State, error)
+	StartOSUpdate(ctx context.Context, op string) (*osupdate.State, error)
 
 	Topology(ctx context.Context) (*status.Topology, error)
 	IdentifyRadio(fingerprint string, seconds int) error
@@ -155,6 +166,30 @@ func (s *Server) Handler() http.Handler {
 	get("/survey", func(r *http.Request) (any, error) { return p.Survey(), nil })
 	get("/voice", func(r *http.Request) (any, error) { return p.Voice(r.Context()) })
 	get("/voice/config", func(r *http.Request) (any, error) { return p.VoiceConfig(), nil })
+	get("/account", func(r *http.Request) (any, error) { return p.Account(r.Context()) })
+	get("/os", func(r *http.Request) (any, error) { return p.OSUpdates(r.Context()) })
+	for _, op := range []string{"check", "upgrade"} {
+		mux.HandleFunc("POST /"+Version+"/os/"+op, func(w http.ResponseWriter, r *http.Request) {
+			reply(w, func(r *http.Request) (any, error) { return p.StartOSUpdate(r.Context(), op) }, r)
+		})
+	}
+	mux.HandleFunc("PUT /"+Version+"/account", func(w http.ResponseWriter, r *http.Request) {
+		var in AccountInput
+		if !readJSON(w, r, &in) {
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) { return p.SetAccount(r.Context(), in, dryRun(r)) }, r)
+	})
+	mux.HandleFunc("POST /"+Version+"/account/github", func(w http.ResponseWriter, r *http.Request) {
+		var in GitHubKeysInput
+		if !readJSON(w, r, &in) {
+			return
+		}
+		reply(w, func(r *http.Request) (any, error) {
+			keys, err := p.GitHubKeys(r.Context(), in.User)
+			return map[string]any{"keys": keys}, err
+		}, r)
+	})
 	mux.HandleFunc("POST /"+Version+"/voice/test", func(w http.ResponseWriter, r *http.Request) {
 		var in VoiceTestInput
 		if !readJSON(w, r, &in) {

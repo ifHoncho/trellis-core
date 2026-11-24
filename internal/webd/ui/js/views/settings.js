@@ -3,6 +3,8 @@ import { h } from '../dom.js';
 import { get, put, post } from '../api.js';
 import { state, redraw, toast, openDialog, closeDialog } from '../state.js';
 import { panel, field, toggle, button, kv, table, qr, notice, copyText, download, pill, asSentence } from '../ui.js';
+import { accountPanel } from '../account.js';
+import { osUpdatesPanel } from '../osupdates.js';
 import { bandName, since, duration, count, plural, meshLinks, meshRadios, carried, fewerRadios, gnssShort } from '../fmt.js';
 import { ensureConfig, cfg, saveBar, saveProfile, saveMeshProfile, loadConfig, changeLock, editProfile, sentPending, noteUnsaved } from '../config.js';
 import { channelsSection } from './channels.js';
@@ -289,7 +291,7 @@ function accessSection(d, st) {
   return [
     panel('Web UI access', {},
       h('div.form',
-        toggle('Allow access from uplink network', 'Off: mesh, client AP and client ports only. On: also the uplink network (password-protected).',
+        toggle('Web UI from uplink', 'tcp/80, tcp/443',
           !!d.web.wan_access, (v) => { d.web.wan_access = v; redraw(); }),
         kv([
           ['From clients', h('span', 'https://', st.client_network.anycast.address || '10.73.0.1', h('span.sans.dim', '  or  '), 'https://node.mesh')],
@@ -297,6 +299,7 @@ function accessSection(d, st) {
         ]),
         h('p.faint', { style: { fontSize: '13.5px', maxWidth: '75ch' } }, 'IP addresses always work. .mesh names resolve only via this node’s DNS; Private DNS, browser secure DNS or a VPN bypass it.'))),
     firewallPanel(d, st),
+    accountPanel(),
     panel('Admin password', {},
       h('div.form',
         h('div.fields',
@@ -348,10 +351,10 @@ function firewallPanel(d, st) {
         ['Off', 'Trellis installs no rules.'],
       ].map(([k, v]) => h('span', { style: { display: 'block' } }, h('b', k), ': ', v)),
         closed, (v) => { fw.wan = v ? 'closed' : 'open'; redraw(); }),
-      closed ? toggle('Accept SSH (tcp/22)', 'Management from the uplink network.', fw.ssh !== false,
+      closed ? toggle('SSH from uplink', 'tcp/22 · Max. 10 new connections/min per address', fw.ssh !== false,
         (v) => { fw.ssh = v ? null : false; redraw(); }) : null,
       closed ? field('Also accept', h('input.input', { value: ports, placeholder: 'tcp/5201 udp/51820', spellcheck: false,
-        onchange: (e) => setPorts(e.target.value) }), { hint: 'tcp/PORT or udp/PORT, space-separated. tcp/80 and tcp/443 added while “Allow access from uplink network” is on.' }) : null,
+        onchange: (e) => setPorts(e.target.value) }), { hint: 'tcp/PORT or udp/PORT, space-separated. tcp/80, tcp/443 added while “Web UI from uplink” is on.' }) : null,
       closed ? kv([['Effective', accepts.length
         ? h('span', h('span.mono', accepts.join(' ')), h('span.faint', '  ·  plus replies, ICMP, DHCP'))
         : h('span.faint', 'replies, ICMP and DHCP only')]]) : null));
@@ -427,6 +430,7 @@ function systemSection(d, st) {
         ['meshd', `PID ${st.process.pid} · ${st.process.open_files} FDs · ${st.process.goroutines} goroutines`],
       ])),
     softwarePanel(st),
+    osUpdatesPanel(),
     meshUpgradePanel(st),
     trialsPanel(st),
     timePanel(st),
@@ -448,7 +452,7 @@ export function settings() {
   const sec = SECTIONS.some(([id]) => id === state.sub) ? state.sub : 'node';
   const head = h('header.page-head',
     h('div', h('h1', 'Settings'), h('p.sub', 'Changes are validated before apply; service impact shown for review.')));
-  const tabs = h('div.seg', { style: { alignSelf: 'flex-start', maxWidth: '100%', overflowX: 'auto' } },
+  const tabs = h('div.seg.sections', { style: { alignSelf: 'flex-start', maxWidth: '100%', overflowX: 'auto' } },
     SECTIONS.map(([id, label]) => h('button', { 'aria-pressed': String(sec === id), onclick: () => { location.hash = '#/settings/' + id; } }, label)));
   if (!c.draft || !state.config) {
     return h('div.page', head, tabs, h('div.empty', c.error ? ['Configuration load failed: ', c.error, ' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); c.error = null; loadConfig(); } }, 'Try again')] : 'Loading configuration…'));

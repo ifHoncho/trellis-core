@@ -6,14 +6,21 @@ Options and behaviour in full. Start with the [guide](guide.md).
 - [Passwords and sudo](#passwords-and-sudo)
 - [Installing one device by hand](#installing-one-device-by-hand)
 - [Setting a device up from a phone](#setting-a-device-up-from-a-phone)
+- [The operator account](#the-operator-account)
+- [Setting up a card](#setting-up-a-card)
 - [Changing the whole mesh](#changing-the-whole-mesh)
 - [Radios and mesh links](#radios-and-mesh-links)
+- [Sharing an uplink](#sharing-an-uplink)
 - [Linking sites over the internet](#linking-sites-over-the-internet)
 - [Access from outside the mesh](#access-from-outside-the-mesh)
 - [Regulatory modes](#regulatory-modes)
+- [OS updates](#os-updates)
+- [HaLow firmware and BCF](#halow-firmware-and-bcf)
 - [Upgrading a device by itself](#upgrading-a-device-by-itself)
+- [Upgrading the whole mesh from one node](#upgrading-the-whole-mesh-from-one-node)
 - [The web UI](#the-web-ui)
 - [Push-to-talk voice](#push-to-talk-voice)
+- [Trying a new driver, firmware or board file](#trying-a-new-driver-firmware-or-board-file)
 - [When something is wrong](#when-something-is-wrong)
 
 ## trellis-deploy
@@ -137,26 +144,6 @@ Install, upgrade and removal never modify configuration, mesh profile or
 identity (`/etc/trellis`, `/var/lib/trellis`); only `apt purge trellis`
 deletes them.
 
-### Installing from the apt repository
-
-`make apt-repo` builds an apt repository ([building.md](dev/building.md)),
-servable from any web server. No public repository yet. On the device,
-with the repository address in `REPO`:
-
-```sh
-curl -fsSL "$REPO/trellis-archive-keyring.gpg" | sudo tee /usr/share/keyrings/trellis-archive-keyring.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/trellis-archive-keyring.gpg] $REPO stable main" | sudo tee /etc/apt/sources.list.d/trellis.list
-sudo apt update
-sudo apt install trellis trellis-batman-adv-dkms
-sudo meshctl prepare
-```
-
-Verify the key fingerprint (`gpg --show-keys
-/usr/share/keyrings/trellis-archive-keyring.gpg`) against the publisher's
-before trusting it. `apt upgrade` installs new releases directly, without
-the health check and rollback of `meshctl upgrade`. For fielded nodes, use
-`meshctl upgrade` or the mesh upgrade.
-
 ## Setting a device up from a phone
 
 A device with no mesh profile starts in **setup mode**: setup AP
@@ -169,13 +156,74 @@ and on its Ethernet ports.
 3. **Join a mesh**: scan the profile QR code of a mesh node (Settings →
    Mesh profile → **Share profile**), paste its profile code, or upload its
    profile file. Or **start a new mesh**: name, and band, channel and width
-   per link (links proposed from the device's radios; secret generated).
-4. **Callsign**, review, apply. The setup AP is replaced by the client AP;
-   its SSID and passphrase are shown with a QR code.
+   per link (one link per mesh radio of the device, each on its best band;
+   secret generated).
+4. **Callsign**.
+5. **Access**: the [operator account](#the-operator-account) `trellis`
+   (password: the admin password, or another; SSH keys pasted or from a
+   GitHub user; **Password authentication**), **Web UI from uplink**
+   (tcp/80, tcp/443) and **SSH from uplink** (tcp/22), both on.
+6. **Review**: the radio for each mesh link and the client AP, the access
+   settings, **OS updates after setup** (on when the uplink is up; see
+   [OS updates](#os-updates)), and alerts that need action. Apply. The
+   setup AP is replaced by the client AP; its SSID and passphrase are
+   shown with a QR code.
 
 A provisioned node without an admin password (installed by
 `trellis-deploy` without one) shows "No admin password set". Set it on the
 node: `sudo meshctl web password`.
+
+## The operator account
+
+The Linux account `trellis` on every node set up by Trellis: SSH login,
+`sudo` (asks for the account's password) and `meshctl` without sudo
+(primary group `trellis`). SSH is always on.
+
+- **Set up** in the setup wizard's Access step, from a card
+  ([below](#setting-up-a-card)), or in Settings → Access → **Operator
+  account**.
+- **Password:** 8 to 128 characters. Default in the wizard: the web UI
+  admin password.
+- **SSH keys:** `/home/trellis/.ssh/authorized_keys`. Added by pasting a
+  public key, or by a GitHub user's keys (`github.com/USER.keys`, fetched
+  by the node over its uplink). Fingerprints (SHA256) are shown before
+  saving. Keys added to the file by hand are kept and shown; other lines
+  (comments, certificates) are kept as they are.
+- **Password authentication:** On by default. Off: SSH login with a key
+  only, for `trellis` alone (`/etc/ssh/sshd_config.d/50-trellis.conf`);
+  other accounts unchanged. Can be turned off only when the account has
+  a key; removing the last key turns it on.
+- A system without `openssh-server` shows SSH server: Not installed.
+
+Login: `ssh trellis@10.73.0.1` from a client, `ssh trellis@CALLSIGN.mesh`,
+or the node's uplink address while SSH from uplink is on.
+
+## Setting up a card
+
+A card flashed with a Trellis image takes its setup from the computer
+that flashed it: `trellis-deploy --card`, with the card's boot partition
+mounted.
+
+```sh
+trellis-deploy --card /media/$USER/bootfs --profile mesh.yaml --callsign kit-07 \
+  --ssh-key ~/.ssh/id_ed25519.pub --halow
+```
+
+| Option | |
+|---|---|
+| `--card DIR` | the boot partition (it holds `config.txt`) |
+| `--profile FILE` | the mesh profile; without it the node starts in setup mode |
+| `--callsign NAME` | required |
+| `--ssh-key FILE`, `--github USER` | public keys for the operator account |
+| `--no-web-uplink`, `--no-ssh-uplink` | access from the uplink network off |
+| `--halow`, `--no-halow` | Morse Micro's firmware and BCF for a Wio-WM6108, fetched at the pinned commit and checked; the default when the card's `config.txt` enables the WM6108 overlay |
+
+It asks for one password: the web UI admin's and the operator
+account's. The files go in `trellis/` on the card; at first boot the node
+installs them and removes them from the card (overwritten first), and
+writes what it did to `trellis/firstboot.txt`. A file that fails its check
+stays, with the reason in that file. Until then the card holds the mesh
+secret.
 
 ## Changing the whole mesh
 
@@ -395,13 +443,18 @@ interfaces: uplink, VPN, container links.
 closed`; default for nodes set up by Trellis):
 
 - **Input:** accept established/related, ICMP/ICMPv6, DHCP replies
-  (udp/68, udp/546), SSH (tcp/22, unless `firewall.ssh: false`), web UI
-  (tcp/80, tcp/443) while "Allow access from uplink network" is on, and
-  **Also accept** ports (`firewall.allow`, e.g. `tcp/5201`); drop all
-  else.
+  (udp/68, udp/546), SSH (tcp/22, unless `firewall.ssh: false`; max. 10
+  new connections/min per address, burst 10), web UI (tcp/80, tcp/443)
+  while **Web UI from uplink** is on, and **Also accept**
+  ports (`firewall.allow`, e.g. `tcp/5201`); drop all else.
 - **Forward:** new connections from filtered interfaces into the mesh
   dropped; DNAT port forwards pass. Outbound traffic, including shared
   internet, unaffected.
+
+The setup wizard and `trellis-deploy --card` set web UI and SSH from the
+uplink (`web.wan_access`, `firewall.ssh`), both on by default. A node in
+setup mode, which has no admin password yet, does not serve its web UI on
+the uplink.
 
 Off (`firewall.wan: open`): no Trellis rules; host firewall applies.
 Nodes upgraded from a release without this firewall stay open until it
@@ -420,6 +473,40 @@ The active mode is always shown (Overview, Settings → System, `meshctl
 status`), with a banner while unrestricted. **Dismiss** minimizes the
 banner to a "U" corner marker in that browser (warning on hover or tap);
 the full banner returns the next time the mesh enters unrestricted mode.
+
+## OS updates
+
+Settings → System → **OS updates**: the operating system's packages
+(apt). **Check** fetches the package lists and counts pending updates;
+**Update now** installs them. Held packages stay as they are: images hold
+the kernel and its headers (the drivers are built for that kernel).
+Trellis's own packages are not updated here (see below). Packages are
+upgraded, never removed or added; changed configuration files keep the
+node's version. Needs internet (the node's uplink, or a gateway of the
+mesh). **Reboot: Required** after some updates; reboot when convenient.
+
+## HaLow firmware and BCF
+
+A Wio-WM6108 HaLow module needs Morse Micro's firmware (`mm6108.bin`)
+and the module's board configuration file (`bcf_fgh100mhaamd.bin`) in
+`/lib/firmware/morse`. Images carry the firmware; the BCF reaches a node
+with no step by hand:
+
+- from the card (`trellis-deploy --card`, the default for a HaLow
+  board's card);
+- from another node of the mesh that holds both files (served on the
+  mesh only, port 7373);
+- from Morse Micro's repository over the node's uplink.
+
+Each file fetched must match the SHA-256 pinned in
+`/usr/share/trellis/packaging/dkms-morse/firmware.pins`, whatever its
+source. While a file is absent, the alert `halow-files-missing` names
+it. A node with both pinned files holds and serves them to other nodes.
+
+Only an absent file is fetched. A file already in `/lib/firmware/morse`
+under that name is never replaced, whatever it holds (another BCF, a
+[trial](#trying-a-new-driver-firmware-or-board-file)'s); such a node
+does not serve the files.
 
 ## Upgrading a device by itself
 

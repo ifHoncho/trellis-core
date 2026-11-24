@@ -93,7 +93,14 @@ stops the radio.
   have one.
 - **dnsmasq** listens on mesh addresses only. **chrony** listens on all
   addresses but serves only the mesh prefix.
-- **SSH** is the operating system's, as the operator configured it.
+- **SSH** is the operating system's. On nodes set up by Trellis it is on,
+  with the operator account `trellis` (password authentication, or keys
+  only once it has one),
+  and from the uplink, with the firewall closed (unless `firewall.ssh:
+  false`), new connections are limited to 10 a minute per address, so
+  password guessing from there is slow. A node in setup mode has no admin password yet and does not serve
+  its web UI on the uplink; setup turns that on unless the operator turns
+  it off.
 - **The firewall** (`firewall.wan: closed` in the node configuration, or
   Settings → Access): from anything that is not the mesh side (its uplink
   network, any other interface), the node takes only replies to its own
@@ -168,8 +175,12 @@ shared. What limits a buggy or hostile member:
 - The mesh profile, node identity and admin password hash are files
   readable by root only. They are not encrypted at rest: whoever can read
   the storage has the mesh secret (see A4) and the admin password hash.
+- A card written with `trellis-deploy --card` holds the mesh profile and
+  the password hashes in the clear on its boot partition until the
+  node's first boot installs them and overwrites them there.
 - **What remains:** the mesh secret of a lost node must be treated as
-  known. Storage encryption is up to the image (planned) or the operator.
+  known. Storage is not encrypted by Trellis or its images; that is up to
+  the operator.
 
 ### A6: tampered releases
 
@@ -224,10 +235,15 @@ shared. What limits a buggy or hostile member:
 | `trellis crda` | root, run by udev for a moment | answer the kernel's regulatory requests |
 | `trellis pcie-watch` | root with one capability (`CAP_SYS_ADMIN`), no network, no devices, a read-only file system; started by meshd on a node with a PCIe radio | read and clear the error status registers of the radios' PCIe links, and write what it finds to a file meshd reads |
 | `meshctl trial boot` | root, for a moment at boot before drivers load, when a trial is on record | put back the files of a driver trial the last boot did not confirm |
+| `trellis account` | root, as a transient unit meshd starts (`systemd-run`) for one request, outside meshd's sandbox | create the operator account `trellis`, set its password and SSH keys, password authentication, start SSH; the change arrives on stdin |
+| `trellis os` | root, as a transient unit meshd starts for one check or upgrade, outside its sandbox | run apt: update the package lists, upgrade (held packages kept) |
+| `trellis halow install` | root, as a transient unit meshd starts, outside its sandbox | put Morse's pinned firmware and BCF, checked again, into `/lib/firmware/morse`, and reload the driver |
+| `trellis firstboot` | root, at boot before networking | install the files put on the card at flash time, the operator account included |
 | `meshctl` | the operator | talk to meshd's socket (root and the `trellis` group) |
 
 Membership of the `trellis` group is admin access: the API socket needs no
-password.
+password. The operator account `trellis` is in it, and in `sudo` (with its
+password).
 
 ## Review against the implementation
 
@@ -239,11 +255,13 @@ is either fixed, or planned with its reason.
 | R1 | meshd ran as unrestricted root, and hostapd and wpa_supplicant (which parse frames from anyone in radio range) with it; the architecture claimed network capabilities only. | **Fixed:** meshd's unit bounds the capabilities to those networking needs and sandboxes the file system; its children inherit the bounds. |
 | R2 | No input firewall on the uplink. | **Fixed:** `firewall.wan: closed`, the default for nodes Trellis sets up; nodes upgraded from earlier releases stay open until their operator closes them (an upgrade never closes ports by surprise), with a notice. A lab test (F1) checks it on a real kernel. |
 | R3 | A captured node cannot be shut out. | Planned: re-keying from one node. It needs per-node keys first: the new secret must reach the other nodes in a form the captured node cannot read, although it is a member and may relay the very packets that carry it. |
-| R4 | Setup mode's Wi-Fi passphrase is public, and the first visitor sets the admin password. | By design for self-installs; images may carry a per-device passphrase. |
+| R4 | Setup mode's Wi-Fi passphrase is public, and the first visitor sets the admin password. | By design for self-installs. A card flashed with the mesh profile (`trellis-deploy --card`) skips setup mode; a per-device passphrase on an image is possible later. |
 | R5 | The web UI's certificate is trusted on first use. | Accepted for now; a certificate fingerprint in the node's QR code would close it. |
-| R6 | Secrets are not encrypted at rest. | Accepted: a node's own storage; image-level encryption planned. |
+| R6 | Secrets are not encrypted at rest. | Accepted: a node's own storage; images do not encrypt it. |
 | R7 | Gossip, packages, profiles, profile codes, configuration, the regulatory database, supervisor events, dnsmasq's lease file, DHCP answers from the uplink, versions, rollouts from other nodes, the CoT writer and the reader of devices' position reports (CoT XML and TAK protocol, from any device on a node's own ports): parsers of untrusted input. | Fuzzed (`make fuzz`); seeds run in every test run. Findings fixed: a link entry with a negative channel was accepted; a DHCP lease time near 2³² s overflowed the rebinding time. Leases are also bounded (a mask of /8 or longer, at least 10 s; a short lease is kept as granted, never stretched). |
 | R8 | A release could be signed with the production key during a trial build, and would then be accepted everywhere. | **Fixed:** development builds are refused a release key unless forced, and trial releases refuse a trusted key. |
 | R9 | Client devices are not isolated from each other. | By design (R2); a per-port option to isolate a client could come later. |
 | R10 | Voice: trellis-voiced parses RTP and RTCP from any device on the mesh's client network and hands the audio to libopus (C), and a client can talk on any group. | It runs without capabilities in a sandbox (devices: ALSA, hidraw, input, USB serial ports and GPIO chips), fuzzed (`rtp`, `voice`); a CNAME is bounded and filtered to printable ASCII. It has no access to meshd's API: it is not in the `trellis` group, and reads its configuration (no secret in it) from a file meshd keeps for it. Its `input` group lets it read every input device of the node, a keyboard included. Talk groups are not authenticated: anyone on the client network can join or talk, as with the ATAK groups, and can also keep a group busy (a few packets a second refuse every PTT on it), end a talk with a forged RTCP BYE, or take every group over by claiming an all-call. The browser console (any signed-in admin) monitors and talks through the node: its WebSocket accepts only this UI's own origin with a session, ends with that session, and its frames are fuzzed (`webd:FuzzWSRead`). |
 | R11 | The site link puts the whole mesh's traffic on the internet between sites, and its members' UDP port on their uplinks. | WireGuard (Noise IK, a key per node) encrypts and authenticates it; an unknown key gets no answer. The port is opened only on members. A member drops tunnel traffic that is not inside WireGuard, on every interface (`inet trellis_site`), so neither its uplink network nor a client device can put frames into a tunnel. A captured member's key is removed from the profile like any member; a site's broadcasts reach every other site's radios, up to a budget per tunnel (`site_link.multicast_kbit`). |
+| R12 | The operator account (`trellis`): any signed-in admin can set its password and keys, and so get a shell with sudo; SSH is on, from the uplink by default. | An admin could already install software (an upgrade), so no new privilege. meshd stays in its sandbox: account changes run in a separate root helper, one transient unit per request, the change on stdin. SSH from the uplink can be turned off; with the firewall closed, new connections from one address are limited (10/min). Password authentication can be turned off for this account alone once it has a key. |
+| R13 | HaLow files: a node serves Morse's firmware and BCF to other nodes, and fetches them from other nodes or from GitHub. | Only the pinned files: a request names a pinned SHA-256, the file is checked as it is read and again on arrival, and nothing else on the node can be asked for; served on the mesh address to nodes known in gossip, and kept off client ports (as port 7373 always was). |

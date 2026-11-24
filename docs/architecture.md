@@ -1622,9 +1622,13 @@ finding members. A Tailscale address already works as an endpoint.
     **Why:** a body-worn node is upgraded in the field, by someone with a
     phone, often over the very mesh the upgrade restarts. An upgrade that
     can strand a node needs a visit; one that undoes itself does not.
-- **Images:** built per hardware target with batman-adv pinned.
-  - **Base OS** (Debian-based or OpenWrt) is open. Morse Micro's reference
-    stack is OpenWrt; owning the kernel interface (§12.4) keeps both open.
+- **Images:** one per board, Raspberry Pi OS Lite with the release's
+  packages and the board's drivers (batman-adv at the pinned release)
+  built for its kernel, which is held. The mesh profile, node settings
+  and keys go on the card at flash time (`trellis-deploy --card`) and are
+  installed at first boot; without them the node starts in setup mode.
+  OpenWrt (Morse Micro's reference stack) stays possible: owning the
+  kernel interface (§12.4) keeps it open.
 - **Upgrade policy:** all nodes in a mesh run the same release series (the
   major number; major and minor below 1.0). `meshd` advertises its version
   in gossip and every node warns while the mesh is mixed: a notice for

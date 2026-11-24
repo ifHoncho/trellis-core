@@ -110,7 +110,7 @@ func (f *firewallReconciler) Reconcile(ctx context.Context) (reconcile.Result, e
 		res.Changed = true
 		counters = nil
 	}
-	set(firewallFacts{State: config.FirewallClosed, Open: in.Ports(), Dropped: counters[nft.RuleWANClosed] + counters[nft.RuleIntoMesh]})
+	set(firewallFacts{State: config.FirewallClosed, Open: in.Ports(), Dropped: counters[nft.RuleWANClosed] + counters[nft.RuleIntoMesh] + counters[nft.RuleSSHRate]})
 	res.RequeueAfter = firewallCheckEvery
 	return res, nil
 }
@@ -141,6 +141,11 @@ type firewallFacts struct {
 // when not 0, is the site link's: the node is a member, its UDP port is
 // open and site0 is inside (a peer is a member of the mesh, and WireGuard
 // lets through only what its key's address sends).
+// sshRatePerMinute limits new SSH connections from one address on the
+// uplink: an operator's logins and copies fit; password guessing
+// does not. Deploys share one connection per node (ControlMaster).
+const sshRatePerMinute = 10
+
 func inputPolicy(cfg *config.Node, sitePort int) *nft.Input {
 	fw := cfg.Firewall
 	if !fw.Closed() {
@@ -165,6 +170,7 @@ func inputPolicy(cfg *config.Node, sitePort int) *nft.Input {
 	}
 	if fw.SSHOpen() {
 		add("tcp", 22)
+		in.SSHRate = sshRatePerMinute
 	}
 	if cfg.Web.WANAccess {
 		add("tcp", 80)

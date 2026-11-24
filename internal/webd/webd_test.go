@@ -22,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/api"
+	"meridian/trellis/internal/osupdate"
 	"meridian/trellis/internal/status"
 )
 
@@ -90,6 +92,17 @@ func (n *node) SetMeshProfile(ctx context.Context, in api.MeshProfileInput, dry 
 func (n *node) Setup(ctx context.Context, in api.SetupInput, dry bool) (*api.ApplyResult, error) {
 	return &api.ApplyResult{}, nil
 }
+func (n *node) OSUpdates(ctx context.Context) (*osupdate.State, error) { return &osupdate.State{}, nil }
+func (n *node) StartOSUpdate(ctx context.Context, op string) (*osupdate.State, error) {
+	return &osupdate.State{}, nil
+}
+func (n *node) Account(ctx context.Context) (*account.State, error) {
+	return &account.State{Name: account.Name}, nil
+}
+func (n *node) SetAccount(ctx context.Context, in api.AccountInput, dry bool) (*account.State, error) {
+	return &account.State{Name: account.Name}, nil
+}
+func (n *node) GitHubKeys(ctx context.Context, user string) ([]account.Key, error) { return nil, nil }
 func (n *node) Topology(ctx context.Context) (*status.Topology, error) {
 	return &status.Topology{}, nil
 }

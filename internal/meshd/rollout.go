@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"meridian/trellis/internal/gossip"
+	"meridian/trellis/internal/halowfiles"
 	"meridian/trellis/internal/reconcile"
 	"meridian/trellis/internal/release"
 	"meridian/trellis/internal/rollout"
@@ -275,7 +276,7 @@ type rolloutReconciler struct{ d *Daemon }
 func (r *rolloutReconciler) Name() string { return "rollout" }
 
 func (r *rolloutReconciler) Teardown(ctx context.Context) error {
-	r.d.stopRolloutServer()
+	r.d.closeRolloutServer()
 	return nil
 }
 
@@ -791,7 +792,7 @@ func (d *Daemon) handleRolloutAsk(key, pkt []byte, from *net.UDPAddr) error {
 func (d *Daemon) ensureRolloutServer() error {
 	addr, _, _ := strings.Cut(d.facts.bridgeAddress(), "/")
 	if net.ParseIP(addr) == nil {
-		d.stopRolloutServer()
+		d.closeRolloutServer()
 		return nil
 	}
 	s := &d.rollouts
@@ -801,7 +802,7 @@ func (d *Daemon) ensureRolloutServer() error {
 		return nil
 	}
 	s.mu.Unlock()
-	d.stopRolloutServer()
+	d.closeRolloutServer()
 	ln, err := net.Listen("tcp", net.JoinHostPort(addr, fmt.Sprint(rollout.Port)))
 	if err != nil {
 		return err
@@ -827,7 +828,17 @@ func (d *Daemon) ensureRolloutServer() error {
 		}
 		return false
 	}
-	srv := rollout.Server(rollout.Handler(d.releasesDir(), wanted, allowed))
+	// One server for both: a rollout's packages, and the HaLow files this
+	// node holds (halow.go).
+	mux := http.NewServeMux()
+	mux.Handle("/release/", rollout.Handler(d.releasesDir(), wanted, allowed))
+	mux.Handle("/halow/", halowfiles.Handler(func() *halowfiles.Pins {
+		if !d.halowHeld() {
+			return nil
+		}
+		return d.halowPins()
+	}, d.halowFirmwareDir(), allowed))
+	srv := rollout.Server(mux)
 	s.mu.Lock()
 	s.srv, s.srvAddr = srv, addr
 	s.mu.Unlock()
@@ -836,11 +847,22 @@ func (d *Daemon) ensureRolloutServer() error {
 			d.log.Warn("mesh-wide upgrade: package server stopped", "err", err)
 		}
 	}()
-	d.log.Info("serving the mesh-wide upgrade's packages", "address", addr, "port", rollout.Port)
+	d.log.Info("package server on: mesh-wide upgrade packages, HaLow files", "address", addr, "port", rollout.Port)
 	return nil
 }
 
+// stopRolloutServer is for a node with no rollout on: the server stays
+// while this node serves HaLow files.
 func (d *Daemon) stopRolloutServer() {
+	if d.halowHeld() {
+		return
+	}
+	d.closeRolloutServer()
+}
+
+// closeRolloutServer closes the package server, whatever it serves: the
+// node's mesh address changed or went, or meshd is stopping.
+func (d *Daemon) closeRolloutServer() {
 	s := &d.rollouts
 	s.mu.Lock()
 	srv := s.srv

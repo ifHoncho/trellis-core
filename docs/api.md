@@ -226,12 +226,36 @@ private mesh of its own, so that its Wi-Fi (`trellis-setup-XXXX`, passphrase
 | Request | Body |
 |---|---|
 | `POST /profile/mesh` | A profile for every node: `PUT /profile`'s forms plus `"delay_s"` (15–900, default 60). This node sends it to every node it knows over the mesh, authenticated under the mesh's key, and every node switches to it at the same moment, `delay_s` from now (the nodes keep one time). It gets the next revision (`revision` in the profile) and a change record (`change`: an `id`, the moment `at`, the node `by`, and the `earlier` changes' ids), and a node that missed it takes it from any node that has it, once it hears one. When two parts of a mesh each made a change while apart, the later one is kept on every node as a new revision, and the other is kept on the nodes that settled it (an alert names the file). The mesh ID and secret cannot change this way (that is a re-key). Takes `?dry_run=1`; the answer adds `revision`, `apply_at` and `nodes` (those it goes to), and its effects are the mesh's: the links that restart at the switch, nodes that cannot follow (no radio for the new links, or an older version), regulatory modes it changes on other nodes, and nodes heard in the last day that are not in reach now (`mesh-change-away`: they will miss it). `GET /status` follows it in `mesh_change`: the revision, the moment, and on the sending node each node's answer (`sent`, `has it`, `refused: …`). |
-| `POST /setup` | `{"callsign": "relay-7", "node_id": 0}` plus the profile in one of `PUT /profile`'s forms. Writes both files and applies them in one step. Takes `?dry_run=1`; the answer's `ap` is the Wi-Fi to join afterwards. |
+| `POST /setup` | `{"callsign": "relay-7", "node_id": 0}` plus the profile in one of `PUT /profile`'s forms, and optionally `account` (as `PUT /account`), `web_uplink` and `ssh_uplink` (booleans: `web.wan_access`, `firewall.ssh`), and `os_update` (install OS package updates once set up). Sets up the operator account first, then writes both files and applies them in one step; a refused account leaves the node unchanged. Takes `?dry_run=1`; the answer's `ap` is the Wi-Fi to join afterwards, and `plan` the radios: `{links: [{link, radio}], ap}` (`radio` empty where the node has none). |
 
 The first `PUT /password` of a node in setup mode needs no login: whoever
 sets a node up gives it its password. A node that is already part of a mesh
 takes its first password only on the node itself (`sudo meshctl web
 password`).
+
+## The operator account
+
+The Linux account `trellis` (SSH, sudo, `meshctl`). meshd changes it
+through a helper outside its sandbox (`trellis account`, run as a
+transient systemd unit).
+
+| Request | Body | Answer |
+|---|---|---|
+| `GET /account` | | `{name, exists, password, keys, key_only, ssh}`: `keys` as `{type, data, comment, fingerprint}`; `ssh` is `active`, `inactive` or `not-installed` |
+| `PUT /account` | `{"password": "…", "keys": ["ssh-ed25519 AAAA… op@laptop"], "key_only": true}`; each field optional, `keys` the whole list | creates the account if needed, applies, starts SSH; the account as `GET` gives it. `?dry_run=1` checks only. `key_only: true` is password authentication off. 400: a short password, a key that does not parse, `key_only` without a key |
+| `POST /account/github` | `{"user": "octocat"}` | `{keys}`: the user's public keys, fetched by the node from `github.com/USER.keys`. 400: no such user, no keys, or no internet on the node |
+
+## OS updates
+
+The operating system's packages (apt), changed by a helper outside
+meshd's sandbox (`trellis os`, a transient unit). Held packages stay
+held.
+
+| Request | Body | Answer |
+|---|---|---|
+| `GET /os` | | `{phase, pending, packages, checked_at, started_at, finished_at, upgraded, reboot_required, error, log}`: `phase` is `""`, `checking`, `updating`, `done` or `failed` |
+| `POST /os/check` | | starts a check (apt update, then the updates apt would install); the record as `GET` gives it. 409 while one runs |
+| `POST /os/upgrade` | | starts an upgrade (`apt-get upgrade`, existing configuration kept); as above |
 
 ## Other actions
 

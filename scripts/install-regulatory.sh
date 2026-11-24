@@ -26,13 +26,20 @@ NONE="$SHARE/regulatory.db.none"
 NONE_SIG="$SHARE/regulatory.db.p7s.none"
 BIN=/usr/bin/trellis
 STATE=/run/trellis-crda/regdom.json
+# TRELLIS_IMAGE_KERNEL=<kernel release>: building an image in a chroot
+# (scripts/build-image.sh): that kernel's configuration; the running
+# kernel, this machine's, is not asked anything.
+IMAGE_KERNEL="${TRELLIS_IMAGE_KERNEL:-}"
+KREL="${IMAGE_KERNEL:-$(uname -r)}"
 
 say() { printf '%s\n' "$*"; }
 
 kernel_config() {
-  for f in "/boot/config-$(uname -r)" /proc/config.gz; do
+  for f in "/boot/config-$KREL" /proc/config.gz; do
+    [ -n "$IMAGE_KERNEL" ] && [ "$f" = /proc/config.gz ] && continue
     [ -r "$f" ] && { zcat -f "$f" 2>/dev/null; return 0; }
   done
+  [ -z "$IMAGE_KERNEL" ] || return 1
   modprobe configs 2>/dev/null && [ -r /proc/config.gz ] && { zcat /proc/config.gz; return 0; }
   return 1
 }
@@ -113,7 +120,7 @@ fi
 # 1. The kernel must be able to ask userspace.
 if cfg="$(kernel_config)"; then
   if ! printf '%s\n' "$cfg" | grep -q '^CONFIG_CFG80211_CRDA_SUPPORT=y'; then
-    say "!! this kernel ($(uname -r)) has no CFG80211_CRDA_SUPPORT: it cannot ask userspace for its rules."
+    say "!! this kernel ($KREL) has no CFG80211_CRDA_SUPPORT: it cannot ask userspace for its rules."
     say "   Left as is: the kernel's own regulatory.db stays in charge, and unrestricted mode is unavailable here."
     exit 10
   fi
@@ -159,6 +166,10 @@ case "$(layout)" in
   moved|absent) ;;
 esac
 [ "$changed" = yes ] && say "-- regulatory.db set aside: the kernel asks Trellis for its rules"
+if [ -n "$IMAGE_KERNEL" ]; then
+  say "-- in effect from the image's first boot"
+  exit 0
+fi
 
 # In effect when the kernel failed to load its database this boot. If
 # nothing has been answered yet that meshd can see (a record from an older

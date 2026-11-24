@@ -1,180 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.3.0: images, voice, site link and mesh upgrades
 
-- **Channel busy alert** (`channel-busy`): a link's channel busy 60 % or
-  more at a node for 10 minutes; links to the channel survey.
-- **Mesh page:** View button (all links, or one band, site link, wired;
-  every band of the profile, with or without links); select a node for
-  its details and its path from this node, hop by hop, under the map.
-- **External GPS for ATAK:** a node with a GNSS fix sends NMEA to UDP 4349
-  of the devices on its own ports that run ATAK; a node without one
-  takes its position from such a device's own GPS position report.
-  Settings → System shows how many devices get it, or why none do, and
-  why a device's position is not used.
-- A node's gossip goes out as soon as it has its first mesh neighbour: a
-  duplicate node ID is resolved within seconds, not at the next refresh.
-- Fixed: one mesh radio that failed to come up (a stuck driver) kept the
-  whole node off the mesh; now a warning (`hard-interface-failed`), and
-  the other links carry the mesh.
-- Fixed: a mesh interface that left its mesh in the kernel while
-  wpa_supplicant reported it joined stayed down; meshd now restarts it.
-- A mesh link moved to another channel by a peer's channel switch
-  announcement (a faulty driver can send one that never completes) is
-  flagged (`mesh-off-channel`) and returns to its own channel; on a
-  radar channel plan it is flagged only.
-- Fixed: a channel survey after the first since boot showed busy time
-  for the link's own channel only on MT76 radios (MT7610U, MT7916).
-- Fixed: with gpsd older than 3.20, the node's height went out as the
-  ellipsoid height though it was above sea level (tens of metres off).
-  Such nodes now report no height; gpsd 3.20 or later gives the right
-  one.
-- **Voice page:** Enable button in the "Voice off." notice; opens the
-  change review.
-- **Mesh page:** degraded radios shown as "Degraded"; details on hover,
-  click or tap.
-- Fixed: radios unplugged and plugged in within 2 minutes could leave the
-  AP down with a reconcile error ("ap0 had to be recreated 3 times").
-- Fixed: a node out of reach while a mesh upgrade halted could upgrade
-  on its return if it was first in the order; a node restarted during a
-  mesh upgrade could halt it before hearing the other nodes.
-- Fixed: a node first in a mesh upgrade's order could still upgrade
-  alone after the upgrade halted, when restarted while waiting or out of
-  reach for over 100 s. It now waits to hear every other node first (up
-  to 45 s for one that is off).
-- Fixed: an interface moving back and forth between two radios was
-  recreated without limit; now stopped and reported.
-- Fixed: the Voice page's Enable could show voice off after the change
-  applied.
-- Fixed: `trellis-deploy` with sudo set to share credentials across
-  sessions could pass the sudo password to the command run.
-- Fixed: removing Trellis from a node whose `regulatory.db` was a plain
-  file (no alternatives, not from a package) left it without one.
-- Fixed: on a Raspberry Pi whose `config.txt` ends in a section for
-  another board, the PCIe Gen1 setting for MT7915/MT7916 cards did not
-  apply.
-- `trellis-deploy` refuses a hosts file entry starting with "-".
-- Fixed: an uplink whose DHCP server sets a late renewal time (T1)
-  went straight to rebinding instead of renewing with its server.
-- Fixed: the Devices page kept showing the old AP passphrase and QR
-  code after the passphrase was changed, until the page was reloaded.
-- Fixed: a mesh peer with no signal reading showed the radio's signal
-  as unknown on the Overview page, and as "0 dBm" in tables.
-- Port names and `gateway.wan` take letters, digits and `. _ - @ +`
-  only: a quote in one stopped the firewall and NAT rules from applying.
-- Fixed: the channel survey could list 4.9 GHz channels (unrestricted
-  mode) under channel numbers in the hundreds of millions, and suggest
-  them, also from nodes still on an older release; a mesh found on a
-  4.9 GHz channel was not recognised.
-- Fixed: meshd stopped reacting at once to radios plugged in or out
-  after a burst of kernel events, until it restarted.
-- Fixed: removing Trellis left the system's `hostapd.service` masked
-  when Trellis had masked it.
-- Fixed: after one slow answer from wpa_supplicant or hostapd, meshd
-  read every later answer one request late (a joined mesh link could
-  show as not joined).
-- Fixed: `meshctl profile band` (and `make band`) dropped the profile's
-  talk groups, site link, position settings and batman options.
-- Fixed: `meshctl status --watch` stopped after 30 seconds;
-  `meshctl survey --start` gave up before a slow survey ended, and
-  crashed when meshd restarted during one.
-- Fixed: a package transfer cut by a power loss left its partial file
-  on the node for good.
-- NetworkManager's and systemd-networkd's Trellis files survive a power
-  cut while they are written.
-- **Hardware monitor:** Settings → System → Hardware: CPU temperature,
-  CPU and memory use, storage, supply voltage, radio temperatures, PCIe
-  links. `host` in the status, `host:` in `meshctl status`. Alerts:
-  `host-hot`, `undervoltage`, `disk-full`, `memory-low`. Control loop
-  panel reduced to one line, details on request.
-- Fixed: expanded sections in the web UI collapsed on the next refresh.
-- Fixed: a peer's failed authentications stayed listed after it
-  connected (a node back from a restart).
-- **UI, alert and CLI text** reworded to standard equipment terms across
-  the web UI, alerts, change reviews, API errors, `meshctl`, `meshctl
-  doctor` and the user docs. Renamed: "Client Wi-Fi" → "Client AP",
-  "Every node" → "All nodes", "Share with another node" → "Share
-  profile"; trials report armed, confirmed, reverted, locked out.
-  Overview notices list faults first; Overview uptime is the node's.
-  Style rules: `docs/dev/ui-text.md`.
-- **A radio's hardware says how it is doing.** The Radios page, `meshctl
-  radios` and `meshctl doctor` show, for a PCIe radio, the link it
-  trained at (generation and lanes, against what card and slot can do),
-  the kernel's error counters and what sampling the link's error status
-  found: a link that loses packets and recovers by sending them again
-  carries a radio until traffic pushes it too far, and is now an alert
-  (`pcie-link-marginal`) before that. A small service of its own
-  (`trellis-pcie`) reads those registers, so meshd needs no more
-  privilege. Radios with a temperature sensor show it, with an alert
-  while the driver cuts the radio's transmit time to cool it; every node
-  tells the others which of its radios are degraded (throttling, PCIe
-  fault), with no figures.
-- **Resets have a cause.** At start meshd reads the crash records the
-  kernel kept (pstore), gives each a verdict, and keeps a history: a
-  card that stopped answering on its bus, an interrupt flood on the PCIe
-  port before it, a reset request on a serial console, another kernel
-  panic, or, with nothing recorded, a loss of power. Alerts lists them;
-  `meshctl status` shows the last; doctor says whether the board keeps
-  crash records at all.
-- Fixed: Ctrl-C in `meshctl prepare` left meshd stopped; it now ends the
-  step under way and starts meshd again.
-- **Driver, firmware and board file trials (`meshctl trial`):** new files
-  are put in place with the ones they replace kept, and stay on trial
-  until the node has run well on them for five minutes: the radio
-  present, its mesh started, a peer back if it had one. A node that
-  restarts first gets the old files back at boot, before any driver
-  loads, and that version stays off until it is re-armed. One that never
-  gets healthy is undone after fifteen minutes.
-- **What a link's width costs:** the hardware database holds a radio's
-  transmit power per channel width, and status, `meshctl status`, the
-  Radios page and the profile editor say how much link budget a width
-  gives up against 20 MHz on this node's radio (80 MHz on an MT7916:
-  12.5 dB, half of it transmit power and half noise).
-- **MT7916 on kernels before Linux 6.14:** such a kernel's own mt7915e
-  offers both bands of the card's 5/6 GHz radio at once, and the radio
-  then works on neither while looking normal. `meshctl prepare` now
-  builds an mt7915e with 6.14's fix in its place (5 GHz, or 6 GHz with
-  the module option `enable_6ghz=1`), and until then the radio shows as
-  broken, with why, instead of being given a mesh link it cannot carry.
-- **Site link (preview):** parts of one mesh in different places join
-  into one mesh over the internet. Nodes listed in the profile's
-  `site_link.members` (by the WireGuard key `meshctl site` prints) link
-  to the members of the other sites, over WireGuard with batman-adv on
-  top, so devices, names, gateways, ATAK and voice work across sites. A
-  member behind NAT dials out; two members per site keep the link when
-  one goes. The tunnels leave by a member's own uplink only, and a
-  member with its firewall closed opens its port by itself. A member
-  drops tunnel traffic that is not inside WireGuard, on every interface.
-  Broadcast and
-  multicast between sites are held to a budget per tunnel
-  (`site_link.multicast_kbit`, 1 Mbit/s by default). `meshctl
-  site` and the web UI's Internet page show each peer's handshake and
-  tunnel, and say why a tunnel is not up; the members are edited on the
-  Internet page, nodes already in the mesh added by name. The topology
-  map shows site links, as over the internet and without a speed (the
-  tunnels' figure is not measured). Traffic between two parts of one
-  site never takes a round trip through another site: the tunnels carry
-  a hop penalty of their own. Not yet tested between real sites.
-- **Web UI:** a profile editor follows a mesh-wide change when it comes
-  into force, instead of showing the old profile until the page is
-  reloaded. The Overview shows the node's clock, in the zone of the
-  device looking at it, a zone chosen in Settings → Appearance, or Zulu.
-  The site link's state shows on any node (Overview, Internet), and its
-  key can be replaced from the Internet page. Pages with edits not saved
-  are marked, the browser tab is named after the node and page, and
-  dialogs keep the keyboard.
-- **One change never undoes another unseen:** a change made in the web UI
-  from settings or a profile that changed on the node meanwhile is
-  refused (`409`; the API takes the version a change was made from as
-  `base`), and no second mesh-wide change is sent while one is on its
-  way, from the web UI or `meshctl profile push`, unless it is meant to
-  replace it: **Replace it** and **Cancel it** on the banner, `--replace`
-  on the command line. `meshctl profile edit` changes the profile the
-  mesh runs in your editor, with the same check as the web UI. `meshctl
-  profile push` says when its file is older than the mesh's profile.
-- **Mesh-wide changes:** a change sent within moments of the one before
-  it coming into force is no longer taken for a change made apart (it
-  raised a conflict alert and an extra revision).
+Images and first-time setup, push-to-talk voice and the site link
+(previews), upgrading a whole mesh from one node, radio and hardware
+health, and fixes.
+
+### Images and first-time setup
+
+- **Images:** a Raspberry Pi OS Lite image for the Raspberry Pi CM4
+  (`make image`, or the `image` workflow on GitHub): the release's
+  packages, the drivers built for its kernel (held), Morse's HaLow
+  firmware. No mesh profile, identity or account in it.
+- **`trellis-deploy --card`:** puts a flashed card's setup on its boot
+  partition: mesh profile, callsign, one password for the web UI admin
+  and the operator account, SSH keys, Morse's HaLow files. The node
+  installs them at first boot (`trellis firstboot`), overwrites them on
+  the card and writes what it did to `trellis/firstboot.txt`. Without a
+  profile the node starts in setup mode.
+- **Operator account `trellis`:** SSH login, `sudo` and `meshctl`;
+  password, SSH keys (pasted or a GitHub user's) and **Password
+  authentication** (on; off needs a key). Set in the setup wizard or
+  Settings → Access.
+- **Setup wizard:** an Access step (operator account, Web UI from
+  uplink, SSH from uplink); the review lists the radio for each link and
+  the client AP, and offers OS updates after setup.
+- **OS updates:** Settings → System checks for and installs the
+  operating system's package updates; held packages stay as they are.
+- **HaLow firmware and BCF:** a node with a Wio-WM6108 fetches an absent
+  file from another node or from Morse Micro's repository, checked
+  against pinned SHA-256 (`halow-files-missing` until then), and serves
+  them to other nodes once it holds both. A file already there is never
+  replaced.
+
+### Push-to-talk voice (preview)
+
 - **Push-to-talk voice (preview):** talk groups over the mesh as Opus on
   multicast RTP, set mesh-wide in the profile (`voice.groups`); each node
   has two channels, one per ear, and listen-only groups. Half-duplex per
@@ -204,6 +64,35 @@
   every talk group at once, taking over busy groups on Trellis nodes. The
   voice service runs in a sandbox of its own with no access to meshd's
   API. Not yet tested with a headset on a node.
+- **Voice page:** Enable button in the "Voice off." notice; opens the
+  change review.
+- Fixed: the Voice page's Enable could show voice off after the change
+  applied.
+
+### Site link (preview)
+
+- **Site link (preview):** parts of one mesh in different places join
+  into one mesh over the internet. Nodes listed in the profile's
+  `site_link.members` (by the WireGuard key `meshctl site` prints) link
+  to the members of the other sites, over WireGuard with batman-adv on
+  top, so devices, names, gateways, ATAK and voice work across sites. A
+  member behind NAT dials out; two members per site keep the link when
+  one goes. The tunnels leave by a member's own uplink only, and a
+  member with its firewall closed opens its port by itself. A member
+  drops tunnel traffic that is not inside WireGuard, on every interface.
+  Broadcast and
+  multicast between sites are held to a budget per tunnel
+  (`site_link.multicast_kbit`, 1 Mbit/s by default). `meshctl
+  site` and the web UI's Internet page show each peer's handshake and
+  tunnel, and say why a tunnel is not up; the members are edited on the
+  Internet page, nodes already in the mesh added by name. The topology
+  map shows site links, as over the internet and without a speed (the
+  tunnels' figure is not measured). Traffic between two parts of one
+  site never takes a round trip through another site: the tunnels carry
+  a hop penalty of their own. Not yet tested between real sites.
+
+### Upgrades and installing
+
 - **Upgrading the whole mesh from one node:** `meshctl upgrade --mesh
   FILE.deb…` (one release file per architecture) and Settings → System →
   **Mesh upgrade** in the web UI. The plan comes first: the order
@@ -215,6 +104,123 @@
   when it is back; `meshctl upgrade --mesh --cancel` stops the nodes that
   have not started. The package transfer uses TCP port 7373 on the mesh,
   which client ports drop like gossip.
+- Fixed: a node out of reach while a mesh upgrade halted could upgrade
+  on its return if it was first in the order; a node restarted during a
+  mesh upgrade could halt it before hearing the other nodes.
+- Fixed: a node first in a mesh upgrade's order could still upgrade
+  alone after the upgrade halted, when restarted while waiting or out of
+  reach for over 100 s. It now waits to hear every other node first (up
+  to 45 s for one that is off).
+- Fixed: a package transfer cut by a power loss left its partial file
+  on the node for good.
+- **trellis-deploy on Windows:** builds for Windows (amd64 and arm64).
+  Password entry, `--setup` (no `ssh-copy-id` needed) and nodes reached
+  through another node work there.
+- Fixed: `trellis-deploy` with sudo set to share credentials across
+  sessions could pass the sudo password to the command run.
+- `trellis-deploy` refuses a hosts file entry starting with "-".
+- Fixed: removing Trellis from a node whose `regulatory.db` was a plain
+  file (no alternatives, not from a package) left it without one.
+- Fixed: removing Trellis left the system's `hostapd.service` masked
+  when Trellis had masked it.
+- Fixed: Ctrl-C in `meshctl prepare` left meshd stopped; it now ends the
+  step under way and starts meshd again.
+
+### Radios and hardware
+
+- **Hardware monitor:** Settings → System → Hardware: CPU temperature,
+  CPU and memory use, storage, supply voltage, radio temperatures, PCIe
+  links. `host` in the status, `host:` in `meshctl status`. Alerts:
+  `host-hot`, `undervoltage`, `disk-full`, `memory-low`. Control loop
+  panel reduced to one line, details on request.
+- **A radio's hardware says how it is doing.** The Radios page, `meshctl
+  radios` and `meshctl doctor` show, for a PCIe radio, the link it
+  trained at (generation and lanes, against what card and slot can do),
+  the kernel's error counters and what sampling the link's error status
+  found: a link that loses packets and recovers by sending them again
+  carries a radio until traffic pushes it too far, and is now an alert
+  (`pcie-link-marginal`) before that. A small service of its own
+  (`trellis-pcie`) reads those registers, so meshd needs no more
+  privilege. Radios with a temperature sensor show it, with an alert
+  while the driver cuts the radio's transmit time to cool it; every node
+  tells the others which of its radios are degraded (throttling, PCIe
+  fault), with no figures.
+- **Resets have a cause.** At start meshd reads the crash records the
+  kernel kept (pstore), gives each a verdict, and keeps a history: a
+  card that stopped answering on its bus, an interrupt flood on the PCIe
+  port before it, a reset request on a serial console, another kernel
+  panic, or, with nothing recorded, a loss of power. Alerts lists them;
+  `meshctl status` shows the last; doctor says whether the board keeps
+  crash records at all.
+- **Driver, firmware and board file trials (`meshctl trial`):** new files
+  are put in place with the ones they replace kept, and stay on trial
+  until the node has run well on them for five minutes: the radio
+  present, its mesh started, a peer back if it had one. A node that
+  restarts first gets the old files back at boot, before any driver
+  loads, and that version stays off until it is re-armed. One that never
+  gets healthy is undone after fifteen minutes.
+- **What a link's width costs:** the hardware database holds a radio's
+  transmit power per channel width, and status, `meshctl status`, the
+  Radios page and the profile editor say how much link budget a width
+  gives up against 20 MHz on this node's radio (80 MHz on an MT7916:
+  12.5 dB, half of it transmit power and half noise).
+- **MT7916 on kernels before Linux 6.14:** such a kernel's own mt7915e
+  offers both bands of the card's 5/6 GHz radio at once, and the radio
+  then works on neither while looking normal. `meshctl prepare` now
+  builds an mt7915e with 6.14's fix in its place (5 GHz, or 6 GHz with
+  the module option `enable_6ghz=1`), and until then the radio shows as
+  broken, with why, instead of being given a mesh link it cannot carry.
+- **Channel busy alert** (`channel-busy`): a link's channel busy 60 % or
+  more at a node for 10 minutes; links to the channel survey.
+- A mesh link moved to another channel by a peer's channel switch
+  announcement (a faulty driver can send one that never completes) is
+  flagged (`mesh-off-channel`) and returns to its own channel; on a
+  radar channel plan it is flagged only.
+- Fixed: a channel survey after the first since boot showed busy time
+  for the link's own channel only on MT76 radios (MT7610U, MT7916).
+- Fixed: the channel survey could list 4.9 GHz channels (unrestricted
+  mode) under channel numbers in the hundreds of millions, and suggest
+  them, also from nodes still on an older release; a mesh found on a
+  4.9 GHz channel was not recognised.
+- Fixed: one mesh radio that failed to come up (a stuck driver) kept the
+  whole node off the mesh; now a warning (`hard-interface-failed`), and
+  the other links carry the mesh.
+- Fixed: a mesh interface that left its mesh in the kernel while
+  wpa_supplicant reported it joined stayed down; meshd now restarts it.
+- Fixed: radios unplugged and plugged in within 2 minutes could leave the
+  AP down with a reconcile error ("ap0 had to be recreated 3 times").
+- Fixed: an interface moving back and forth between two radios was
+  recreated without limit; now stopped and reported.
+- Fixed: meshd stopped reacting at once to radios plugged in or out
+  after a burst of kernel events, until it restarted.
+- Fixed: after one slow answer from wpa_supplicant or hostapd, meshd
+  read every later answer one request late (a joined mesh link could
+  show as not joined).
+- **Radios:** a monitor interface added to a radio that carries a mesh
+  link is left alone, so a link can be captured with tcpdump.
+- Fixed: on a Raspberry Pi whose `config.txt` ends in a section for
+  another board, the PCIe Gen1 setting for MT7915/MT7916 cards did not
+  apply.
+- **batman-adv:** multicast that batman-adv forwards keeps its priority
+  on every hop (a patch in `trellis-batman-adv-dkms`, now 2026.3-2;
+  offered upstream). Before, relays sent it as best effort.
+
+### Mesh, gateways and the profile
+
+- A node's gossip goes out as soon as it has its first mesh neighbour: a
+  duplicate node ID is resolved within seconds, not at the next refresh.
+- **One change never undoes another unseen:** a change made in the web UI
+  from settings or a profile that changed on the node meanwhile is
+  refused (`409`; the API takes the version a change was made from as
+  `base`), and no second mesh-wide change is sent while one is on its
+  way, from the web UI or `meshctl profile push`, unless it is meant to
+  replace it: **Replace it** and **Cancel it** on the banner, `--replace`
+  on the command line. `meshctl profile edit` changes the profile the
+  mesh runs in your editor, with the same check as the web UI. `meshctl
+  profile push` says when its file is older than the mesh's profile.
+- **Mesh-wide changes:** a change sent within moments of the one before
+  it coming into force is no longer taken for a change made apart (it
+  raised a conflict alert and an extra revision).
 - **Uplinks behind a login page:** a gateway now also asks a few
   connectivity-check addresses (Google's, Cloudflare's, Ubuntu's) for their
   empty answer, out of its uplink. An uplink behind a hotel or café login
@@ -224,28 +230,15 @@
   once they have. The Internet page, the overview and `meshctl status`
   show it. `gateway.web_check: false` turns the check off, and
   `gateway.web_check_urls` changes the addresses.
-- **Apt repository tooling:** `make apt-repo` keeps a signed apt
-  repository of the release packages, a folder any web server can serve;
-  `make apt-test` checks it with apt in Debian and Ubuntu containers.
-- **trellis-deploy on Windows:** builds for Windows (amd64 and arm64).
-  Password entry, `--setup` (no `ssh-copy-id` needed) and nodes reached
-  through another node work there.
-- **batman-adv:** multicast that batman-adv forwards keeps its priority
-  on every hop (a patch in `trellis-batman-adv-dkms`, now 2026.3-2;
-  offered upstream). Before, relays sent it as best effort.
-- **Web UI:** Settings → Access → "From outside the mesh" is now
-  **Firewall**. It names the trusted interfaces (`lo`, `br-mesh`,
-  `anycast0`) and the filtered ones, says what the input and forward rules
-  accept and drop, shows the ports the node will accept as you edit them,
-  and reports a firewall that failed to apply instead of showing it as
-  open. `meshctl status` and the change preview use the same terms.
-- **Web UI sign-in:** wrong passwords lock out the address they come
-  from, not everyone: before, any device on the node's Wi-Fi could keep
-  the admin from signing in for as long as it kept guessing. An IPv6
-  device is locked out by its /64, so a new address does not start it
-  afresh. The web
-  server also limits how long a request may take, how many connections
-  one address may hold open, and its own memory.
+- **Uplink DHCP:** a lease with a subnet mask wider than /8 or not a
+  prefix, or an unusable address, is refused, and so is a lease shorter
+  than 10 s; a lease time near the 32-bit limit no longer overflows
+  the rebinding time. An uplink whose subnet overlaps the mesh prefix is
+  reported.
+- Fixed: an uplink whose DHCP server sets a late renewal time (T1)
+  went straight to rebinding instead of renewing with its server.
+- Port names and `gateway.wan` take letters, digits and `. _ - @ +`
+  only: a quote in one stopped the firewall and NAT rules from applying.
 - **Node identity:** a damaged `identity.yaml` (a power loss while it was
   written) no longer gives the node a new MAC, node ID and Wi-Fi
   passphrase without a word. meshd restores it from `identity.yaml.bak`,
@@ -259,17 +252,88 @@
   started afresh instead of keeping meshd from starting. Temporary files
   left by a write a power loss cut short are removed at the next start or
   upgrade.
-- **Uplink DHCP:** a lease with a subnet mask wider than /8 or not a
-  prefix, or an unusable address, is refused, and so is a lease shorter
-  than 10 s; a lease time near the 32-bit limit no longer overflows
-  the rebinding time. An uplink whose subnet overlaps the mesh prefix is
-  reported.
-- **Radios:** a monitor interface added to a radio that carries a mesh
-  link is left alone, so a link can be captured with tcpdump.
-- **`meshctl doctor`** and the web UI's report no longer wait without end
-  on a slow command (`dkms status` while a module builds).
+- NetworkManager's and systemd-networkd's Trellis files survive a power
+  cut while they are written.
+
+### ATAK
+
+- **External GPS for ATAK:** a node with a GNSS fix sends NMEA to UDP 4349
+  of the devices on its own ports that run ATAK; a node without one
+  takes its position from such a device's own GPS position report.
+  Settings → System shows how many devices get it, or why none do, and
+  why a device's position is not used.
+- Fixed: with gpsd older than 3.20, the node's height went out as the
+  ellipsoid height though it was above sea level (tens of metres off).
+  Such nodes now report no height; gpsd 3.20 or later gives the right
+  one.
+
+### Web UI
+
+- **Mesh page:** View button (all links, or one band, site link, wired;
+  every band of the profile, with or without links); select a node for
+  its details and its path from this node, hop by hop, under the map.
+- **Mesh page:** degraded radios shown as "Degraded"; details on hover,
+  click or tap.
+- **Web UI:** a profile editor follows a mesh-wide change when it comes
+  into force, instead of showing the old profile until the page is
+  reloaded. The Overview shows the node's clock, in the zone of the
+  device looking at it, a zone chosen in Settings → Appearance, or Zulu.
+  The site link's state shows on any node (Overview, Internet), and its
+  key can be replaced from the Internet page. Pages with edits not saved
+  are marked, the browser tab is named after the node and page, and
+  dialogs keep the keyboard.
+- **Web UI:** Settings → Access → "From outside the mesh" is now
+  **Firewall**. It names the trusted interfaces (`lo`, `br-mesh`,
+  `anycast0`) and the filtered ones, says what the input and forward rules
+  accept and drop, shows the ports the node will accept as you edit them,
+  and reports a firewall that failed to apply instead of showing it as
+  open. `meshctl status` and the change preview use the same terms.
+- Phones: no page is wider than the screen; larger fields, buttons and
+  switches.
+- **UI, alert and CLI text** reworded to standard equipment terms across
+  the web UI, alerts, change reviews, API errors, `meshctl`, `meshctl
+  doctor` and the user docs. Renamed: "Client Wi-Fi" → "Client AP",
+  "Every node" → "All nodes", "Share with another node" → "Share
+  profile"; trials report armed, confirmed, reverted, locked out.
+  Overview notices list faults first; Overview uptime is the node's.
+  Style rules: `docs/dev/ui-text.md`.
+- Fixed: the Devices page kept showing the old AP passphrase and QR
+  code after the passphrase was changed, until the page was reloaded.
+- Fixed: a mesh peer with no signal reading showed the radio's signal
+  as unknown on the Overview page, and as "0 dBm" in tables.
+- Fixed: expanded sections in the web UI collapsed on the next refresh.
+- Fixed: a peer's failed authentications stayed listed after it
+  connected (a node back from a restart).
 - **Web UI:** a meshd that does not answer no longer holds up every new
   connection to the UI.
+
+### Security
+
+- **Web UI sign-in:** wrong passwords lock out the address they come
+  from, not everyone: before, any device on the node's Wi-Fi could keep
+  the admin from signing in for as long as it kept guessing. An IPv6
+  device is locked out by its /64, so a new address does not start it
+  afresh. The web
+  server also limits how long a request may take, how many connections
+  one address may hold open, and its own memory.
+- SSH from the uplink, with the firewall closed: at most 10 new
+  connections a minute per address.
+
+### Command line
+
+- Fixed: `meshctl profile band` (and `make band`) dropped the profile's
+  talk groups, site link, position settings and batman options.
+- Fixed: `meshctl status --watch` stopped after 30 seconds;
+  `meshctl survey --start` gave up before a slow survey ended, and
+  crashed when meshd restarted during one.
+- **`meshctl doctor`** and the web UI's report no longer wait without end
+  on a slow command (`dkms status` while a module builds).
+
+### Development
+
+- **Apt repository tooling:** `make apt-repo` keeps a signed apt
+  repository of the release packages, a folder any web server can serve;
+  `make apt-test` checks it with apt in Debian and Ubuntu containers.
 
 ## 0.2.1: fixes from a code review
 

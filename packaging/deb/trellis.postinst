@@ -112,6 +112,9 @@ fi
 # The boot hook of driver trials (meshctl trial): on every node, upgraded
 # ones too. It acts only when a trial is on record.
 enable_units trellis-trial.service
+# Files put on the card at flash time (trellis firstboot): on every node,
+# upgraded ones too. It acts only when there are any, or on an image.
+enable_units trellis-firstboot.service
 
 if running_systemd; then
   if systemctl is-enabled --quiet trellis-webd.socket 2>/dev/null; then

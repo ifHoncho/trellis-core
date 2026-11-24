@@ -48,7 +48,12 @@ IN_DPKG="${TRELLIS_IN_DPKG:-}"
 can_apt() { [ -z "$IN_DPKG" ] && command -v apt-get >/dev/null 2>&1; }
 NAME=trellis-batman-adv
 SRC="/usr/src/${NAME}-${DKMS_VERSION}"
-KREL="$(uname -r)"
+# TRELLIS_IMAGE_KERNEL=<kernel release>: building an image
+# (scripts/build-image.sh) in a chroot. That kernel's configuration and
+# headers are used; this machine's kernel, hardware and modules are left
+# alone, and nothing is loaded.
+IMAGE_KERNEL="${TRELLIS_IMAGE_KERNEL:-}"
+KREL="${IMAGE_KERNEL:-$(uname -r)}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2; exit 1
@@ -96,9 +101,9 @@ fi
 
 # Kernel configuration: /proc/config.gz (Raspberry Pi kernels build it as the
 # "configs" module), /boot/config-*, or the headers' own .config.
-[ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
+[ -n "$IMAGE_KERNEL" ] || [ -r /proc/config.gz ] || modprobe configs 2>/dev/null || true
 CFG=""
-if [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
+if [ -z "$IMAGE_KERNEL" ] && [ -r /proc/config.gz ]; then CFG="$(zcat /proc/config.gz)"
 elif [ -r "/boot/config-${KREL}" ]; then CFG="$(cat "/boot/config-${KREL}")"
 elif [ -r "/lib/modules/${KREL}/build/.config" ]; then CFG="$(cat "/lib/modules/${KREL}/build/.config")"
 fi
@@ -245,7 +250,13 @@ else
   for v in $(remove_others); do echo "-- removed batman-adv $v"; done
   dkms install --force "${NAME}/${DKMS_VERSION}" -k "$KREL"
 fi
-depmod -a
+depmod -a "$KREL"
+if [ -n "$IMAGE_KERNEL" ]; then
+  case "$(modinfo -k "$KREL" -n batman-adv)" in
+    */updates/*) echo "== OK: the DKMS build is installed for ${KREL}"; exit 0 ;;
+    *) echo "!! the kernel's own copy is still the one ${KREL} loads; check 'dkms status' and depmod" >&2; exit 1 ;;
+  esac
+fi
 
 # Unloading batman-adv deletes every mesh interface of it. With a mesh
 # running (a package installed on a live node), the new module waits.

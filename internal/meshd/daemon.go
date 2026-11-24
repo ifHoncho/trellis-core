@@ -21,6 +21,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/api"
 	"meridian/trellis/internal/batadv"
 	"meridian/trellis/internal/config"
@@ -63,6 +64,17 @@ type Options struct {
 	// configuration (and reloading them). Labs run meshd as root in a network
 	// namespace, but /etc and those services belong to the whole host.
 	NoHostConfig bool
+	// HaLow files (halow.go), for tests: the pins file, the firmware
+	// directory, the root under which /proc is read, and the install.
+	HaLowPins        string
+	HaLowFirmwareDir string
+	ProcRoot         string
+	HaLowInstall     func(ctx context.Context, from string) error
+	HaLowMeshPort    int // other nodes' package server; default rollout.Port
+	// Account changes the operator account (tests give one); nil is the
+	// account helper, run outside meshd's sandbox (account.Remote). Not
+	// used with NoHostConfig.
+	Account account.Service
 	// TestPortManagerDir replaces NetworkManager and systemd-networkd with
 	// a stand-in driven by files in this directory (r_ports.go,
 	// testManager), so the namespace lab can test port takeover.
@@ -165,6 +177,7 @@ type Daemon struct {
 	peers       *gossip.Table
 	rolloutSelf rolloutSelf
 	rollouts    rolloutState // mesh-wide upgrades (rollout.go)
+	halow       halowState   // HaLow firmware and BCF (halow.go)
 }
 
 // New loads configuration and prepares the daemon. It does not touch the
@@ -468,7 +481,7 @@ func (d *Daemon) Run(ctx context.Context, serve func(ctx context.Context, d *Dae
 	d.peers = gossip.NewTable(ident.MAC)
 	d.peers.Extra = d.siteTunnelMACs
 	d.peers.SetBoot(d.gossip.boot)
-	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d}, newHardwareReconciler(d), newTrialReconciler(d))
+	recs = append(recs, d.batman, d.ports, d.bridge, d.filters, d.anycast, d.gateway, d.time, &surveyReconciler{d: d}, &findMeshReconciler{d: d}, d.gossip, &rolloutReconciler{d: d}, &halowReconciler{d: d}, &positionsReconciler{d: d}, d.ap, d.dhcp, &voiceReconciler{d: d}, newHardwareReconciler(d), newTrialReconciler(d))
 	d.loop = reconcile.NewLoop(d.log.With("component", "reconcile"), recs...)
 	d.loop.Interval = d.opts.Interval
 

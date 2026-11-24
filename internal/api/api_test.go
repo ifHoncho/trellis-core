@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"meridian/trellis/internal/account"
 	"meridian/trellis/internal/config"
+	"meridian/trellis/internal/osupdate"
 	"meridian/trellis/internal/status"
 )
 
@@ -86,6 +88,21 @@ func (f *fakeProvider) SetProfile(ctx context.Context, in ProfileInput, dryRun b
 }
 func (f *fakeProvider) Setup(ctx context.Context, in SetupInput, dryRun bool) (*ApplyResult, error) {
 	return &ApplyResult{Applied: !dryRun, Changed: true, AP: &status.APJoin{SSID: in.Callsign}}, nil
+}
+func (f *fakeProvider) OSUpdates(ctx context.Context) (*osupdate.State, error) {
+	return &osupdate.State{}, nil
+}
+func (f *fakeProvider) StartOSUpdate(ctx context.Context, op string) (*osupdate.State, error) {
+	return &osupdate.State{Phase: osupdate.PhaseChecking}, nil
+}
+func (f *fakeProvider) Account(ctx context.Context) (*account.State, error) {
+	return &account.State{Name: account.Name}, nil
+}
+func (f *fakeProvider) SetAccount(ctx context.Context, in AccountInput, dryRun bool) (*account.State, error) {
+	return &account.State{Name: account.Name, Exists: !dryRun}, nil
+}
+func (f *fakeProvider) GitHubKeys(ctx context.Context, user string) ([]account.Key, error) {
+	return []account.Key{{Type: "ssh-ed25519", Comment: "github:" + user}}, nil
 }
 func (f *fakeProvider) Topology(ctx context.Context) (*status.Topology, error) {
 	return &status.Topology{Nodes: []status.TopoNode{{ID: "02:00:00:00:00:01", Self: true}}, Links: []status.TopoLink{}}, nil

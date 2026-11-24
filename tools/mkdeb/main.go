@@ -227,6 +227,7 @@ func cmdTrellis(args []string) error {
 		files = append(files, deb.File{Path: "/usr/bin/" + l, Mode: fs.ModeSymlink | 0o777, Link: "trellis"})
 	}
 	for _, f := range [][2]string{
+		{"packaging/systemd/trellis-firstboot.service", "/usr/lib/systemd/system/trellis-firstboot.service"},
 		{"packaging/systemd/trellis-meshd.service", "/usr/lib/systemd/system/trellis-meshd.service"},
 		{"packaging/systemd/trellis-pcie.service", "/usr/lib/systemd/system/trellis-pcie.service"},
 		{"packaging/systemd/trellis-trial.service", "/usr/lib/systemd/system/trellis-trial.service"},
