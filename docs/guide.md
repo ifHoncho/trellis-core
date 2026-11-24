@@ -1,6 +1,8 @@
 # Getting started
 
 Deploy Trellis to a set of devices on your LAN from one machine.
+On a board with a Trellis disk image, install from the image instead:
+[Installing from an image](reference.md#installing-from-an-image).
 
 ## What you need
 

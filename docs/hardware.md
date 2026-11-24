@@ -39,6 +39,11 @@ airtime; otherwise the client Wi-Fi shares a mesh radio. Further radios
 carry further mesh links on other bands, all used at once: the mesh picks
 the fastest path to each node over any of them.
 
+**Disk images.** A release includes disk images for some boards, with
+Trellis and the radio drivers installed. The images and the boards they
+are built for are listed in
+[Installing from an image](reference.md#installing-from-an-image).
+
 ## How Trellis uses the radios
 
 - **One link per radio.** A mesh profile can have several links (for
@@ -106,4 +111,4 @@ Each mesh profile chooses its rules: **country** mode applies one country's
 licence-exempt channels and power; **unrestricted** mode lets every radio
 use all the channels, widths and power its hardware has, for operators who
 hold their own frequency authorization. See
-[architecture.md §5.1](architecture.md#51-regulatory-mode-and-transmit-power).
+[Regulatory modes](reference.md#regulatory-modes) in the reference.

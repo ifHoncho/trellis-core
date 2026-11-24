@@ -60,42 +60,46 @@ runs and is tested, not a layer of half-built parts.
   privileges networking needs; a firewall that closes a node to
   everything outside the mesh; the parsers of untrusted input fuzz-tested
   on every test run.
+- **Upgrading a whole mesh from one node** (0.3.0). Each node upgrades
+  in turn and checks itself; the first node that goes back stops the
+  rest. Tested on five nodes.
+- **Disk images** (0.3.0). A release includes disk images for supported
+  boards; the first is for the Raspberry Pi CM4. A node installed from an
+  image boots without a keyboard or SSH and is set up from a phone,
+  operator account and OS updates included.
 
 ## In progress
 
 - **Wi-Fi HaLow** links for long range, alongside Wi-Fi.
-- **Field testing** with phones running ATAK: a walking test over three or
-  more hops, gateways pulled mid-test.
-- **Upgrading a whole mesh from one node:** each node in turn, each
-  checking itself, the first one that goes back stopping the rest.
 - **Channel busy alert:** an alert when a link's channel stays busy,
-  with the survey one step away (built and tested in the lab; on radios
+  with the survey one step away (in 0.3.0, tested in the lab; on radios
   next).
 - **The node as its phone's GPS:** a node with a GNSS receiver feeds it
   to ATAK on its own devices as an external GPS; a node without one
-  takes its position from its own phone (built and tested in the lab;
+  takes its position from its own phone (in 0.3.0, tested in the lab;
   phones next).
 - **Push-to-talk voice:** talk groups across the mesh, with a headset
-  and PTT on the node or from the browser (preview: built and tested in
+  and PTT on the node or from the browser (preview in 0.3.0, tested in
   the lab; headsets on nodes next).
 - **Linking sites over the internet:** parts of one mesh in different
   places joined into one over WireGuard, with a node behind NAT able to
-  hold the link and a second node per site to take over (built and
-  tested in the lab; real sites next).
-- **Images:** prebuilt images that boot into a working node with no
-  keyboard or SSH. The team's mesh profile goes onto the card when it is
-  flashed, so a whole kit comes up meshed with no setup per node; a node
-  flashed without one is set up from a phone, operator account and OS
-  updates included (built for the reference CM4 and set up on one from
-  a phone; a card with the mesh profile next).
+  hold the link and a second node per site to take over (preview in
+  0.3.0, tested in the lab; real sites next).
+- **The mesh profile on the card:** the team's mesh profile goes onto
+  the card when the image is written, so a whole kit comes up meshed with
+  no setup per node (in 0.3.0; on hardware next).
 
 ## Next
+
+- **Field testing** with phones running ATAK: a walking test over three or
+  more hops, gateways pulled mid-test.
+- **Disk images for more boards.**
+
+## Later
 
 - **Re-keying a whole mesh from one node,** with keys of each node's own,
   so that a lost or captured node can be shut out without visiting every
   other one.
-
-## Later
 
 - **Team awareness with GNSS:** nodes record where the mesh reaches, for
   range figures and a coverage map, and link their marker to their user's.

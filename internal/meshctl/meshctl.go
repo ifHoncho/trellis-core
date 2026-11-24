@@ -84,6 +84,8 @@ Commands:
   site --new-key [--force]       give this node a new site link key
   upgrade FILE.deb               install a release; the node goes back to the old one if it is not healthy after
   upgrade --status|--rollback|--resume
+  upgrade --mesh [--yes] [--follow] FILE.deb...
+                                 upgrade every node of the mesh from this node, one at a time
   trial                          new driver modules, firmware or board files on trial, and the last
                                  trial of each
   trial begin NAME --file PLACE=NEWFILE [--module MOD] [--reboot]

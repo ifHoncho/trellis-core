@@ -4,6 +4,7 @@ Options and behaviour in full. Start with the [guide](guide.md).
 
 - [trellis-deploy](#trellis-deploy)
 - [Passwords and sudo](#passwords-and-sudo)
+- [Installing from an image](#installing-from-an-image)
 - [Installing one device by hand](#installing-one-device-by-hand)
 - [Setting a device up from a phone](#setting-a-device-up-from-a-phone)
 - [The operator account](#the-operator-account)
@@ -21,6 +22,8 @@ Options and behaviour in full. Start with the [guide](guide.md).
 - [The web UI](#the-web-ui)
 - [Push-to-talk voice](#push-to-talk-voice)
 - [Trying a new driver, firmware or board file](#trying-a-new-driver-firmware-or-board-file)
+- [Command line (meshctl)](#command-line-meshctl)
+- [Configuration files](#configuration-files)
 - [When something is wrong](#when-something-is-wrong)
 
 ## trellis-deploy
@@ -80,6 +83,7 @@ pi@192.0.2.14  mesh=10.73.14.1           its mesh address (see below)
 | `--jobs N`, `--no-reboot`, `--keep-going`, `--force` | New installs at once; no reboot after them (the admin password is then set later, on the node, with `sudo meshctl web password`); go on after an upgrade goes back; reinstall devices that run the release already |
 | `--ssh-option Name=value` | An option for every ssh connection (repeatable), as `IdentityFile=~/.ssh/other`; yours override the tool's defaults. On Windows, for a device reached through another, the Windows command shell replaces `%NAME%` in a value when NAME is an environment variable |
 | `--logs DIR` | Where the logs go |
+| `--repo OWNER/NAME` | The GitHub repository releases are downloaded from (default `ifHoncho/trellis-core`) |
 | `--trust`, `--node-key`, `--any-version`, `--no-health-check` | For development builds ([building.md](dev/building.md)) |
 
 SSH host keys: accepted on first contact, refused if changed
@@ -109,6 +113,83 @@ preference:
 
 A narrower rule is no safer: package installation is root regardless of
 the command named.
+
+## Installing from an image
+
+A release includes disk images for some boards. An image is the board's
+operating system with Trellis installed and the radio drivers built for
+its kernel. A node written from an image needs no further installation.
+
+Each image is three files on the release:
+
+| File | |
+|---|---|
+| `trellis-X.Y.Z-BOARD.img.xz` | The image, compressed with xz |
+| `trellis-X.Y.Z-BOARD.img.xz.sha256` | Its SHA-256 checksum |
+| `trellis-X.Y.Z-BOARD.manifest.txt` | The board it is built for (first line), and its packages with their versions |
+
+### Images
+
+| Image (`BOARD`) | Board | Storage | Radios and GPS |
+|---|---|---|---|
+| `cm4-reference` | Raspberry Pi Compute Module 4 (CM4) | microSD card (CM4 Lite) or eMMC, 4 GB or more | MediaTek MT7915 or MT7916 (PCIe, M.2); Seeed Wio-WM6108 HaLow in a WM1302 Pi HAT (SPI); GPS receiver on the primary UART |
+
+The `cm4-reference` image turns Bluetooth and the serial console off. Its
+GPS receiver uses the primary UART.
+
+Every image differs from a standard installation of its operating system:
+
+- SSH is on. Each node generates its own SSH host keys at first boot.
+- The kernel packages are held (`apt-mark showhold` lists them).
+- The image has no login account. The setup wizard creates the
+  [operator account](#the-operator-account).
+
+**Requirements:**
+
+- A board from the table above.
+- Storage for the image, as the table gives.
+- A computer with an image writer, and a card reader for a microSD card.
+- A phone or laptop with Wi-Fi, for setup.
+
+**Procedure:**
+
+1. From the newest
+   [release](https://github.com/ifHoncho/trellis-core/releases), download
+   the board's `trellis-X.Y.Z-BOARD.img.xz` and
+   `trellis-X.Y.Z-BOARD.img.xz.sha256` into one directory.
+2. In that directory, verify the image:
+
+   ```sh
+   sha256sum -c trellis-X.Y.Z-BOARD.img.xz.sha256        # Linux
+   shasum -a 256 -c trellis-X.Y.Z-BOARD.img.xz.sha256    # macOS
+   ```
+
+   The command prints `trellis-X.Y.Z-BOARD.img.xz: OK`. On Windows, run
+   `Get-FileHash trellis-X.Y.Z-BOARD.img.xz` in PowerShell and compare the
+   hash with the first field of the `.sha256` file. Letter case does not
+   matter. If the check fails, download the image again.
+3. For a board that boots from eMMC, connect the eMMC to the computer as a
+   USB mass storage device, as the board's maker documents. For a
+   Raspberry Pi Compute Module, the procedure uses `rpiboot`:
+   [Flash an image to a Compute Module](https://www.raspberrypi.com/documentation/computers/compute-module.html#flash-compute-module-emmc).
+4. Write the image to the microSD card or the eMMC with an image writer,
+   for example Raspberry Pi Imager (**Use custom**) or, on Linux,
+   Impression. An image writer that does not read `.xz` files needs the
+   image decompressed first: `xz -dk trellis-X.Y.Z-BOARD.img.xz`.
+5. Do not apply the image writer's OS customisation (hostname, user
+   account, Wi-Fi, SSH keys). The setup wizard sets the node's callsign,
+   operator account and SSH keys.
+6. For a microSD card, insert the card in the board. For eMMC, disconnect
+   the USB cable and set the board back to eMMC boot.
+7. Power the node on.
+
+   The node has no mesh profile and starts in setup mode. Its setup AP,
+   `trellis-setup-XXXX`, appears.
+8. Set the node up from a phone or laptop:
+   [Setting a device up from a phone](#setting-a-device-up-from-a-phone).
+
+To set a node up from files on the card instead of from a phone, see
+[Setting up a card](#setting-up-a-card).
 
 ## Installing one device by hand
 
@@ -175,9 +256,10 @@ node: `sudo meshctl web password`.
 
 ## The operator account
 
-The Linux account `trellis` on every node set up by Trellis: SSH login,
-`sudo` (asks for the account's password) and `meshctl` without sudo
-(primary group `trellis`). SSH is always on.
+The Linux account `trellis`: SSH login, `sudo` (asks for the account's
+password) and `meshctl` without sudo (primary group `trellis`). SSH is
+always on. A node installed by `trellis-deploy` has no operator account
+until one is set up in Settings → Access → **Operator account**.
 
 - **Set up** in the setup wizard's Access step, from a card
   ([below](#setting-up-a-card)), or in Settings → Access → **Operator
@@ -434,7 +516,7 @@ members at different sites that are already connected without a link
 
 ## Access from outside the mesh
 
-Settings → Access → **Firewall** (`firewall.*` in node.yaml): nftables
+Settings → Access → **Firewall** (`firewall.*` in [node.yaml](#configuration-files)): nftables
 table `inet trellis_fw`. `lo`, `br-mesh` and `anycast0` (mesh, client AP,
 client ports) are trusted and not filtered; rules apply to all other
 interfaces: uplink, VPN, container links.
@@ -583,6 +665,7 @@ Private DNS on phones and secure DNS in browsers if they do not resolve.
 | Devices | Clients on the AP and ports; AP QR code |
 | Radios | Radios, capabilities, role assignment |
 | Multicast | Multicast path state and causes |
+| Voice | Talk groups on the air; this node's channels, audio device, PTT and headset; talk groups for every node; console (monitor and PTT from the browser) |
 | Alerts | Faults, warnings and notes, most severe first |
 | Settings | Node, Wi-Fi, internet, ports, mesh profile, channels, access, system, appearance |
 
@@ -627,7 +710,7 @@ A group is a multicast address and port: by default `239.73.80.n`, port
 ATAK Voice plugin, set its Multicast channel to the group's address and
 port, protocol RTP.
 
-Each node chooses what it hears and how, in node.yaml:
+Each node chooses what it hears and how, in [node.yaml](#configuration-files):
 
 ```yaml
 voice:
@@ -807,6 +890,98 @@ sudo meshctl trial begin halow-bcf --kind bcf --version "27 dBm" --module morse 
 The boot hook requires the state directory on the root filesystem.
 Modules loaded by the initramfs load before it.
 
+## Command line (meshctl)
+
+`meshctl` runs on the node. The operator account and root can use it.
+Commands marked **Root** require `sudo`. Options shown as `--json` print
+the same information as JSON.
+
+### Status and diagnostics
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl status [--json] [--watch]` | Shows the node's state: mesh links and neighbours, routes, client network, client AP, internet, site link and alerts. `--watch` refreshes every 2 seconds. | |
+| `meshctl radios [--json]` | Lists the radios, their capabilities and the role of each. | |
+| `meshctl clients [--json]` | Lists the clients on this node: AP clients and DHCP leases. | |
+| `meshctl doctor [--json] [--node PATH] [--profile PATH]` | Checks the kernel, batman-adv, radios, helper programs and configuration. Include its output in a bug report. | For the mesh profile check |
+| `meshctl survey [--start]` | Shows the last mesh-wide channel survey. `--start` runs a new survey; each radio leaves its channel briefly. | |
+| `meshctl version` | Prints the version. | |
+
+### Mesh profile
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl profile new --name NAME [--band 5g] [--channel 149] [--country US] [--mode country\|unrestricted] [-o FILE [--force]]` | Creates a mesh profile with a random passphrase. Prints it, or writes it to FILE readable by its owner only. | |
+| `meshctl profile show [FILE]` | Prints this node's mesh profile, to copy to other nodes. | For this node's profile |
+| `meshctl profile share` | Shows this node's mesh profile as a profile code and a QR code, for a new node's setup page. | |
+| `meshctl profile band 2g\|5g\|6g [--channel N] [--width MHz] [FILE]` | Changes the band of a profile file (default `mesh-profile.yaml`). | |
+| `meshctl profile same FILE1 FILE2` | Compares two profiles. Exits 0 if they are equivalent; otherwise names the settings that differ. | |
+| `meshctl profile install [FILE\|-]` | Validates a profile, installs it on this node and applies it. Other nodes are not changed. | |
+| `meshctl profile push [--in S] [--yes] [--replace] FILE` | Sends a profile to every node; all nodes switch to it in S seconds (default 60). Without `--yes`, shows the plan only. See [Changing the whole mesh](#changing-the-whole-mesh). | |
+| `meshctl profile edit [--in S] [--yes] [--replace]` | Opens the mesh's current profile in `$EDITOR`, then sends it to every node as `profile push` does. | |
+
+### Node
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl node new --callsign NAME [--id N] [-o FILE [--force]]` | Creates a node configuration file. | |
+| `meshctl config validate [node.yaml] [profile.yaml]` | Validates configuration files without applying them. See [Configuration files](#configuration-files). | To read the mesh profile |
+| `meshctl reload` | Makes meshd read its configuration files again. An invalid file is rejected and the running configuration is kept. | |
+| `meshctl reconcile` | Makes meshd run a reconcile pass now. | |
+| `meshctl prepare [--no-doctor]` | Run after installing the packages by hand: builds and loads the pinned batman-adv module and, where the kernel lacks it, the MT7915/MT7916 driver; sets radio driver options and regulatory rules. Reports whether a reboot is required. | Yes |
+
+### Client AP and web UI
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl ap [--json]` | Shows the client AP's name and passphrase, and the QR code a phone joins with. | |
+| `meshctl web` | Shows the web UI's addresses and whether an admin password is set. | |
+| `meshctl web password [--stdin\|--clear]` | Sets or removes the web UI's admin password. | Yes |
+| `meshctl web wan-access on\|off` | Serves the web UI on the node's uplink network, or stops it. | |
+
+### Voice and site link
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl voice [--json]` | Shows the talk groups, who is talking and this node's channels. See [Push-to-talk voice](#push-to-talk-voice). | |
+| `meshctl site [--json]` | Shows this node's site link key and its tunnels to other sites. See [Linking sites over the internet](#linking-sites-over-the-internet). | |
+| `meshctl site --new-key [--force]` | Gives this node a new site link key. | |
+
+### Upgrades and trials
+
+| Command | Function | Root |
+|---|---|---|
+| `meshctl upgrade FILE.deb` | Installs a release. The node goes back to the previous release if it is not healthy afterwards. See [Upgrading a device by itself](#upgrading-a-device-by-itself). | Yes |
+| `meshctl upgrade --check FILE.deb` | Checks a package's signature, architecture and version, and installs nothing. | |
+| `meshctl upgrade --status` | Shows the upgrade in progress and the result of the last one. | |
+| `meshctl upgrade --rollback [--restore-config]` | Returns to the release before the last upgrade. `--restore-config` also restores the configuration from before the upgrade. | Yes |
+| `meshctl upgrade --resume` | Completes or undoes an interrupted upgrade. | Yes |
+| `meshctl upgrade --mesh [--yes] [--follow] FILE.deb...` | Upgrades every node of the mesh from this node, one at a time. Without `--yes`, shows the plan only. Without files, shows the mesh-wide upgrade in progress. `meshctl upgrade --mesh --cancel` stops a mesh-wide upgrade started on this node. See [Upgrading the whole mesh from one node](#upgrading-the-whole-mesh-from-one-node). | |
+| `meshctl trial` | Lists the driver, firmware and board files on trial, and the last trial of each. | |
+| `meshctl trial begin NAME --file PLACE=NEWFILE [--module MOD] [--reboot]` | Installs new files on trial. See [Trying a new driver, firmware or board file](#trying-a-new-driver-firmware-or-board-file). | Yes |
+| `meshctl trial confirm\|revert\|rearm NAME` | Confirms a trial now, restores the previous files, or allows files that were reverted to be tried again. | Yes |
+
+## Configuration files
+
+| File | Content |
+|---|---|
+| `/etc/trellis/node.yaml` | This node's settings: callsign, radio roles, ports, client AP, firewall, voice. Example: [configs/examples/node.yaml](../configs/examples/node.yaml). |
+| `/etc/trellis/profile.yaml` | The mesh profile, the same on every node: mesh name, secret, regulatory mode, links, voice talk groups. Readable by root only. Example: [configs/examples/profile.yaml](../configs/examples/profile.yaml). |
+
+The web UI and the API rewrite `node.yaml` when a setting is changed
+there. The rewritten file lists only the settings that differ from the
+defaults, and comments are not kept.
+
+To change a file by hand:
+
+1. Edit the file.
+2. Validate it: `sudo meshctl config validate`.
+3. Apply it: `meshctl reload`.
+
+A change to `profile.yaml` on one node applies to that node only. To
+change the mesh profile on every node, see
+[Changing the whole mesh](#changing-the-whole-mesh).
+
 ## When something is wrong
 
 - **Alerts**: cause and corrective action. **Ignore** hides an alert from
@@ -839,3 +1014,61 @@ Modules loaded by the initramfs load before it.
   | `memory-low` | Free memory < 10 % | < 5 % |
 
 - Bug reports and hardware results: [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+The procedures below start from `meshctl status` on the node. Its
+**Warnings** list shows each alert as `[LEVEL] code: message`; the
+**Alerts** page shows the same alerts.
+
+### A node does not join the mesh
+
+1. Run `meshctl status`. The mesh link's **DIRECT LINK** table lists the
+   nodes this node has a link with.
+2. If the warnings include `no-hard-interfaces`, the node has no radio or
+   wired port on the mesh. Run `meshctl radios` and check that a radio
+   has the role `mesh`, and that its **BANDS** column includes the band
+   of the mesh profile.
+3. If the mesh link shows an `SAE` line with authentication failures, the
+   neighbour did not answer, or the two nodes have different mesh
+   profiles. Compare the profiles:
+   1. On a node of the mesh, run `sudo meshctl profile show > mesh.yaml`.
+   2. Copy `mesh.yaml` to this node.
+   3. Run `sudo meshctl profile same mesh.yaml /etc/trellis/profile.yaml`.
+      The command names the settings that differ.
+   4. If they differ, run `meshctl profile install mesh.yaml`.
+4. If the warnings include `mesh-not-joined`, run `sudo meshctl doctor`
+   and correct the failed checks it lists.
+
+### Clients have no internet
+
+1. Run `meshctl status` on the node the client is connected to. The
+   `Internet:` line names the gateway in use.
+2. If the warnings include `no-gateway`, no node of the mesh shares an
+   uplink. Connect an uplink to a node; see
+   [Sharing an uplink](#sharing-an-uplink).
+3. The gateway table's **USABLE** column gives the reason a gateway is
+   not used, for example `no: its uplink is down`.
+4. If the gateway node's warnings include `wan-portal`, its uplink is
+   behind a captive portal and is not shared. Sign in to the portal from
+   a client of that node by opening any `http://` page.
+
+### `.mesh` names do not resolve
+
+1. Open the node by its address: `https://10.73.0.1` from a client of
+   the node. Addresses work without the node's DNS.
+2. On the client, turn off Private DNS (Android), secure DNS in the
+   browser, and any VPN. Each of these sends name lookups to another
+   server instead of the node.
+3. If the node's warnings include `dhcp-no-dnsmasq`, install dnsmasq:
+   `sudo apt install dnsmasq-base`.
+
+### The web UI does not load
+
+1. Run `meshctl web` on the node. It lists the web UI's addresses for
+   the node's clients and for the mesh, and states whether the web UI
+   answers on the uplink network.
+2. Use an address from that list with `https://`. On the first
+   connection the browser warns about the node's self-signed
+   certificate; accept it.
+3. From the uplink network, the web UI answers only while **Web UI from
+   uplink** is on: Settings → Access, or `meshctl web wan-access on`. A
+   node in setup mode does not serve the web UI on its uplink network.

@@ -115,6 +115,22 @@ GitHub's arm64 runner (Actions → image → Run workflow, with the tag and
 the board). It checks the release's packages against `trusted.keys`,
 holds no key, and leaves the image as an artifact for 14 days.
 
+To publish an image, download the workflow's artifact and check it with
+`sha256sum -c`. Sign its checksum with the same gpg key as the release:
+
+```sh
+gpg --local-user <gpg key id> --armor --detach-sign trellis-0.4.0-BOARD.img.xz.sha256
+```
+
+Upload the image, its `.sha256`, the `.sha256.asc` and the manifest to the
+release:
+
+```sh
+gh release upload v0.4.0 trellis-0.4.0-BOARD.img.xz \
+    trellis-0.4.0-BOARD.img.xz.sha256 trellis-0.4.0-BOARD.img.xz.sha256.asc \
+    trellis-0.4.0-BOARD.manifest.txt
+```
+
 **The apt repository** tooling is kept, though no public repository is
 run: releases go out as packages, images and mesh upgrades. A repository
 is a folder of static files that any web server can serve as it is. `tools/aptrepo` adds packages to its `pool/`, then writes

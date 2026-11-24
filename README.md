@@ -52,6 +52,9 @@ common single-board computers with standard Wi-Fi adapters
 
 - [Getting started](docs/guide.md): install Trellis on your devices from
   your computer, in six steps, and join the mesh with a phone.
+- [Installing from an image](docs/reference.md#installing-from-an-image):
+  a release's disk image for a supported board, written to a microSD card
+  or eMMC.
 - [Reference](docs/reference.md): every option, single-device installs,
   upgrades, radios, the web UI.
 - [Supported hardware](docs/hardware.md): boards, radios, and how to test
@@ -89,9 +92,12 @@ make deb        # dist/deb/ packages for Debian, Ubuntu and Raspberry Pi OS
 Working on real hardware and in a 50-node lab: the mesh, the client
 network, gateways and failover, multicast, the web UI, multiple links per
 node, both regulatory modes, packages with upgrades that go back by
-themselves when a node is not healthy afterwards, and deploying to a set
-of devices from one machine. Wi-Fi HaLow, field testing, upgrading a
-whole mesh from one node and prebuilt images are in progress.
+themselves when a node is not healthy afterwards, deploying to a set
+of nodes from one machine, upgrading a whole mesh from one node, and
+disk images for supported boards (the first is for the Raspberry Pi
+CM4). Push-to-talk voice and linking sites over the internet are
+previews in 0.3.0, tested in the lab. Wi-Fi HaLow is in progress; field
+testing is next.
 The current release is **0.3.0, an alpha**
 ([changes](CHANGELOG.md)). See the
 [roadmap](docs/roadmap.md).
@@ -101,9 +107,9 @@ The current release is **0.3.0, an alpha**
 Copyright (C) 2026 Eunoia IT Solutions LLC.
 
 Trellis is free software under the [GNU GPL v3.0 only](LICENSE). A commercial
-licence is also available for products that can't meet the GPL's terms; see
+licence is also available for products that cannot meet the GPL's terms; see
 [LICENSING.md](LICENSING.md). "Meridian" and "Trellis" are trademarks and
-aren't covered by either licence.
+are not covered by either licence.
 
-Outside code contributions aren't being accepted yet; bug reports and
+Outside code contributions are not being accepted yet; bug reports and
 hardware results are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

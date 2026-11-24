@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- **Installing from an image:** a new reference section lists the disk
+  images a release includes and the boards they are for, and gives the
+  procedure to download, verify and write an image to a microSD card or
+  eMMC. The guide, README and hardware page point to it.
+- **Command line (meshctl):** the reference lists every `meshctl`
+  command, with the commands that require root.
+- **Configuration files:** the reference describes `node.yaml` and
+  `profile.yaml`, links to their examples, and gives the procedure to
+  validate and apply a change.
+- **Troubleshooting:** procedures for a node that does not join the mesh,
+  clients without internet, `.mesh` names that do not resolve and a web
+  UI that does not load.
+- Corrected: a node installed by `trellis-deploy` has no operator account
+  until one is set up in the web UI. The web UI table gains the Voice
+  page; the `--repo` option is listed; the README status and the roadmap
+  describe 0.3.0.
+- The release steps sign the image's checksum.
+
+### Command line
+
+- `meshctl`'s usage text lists `upgrade --mesh`.
+
 ## 0.3.0: images, voice, site link and mesh upgrades
 
 Images and first-time setup, push-to-talk voice and the site link
